@@ -9,18 +9,21 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 
+import org.kde.kcmutils as KCM
 import org.kde.kirigami as Kirigami
 
-QQC2.Pane {
+// SimpleKCM is what a Plasma 6 config page is supposed to be rooted in: the
+// dialog sets `title` on it, and it brings its own scrolling and padding.
+KCM.SimpleKCM {
     id: root
 
     property alias cfg_showIcon: showIconCheckBox.checked
     property alias cfg_showTrackInfo: showTrackInfoCheckBox.checked
     property alias cfg_placeholderText: placeholderField.text
     property alias cfg_maxCharacters: maxCharactersField.value
+    property alias cfg_compactCredit: compactCreditCheckBox.checked
 
     Kirigami.FormLayout {
-        anchors.fill: parent
 
         QQC2.CheckBox {
             id: showIconCheckBox
@@ -57,6 +60,23 @@ QQC2.Pane {
                 const parsed = parseInt(text);
                 return isNaN(parsed) ? 0 : parsed;
             }
+        }
+
+        QQC2.CheckBox {
+            id: compactCreditCheckBox
+
+            Kirigami.FormData.label: i18n("Credit:")
+            text: i18n("Compact mode")
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            visible: compactCreditCheckBox.checked
+            text: i18n("Next to the lyrics in the panel, show a short credit such as “· Spicy Lyrics”. The full credit with a link to the contributor is in the popup.")
         }
     }
 }

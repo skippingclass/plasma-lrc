@@ -52,6 +52,12 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QString attribution READ attribution NOTIFY lyricsChanged)
     Q_PROPERTY(QString attributionUrl READ attributionUrl NOTIFY lyricsChanged)
     Q_PROPERTY(bool fromSpicyLyrics READ fromSpicyLyrics NOTIFY lyricsChanged)
+    /// Whether the API source can be used at all, i.e. it is on and has a key.
+    Q_PROPERTY(bool spicyConfigured READ isSpicyConfigured NOTIFY settingsChanged)
+    // Why the API did not provide the line, so that the tooltip can say it
+    // instead of blaming the API for a track it simply does not have.
+    Q_PROPERTY(bool apiHasNoTimings READ apiHasNoTimings NOTIFY lyricsChanged)
+    Q_PROPERTY(bool apiUnreachable READ apiUnreachable NOTIFY lyricsChanged)
 
     // Player information coming from MPRIS
     Q_PROPERTY(QString player READ player NOTIFY playerChanged)
@@ -65,7 +71,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(int maxCharacters READ maxCharacters NOTIFY settingsChanged)
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
     Q_PROPERTY(bool showTrackInfo READ showTrackInfo NOTIFY settingsChanged)
-    Q_PROPERTY(bool showAttribution READ showAttribution NOTIFY settingsChanged)
+    Q_PROPERTY(bool compactCredit READ compactCredit NOTIFY settingsChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -113,6 +119,20 @@ public:
     {
         return m_fromSpicy;
     }
+    bool isSpicyConfigured() const
+    {
+        return m_spicy->isEnabled();
+    }
+    /// The API has the track, but only text without timings.
+    bool apiHasNoTimings() const
+    {
+        return m_missingReason == MissingReason::Unsynced;
+    }
+    /// No answer at all: no network, key rejected, rate limited.
+    bool apiUnreachable() const
+    {
+        return m_missingReason == MissingReason::Unreachable;
+    }
 
     bool isActive() const
     {
@@ -140,7 +160,8 @@ public:
     int maxCharacters() const;
     bool showIcon() const;
     bool showTrackInfo() const;
-    bool showAttribution() const;
+    /// Whether the panel shows the short credit next to the lyrics.
+    bool compactCredit() const;
 
 Q_SIGNALS:
     void textChanged();
@@ -163,7 +184,7 @@ private Q_SLOTS:
     void onPlayerListFetched();
     void onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
     void onSpicyLoaded(const QString &trackId, const Lyrics &lyrics);
-    void onSpicyMissing(const QString &trackId);
+    void onSpicyMissing(const QString &trackId, MissingReason reason);
     void onPositionFetched();
     void updateWord();
 
@@ -229,7 +250,7 @@ private:
     bool m_showTimestamp;
     bool m_showIcon;
     bool m_showTrackInfo;
-    bool m_showAttribution;
+    bool m_compactCredit;
     bool m_pauseWhenIdle;
 
     QString m_spicyKey;
@@ -257,6 +278,7 @@ private:
     double m_wordProgress;
     bool m_wordSynced;
     bool m_fromSpicy;
+    MissingReason m_missingReason;
 
     qint64 m_positionMs;
     qint64 m_positionBaseMs;

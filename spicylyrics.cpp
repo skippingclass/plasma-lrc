@@ -52,8 +52,21 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 // A track without lyrics is remembered for a day, not a month: the community
 // adds syncs all the time and we do not want to hide a new one for weeks.
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
-// Written instead of a response when the API has nothing for a track.
-const QByteArray kMissingMarker = QByteArrayLiteral("{\"missing\":true}");
+// Written instead of a response when the API has nothing to show for a track.
+// The reason is part of it so that the fallback can be explained later on,
+// without asking the API again.
+QByteArray missingMarker(MissingReason reason)
+{
+    const QByteArray name = reason == MissingReason::NotFound ? QByteArrayLiteral("notfound") : QByteArrayLiteral("unsynced");
+    return QByteArrayLiteral("{\"missing\":true,\"reason\":\"") + name + QByteArrayLiteral("\"}");
+}
+
+MissingReason reasonFromMarker(const QByteArray &payload)
+{
+    return QJsonDocument::fromJson(payload).object().value(QStringLiteral("reason")).toString() == QLatin1String("notfound")
+        ? MissingReason::NotFound
+        : MissingReason::Unsynced;
+}
 constexpr int kRequestTimeoutMs = 15000;
 
 qint64 secondsToMs(const QJsonValue &value)
@@ -311,9 +324,9 @@ void SpicyLyrics::request(const QString &trackId)
     load(trackId);
 }
 
-void SpicyLyrics::emitMissing(const QString &trackId)
+void SpicyLyrics::emitMissing(const QString &trackId, MissingReason reason)
 {
-    Q_EMIT missing(trackId);
+    Q_EMIT missing(trackId, reason);
 }
 
 void SpicyLyrics::load(const QString &trackId)
@@ -342,10 +355,11 @@ void SpicyLyrics::load(const QString &trackId)
         const QDateTime modified = QFileInfo(path).lastModified();
         const qint64 age = modified.isValid() ? modified.msecsTo(QDateTime::currentDateTime()) : kCacheTtlMs + 1;
 
-        if (age <= kNegativeCacheTtlMs && payload == kMissingMarker) {
+        if (age <= kNegativeCacheTtlMs && payload.contains(QByteArrayLiteral("\"missing\""))) {
             // We already asked about this track today and there was nothing.
-            QTimer::singleShot(0, this, [this, trackId] {
-                Q_EMIT missing(trackId);
+            const MissingReason reason = reasonFromMarker(payload);
+            QTimer::singleShot(0, this, [this, trackId, reason] {
+                Q_EMIT missing(trackId, reason);
             });
             return;
         }
@@ -367,12 +381,12 @@ void SpicyLyrics::load(const QString &trackId)
     fetch(trackId);
 }
 
-void SpicyLyrics::save(const QString &trackId, const QByteArray &json)
+void SpicyLyrics::write(const QString &trackId, const QByteArray &payload)
 {
     QDir().mkpath(cacheDirectory());
     QFile file(cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json"));
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(json);
+        file.write(payload);
     }
 }
 
@@ -390,28 +404,32 @@ void SpicyLyrics::fetch(const QString &trackId)
         m_watchdog->stop();
 
         if (reply->error() != QNetworkReply::NoError) {
-            // 404 means the API has nothing for this track, which is worth
+            // 404 means the API does not know the track, which is worth
             // remembering for a day. Anything else is a problem on our side or
             // theirs (no key, rate limit, no network), and retrying on the next
             // track is the right thing to do.
-            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 404) {
-                save(trackId, kMissingMarker);
+            const bool notFound = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 404;
+            if (notFound) {
+                write(trackId, missingMarker(MissingReason::NotFound));
             }
-            emitMissing(trackId);
+            emitMissing(trackId, notFound ? MissingReason::NotFound : MissingReason::Unreachable);
             return;
         }
 
         const QByteArray payload = reply->readAll();
         Lyrics lyrics;
-        if (!parse(payload, &lyrics, nullptr) || !lyrics.isUsable()) {
-            // Nothing timed to display: static text or an empty response. The
-            // same marker as a 404 keeps us from asking again right away.
-            save(trackId, kMissingMarker);
-            emitMissing(trackId);
+        QString parseError;
+        if (!parse(payload, &lyrics, &parseError) || !lyrics.isUsable()) {
+            // The reply was fine but there is nothing to time: plain text with no
+            // timings, which is what Apple Music and Spotify answer for a track
+            // nobody has made a sync for. Remembering it keeps us from asking
+            // again on every repeat.
+            write(trackId, missingMarker(MissingReason::Unsynced));
+            emitMissing(trackId, MissingReason::Unsynced);
             return;
         }
 
-        save(trackId, payload);
+        write(trackId, payload);
         m_memoryCache.insert(trackId, lyrics);
         Q_EMIT loaded(trackId, lyrics);
     });
@@ -463,11 +481,18 @@ bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
     for (const QJsonValue &value : content) {
         const QJsonObject entry = value.toObject();
 
+        // Community syncs nest the syllables under Lead. Apple Music and Spotify
+        // put the whole line on the entry itself, with no Lead at all, so both
+        // shapes have to be read or the lyrics look missing.
+        QJsonObject part = entry.value(QStringLiteral("Lead")).toObject();
+        if (part.isEmpty()) {
+            part = entry;
+        }
+
         // A line can carry background vocals in a separate part; the panel is
         // one line of text, so only the lead is used.
         LyricLine line;
-        const bool gotLead = readPart(entry.value(QStringLiteral("Lead")).toObject(), &line);
-        if (!gotLead) {
+        if (!readPart(part, &line)) {
             continue;
         }
 

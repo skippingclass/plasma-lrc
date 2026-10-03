@@ -9,9 +9,12 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 
+import org.kde.kcmutils as KCM
 import org.kde.kirigami as Kirigami
 
-QQC2.Pane {
+// SimpleKCM is what a Plasma 6 config page is supposed to be rooted in: the
+// dialog sets `title` on it, and it brings its own scrolling and padding.
+KCM.SimpleKCM {
     id: root
 
     property alias cfg_binaryPath: binaryPathField.text
@@ -21,7 +24,6 @@ QQC2.Pane {
     property alias cfg_pauseWhenIdle: pauseWhenIdleCheckBox.checked
 
     Kirigami.FormLayout {
-        anchors.fill: parent
 
         QQC2.TextField {
             id: binaryPathField

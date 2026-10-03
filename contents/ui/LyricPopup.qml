@@ -31,7 +31,7 @@ ColumnLayout {
     property string placeholder
     property bool hasLyrics: true
 
-    /// Required by the Spicy Lyrics API terms when the lyrics come from it.
+    /// Who the lyrics came from, when it is worth naming.
     property string attribution
     property string attributionUrl
     property bool showAttribution: false

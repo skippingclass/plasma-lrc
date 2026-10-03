@@ -46,6 +46,16 @@ enum class LyricsType {
 };
 
 /**
+ * Why the API did not provide anything to display, so that the UI can tell the
+ * difference between "no such track" and "no timings for it".
+ */
+enum class MissingReason {
+    Unsynced, ///< the track is there, the text has no timings
+    NotFound, ///< the API does not know the track
+    Unreachable, ///< no network, key rejected, rate limited, bad reply
+};
+
+/**
  * Lyrics of one track, as served by the Spicy Lyrics API.
  *
  * The API answers with the best sync it has for a Spotify track id: a
@@ -116,14 +126,15 @@ public:
 Q_SIGNALS:
     /// The response for @p trackId arrived and has usable timings.
     void loaded(const QString &trackId, const Lyrics &lyrics);
-    /// The API has nothing timed for @p trackId; fall back to lrc_tty.
-    void missing(const QString &trackId);
+    /// The API cannot show @p trackId, and @p reason says why.
+    void missing(const QString &trackId, MissingReason reason);
 
 private:
     void load(const QString &trackId);
-    void save(const QString &trackId, const QByteArray &json);
+    /// Writes the cache entry for a track: a response, or a marker.
+    void write(const QString &trackId, const QByteArray &payload);
     void fetch(const QString &trackId);
-    void emitMissing(const QString &trackId);
+    void emitMissing(const QString &trackId, MissingReason reason);
 
     QNetworkAccessManager m_network;
     QHash<QString, Lyrics> m_memoryCache;

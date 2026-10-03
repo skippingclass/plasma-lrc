@@ -9,17 +9,18 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 
+import org.kde.kcmutils as KCM
 import org.kde.kirigami as Kirigami
 
-QQC2.Pane {
+// SimpleKCM is what a Plasma 6 config page is supposed to be rooted in: the
+// dialog sets `title` on it, and it brings its own scrolling and padding.
+KCM.SimpleKCM {
     id: root
 
     property alias cfg_useSpicyLyrics: useSpicyCheckBox.checked
     property alias cfg_spicyKey: keyField.text
-    property alias cfg_showAttribution: attributionCheckBox.checked
 
     Kirigami.FormLayout {
-        anchors.fill: parent
 
         QQC2.CheckBox {
             id: useSpicyCheckBox
@@ -56,24 +57,6 @@ QQC2.Pane {
             opacity: 0.75
             visible: useSpicyCheckBox.checked
             text: i18n("Get an application and a key at developers.spicylyrics.org. Each user needs their own key; the environment variable is used when the field is left empty.")
-        }
-
-        QQC2.CheckBox {
-            id: attributionCheckBox
-
-            Kirigami.FormData.label: i18n("Credit:")
-            text: i18n("Show who the lyrics came from")
-            enabled: useSpicyCheckBox.checked
-        }
-
-        QQC2.Label {
-            Layout.columnSpan: 2
-            Layout.fillWidth: true
-            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-            wrapMode: Text.Wrap
-            opacity: 0.75
-            visible: useSpicyCheckBox.checked
-            text: i18n("The API terms require it: the provider is named next to the lyrics and the contributor is linked in the popup. Turning this off is a breach of those terms — the key can be revoked and the community syncs stop being served.")
         }
     }
 }

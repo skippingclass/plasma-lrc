@@ -158,7 +158,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_showTimestamp(false)
     , m_showIcon(true)
     , m_showTrackInfo(true)
-    , m_showAttribution(true)
+    , m_compactCredit(true)
     , m_pauseWhenIdle(true)
     , m_useSpicy(true)
     , m_candidateIndex(0)
@@ -174,6 +174,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_wordProgress(0.0)
     , m_wordSynced(false)
     , m_fromSpicy(false)
+    , m_missingReason(MissingReason::Unsynced)
     , m_positionMs(0)
     , m_positionBaseMs(0)
     , m_positionValid(false)
@@ -328,7 +329,7 @@ void LrcApplet::readSettings()
     const bool showTimestamp = boolSetting(QStringLiteral("showTimestamp"), false);
     const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
     const bool showTrackInfo = boolSetting(QStringLiteral("showTrackInfo"), true);
-    const bool showAttribution = boolSetting(QStringLiteral("showAttribution"), true);
+    const bool compactCredit = boolSetting(QStringLiteral("compactCredit"), true);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), true);
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
@@ -341,7 +342,7 @@ void LrcApplet::readSettings()
         || showTimestamp != m_showTimestamp //
         || showIcon != m_showIcon //
         || showTrackInfo != m_showTrackInfo //
-        || showAttribution != m_showAttribution //
+        || compactCredit != m_compactCredit //
         || pauseWhenIdle != m_pauseWhenIdle //
         || useSpicy != m_useSpicy //
         || spicyKey != m_spicyKey;
@@ -354,7 +355,7 @@ void LrcApplet::readSettings()
     m_showTimestamp = showTimestamp;
     m_showIcon = showIcon;
     m_showTrackInfo = showTrackInfo;
-    m_showAttribution = showAttribution;
+    m_compactCredit = compactCredit;
     m_pauseWhenIdle = pauseWhenIdle;
     m_useSpicy = useSpicy;
     m_spicyKey = spicyKey;
@@ -402,9 +403,9 @@ bool LrcApplet::showTrackInfo() const
     return m_showTrackInfo;
 }
 
-bool LrcApplet::showAttribution() const
+bool LrcApplet::compactCredit() const
 {
-    return m_showAttribution;
+    return m_compactCredit;
 }
 
 QString LrcApplet::attribution() const
@@ -603,6 +604,7 @@ void LrcApplet::clearLyrics()
     m_wordProgress = 0.0;
     m_wordSynced = false;
     m_fromSpicy = false;
+    m_missingReason = MissingReason::Unsynced;
     m_positionMs = 0;
     m_positionBaseMs = 0;
     m_positionValid = false;
@@ -660,11 +662,12 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
     poll();
 }
 
-void LrcApplet::onSpicyMissing(const QString &trackId)
+void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
 {
     if (trackId != m_spotifyTrackId) {
         return;
     }
+    m_missingReason = reason;
     // Nothing from the API: lrc_tty keeps doing its job.
     if (m_fromSpicy) {
         clearLyrics();

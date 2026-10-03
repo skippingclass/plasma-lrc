@@ -69,12 +69,10 @@ PlasmoidItem {
         ? i18n("Could not run %1: %2", Plasmoid.binaryPath, Plasmoid.error)
         : displayText
 
-    // Attribution is a condition of using the Spicy Lyrics API: the provider is
-    // named next to the lyrics, and the contributor is linked where shown.
-    readonly property bool showAttribution: Plasmoid.showAttribution //
-        && Plasmoid.fromSpicyLyrics //
-        && Plasmoid.attribution.length > 0
-    readonly property string shortAttribution: {
+    // The credit for the lyrics, in a short form for the panel and a full one for
+    // the popup.
+    readonly property bool hasCredit: Plasmoid.fromSpicyLyrics && Plasmoid.attribution.length > 0
+    readonly property string shortCredit: {
         const separator = Plasmoid.attribution.indexOf(" · ");
         return "· " + (separator > 0 ? Plasmoid.attribution.substring(0, separator) : Plasmoid.attribution);
     }
@@ -84,10 +82,32 @@ PlasmoidItem {
         : PlasmaCore.Types.NoBackground
     preferredRepresentation: compactRepresentation
 
+    // Which source the line actually came from. The tooltip says it, because
+    // "no attribution suffix" and "Spicy Lyrics is not answering" look exactly
+    // the same otherwise.
+    readonly property string sourceName: Plasmoid.fromSpicyLyrics //
+        ? i18n("Spicy Lyrics")
+        : i18n("lrc_tty")
+    readonly property string attributionHint: {
+        if (Plasmoid.fromSpicyLyrics) {
+            return i18n("via %1", sourceName);
+        }
+        if (!Plasmoid.spicyConfigured) {
+            return i18n("via %1 — Spicy Lyrics is off or has no key", sourceName);
+        }
+        if (Plasmoid.apiHasNoTimings) {
+            return i18n("via %1 — the API has this track, but not in sync", sourceName);
+        }
+        if (Plasmoid.apiUnreachable) {
+            return i18n("via %1 — the API could not be reached", sourceName);
+        }
+        return i18n("via %1 — the API does not know this track", sourceName);
+    }
+
     toolTipMainText: !Plasmoid.available //
         ? i18n("lrc_tty not found")
         : (Plasmoid.showTrackInfo && Plasmoid.trackInfo.length > 0 ? Plasmoid.trackInfo : i18n("Now playing"))
-    toolTipSubText: hintText
+    toolTipSubText: !Plasmoid.available ? hintText : hintText + "  " + attributionHint
 
     compactRepresentation: MouseArea {
         id: compactArea
@@ -142,16 +162,20 @@ PlasmoidItem {
             }
 
             PlasmaComponents3.Label {
-                id: attributionLabel
+                id: creditLabel
 
                 // Tiny, and it expands to the full credit while the pointer is
                 // on the widget.
-                text: compactArea.containsMouse ? Plasmoid.attribution : root.shortAttribution
+                text: compactArea.containsMouse ? Plasmoid.attribution : root.shortCredit
                 color: Kirigami.Theme.textColor
-                opacity: compactArea.containsMouse ? 0.85 : 0.5
+                opacity: compactArea.containsMouse ? 0.85 : 0.6
                 elide: Text.ElideRight
-                visible: root.showAttribution
+                visible: root.hasCredit && Plasmoid.compactCredit
                 Layout.alignment: Qt.AlignVCenter
+                // The lyric gives up width first: without a minimum the panel
+                // squeezes this one down to nothing, and then there is no credit
+                // at all to be seen.
+                Layout.minimumWidth: implicitWidth
                 Layout.maximumWidth: Math.ceil(characterWidth.advanceWidth) * 22
             }
         }
@@ -173,7 +197,9 @@ PlasmoidItem {
 
         attribution: root.escapeHtml(Plasmoid.attribution)
         attributionUrl: Plasmoid.attributionUrl
-        showAttribution: root.showAttribution
+        // The popup is where the credit is spelled out in full, so it does not
+        // follow the compact setting from the panel.
+        showAttribution: root.hasCredit
     }
 
     // Only used to find out how wide a single character is, so that the compact

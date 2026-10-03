@@ -71,8 +71,8 @@
             <default></default>
         </entry>
 
-        <entry name="showAttribution" type="Bool">
-            <label>Show who the lyrics came from. Required by the Spicy Lyrics API terms.</label>
+        <entry name="compactCredit" type="Bool">
+            <label>Show a short credit next to the lyrics in the panel.</label>
             <default>true</default>
         </entry>
     </group>
