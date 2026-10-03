@@ -25,8 +25,8 @@ namespace
 // lrc_tty may hit the network on a track it has never seen before, so give it
 // a generous amount of time before deciding that it is stuck.
 constexpr int kWatchdogTimeoutMs = 20000;
-// Do not spam the shell when the binary is missing: retry once a minute.
-constexpr int kMissingBinaryRetryMs = 60000;
+// Do not spam the shell when the binary is missing: retry now and then.
+constexpr int kMissingBinaryRetryMs = 5000;
 // How many "no lyrics" answers in a row make us try the next MPRIS player.
 constexpr int kNoLyricsBeforeSwitchingPlayer = 3;
 // Enumerating bus names is a round trip to the bus, so don't do it on every
@@ -278,7 +278,15 @@ bool LrcApplet::boolSetting(const QString &key, bool defaultValue) const
 
 void LrcApplet::readSettings()
 {
-    const QString binaryPath = setting(QStringLiteral("binaryPath"), QStringLiteral("lrc_tty"));
+    // An empty setting must never end up as an empty program name, otherwise
+    // QProcess fails to start and the widget claims lrc_tty is missing.
+    const QString configuredPath = setting(QStringLiteral("binaryPath"), QStringLiteral("lrc_tty")).trimmed();
+    // A path that no longer exists (lrc_tty moved, uninstalled and reinstalled
+    // elsewhere, ...) is not fatal: fall back to whatever is in $PATH.
+    const QString binaryPath = configuredPath.isEmpty() //
+        || (configuredPath.contains(QLatin1Char('/')) && !QFileInfo::exists(configuredPath))
+        ? QStringLiteral("lrc_tty")
+        : configuredPath;
     const QString player = setting(QStringLiteral("player")).trimmed();
     const QString placeholder = setting(QStringLiteral("placeholderText"), QStringLiteral("♪"));
     const int pollInterval = qBound(200, intSetting(QStringLiteral("pollInterval"), kDefaultPollInterval), 10000);
@@ -321,6 +329,11 @@ void LrcApplet::readSettings()
 QString LrcApplet::placeholderText() const
 {
     return m_placeholderText;
+}
+
+QString LrcApplet::binaryPath() const
+{
+    return m_binaryPath;
 }
 
 int LrcApplet::maxCharacters() const
@@ -383,6 +396,7 @@ void LrcApplet::onProcessFinished()
 
     if (!m_available) {
         setAvailable(true);
+        setError(QString());
         if (m_timer.interval() != m_pollInterval) {
             m_timer.start(m_pollInterval);
         }
@@ -428,6 +442,9 @@ void LrcApplet::onProcessFinished()
 void LrcApplet::onProcessFailedToStart()
 {
     m_watchdog.stop();
+    // QProcess knows better than we do what went wrong ("No such file or
+    // directory", permission denied, ...), so show that instead of guessing.
+    setError(m_process->errorString());
     if (!m_available) {
         return;
     }
@@ -463,6 +480,15 @@ void LrcApplet::setAvailable(bool available)
         return;
     }
     m_available = available;
+    Q_EMIT availableChanged();
+}
+
+void LrcApplet::setError(const QString &error)
+{
+    if (m_error == error) {
+        return;
+    }
+    m_error = error;
     Q_EMIT availableChanged();
 }
 

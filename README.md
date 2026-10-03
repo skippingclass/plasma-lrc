@@ -34,6 +34,21 @@ cmake --build build
 cmake --install build            # требует прав на /usr/lib и /usr/share
 ```
 
+## Установка и обновление
+
+```sh
+cd ~/plasma_lrc
+./install.sh                 # собрать, поставить, перезапустить plasmashell
+./install.sh --no-restart    # не трогать plasmashell
+./uninstall.sh               # снести всё: пакет, .so, настройки, с панели
+```
+
+`install.sh` сначала удаляет старый `.so` и только потом кладёт новый. Это важно:
+при перезаписи библиотеки на месте остаётся тот же inode, который уже замаплен в
+plasmashell, и запущенный процесс получает битые страницы кода — виджет начинает
+выдавать несуществующие ошибки вроде «lrc_tty не найден». Перезапуск plasmashell в
+конце скрипта поэтому обязателен.
+
 Виджет ставится в два места, как это делают все applet-плагины Plasma:
 
 - `/usr/lib/qt6/plugins/plasma/applets/org.kde.plasma.lrc.so`
@@ -45,6 +60,15 @@ applet-плагины только в `QCoreApplication::libraryPaths()`, а т�
 не входит.
 
 Arch: `makepkg -si` из приложенного `PKGBUILD`.
+
+`kpackagetool6` без правильных флагов бесполезен:
+
+```sh
+# так не работает: "Invalid metadata for package structure """ / "Plugin is not installed"
+sudo kpackagetool6 --remove org.kde.plasma.lrc
+# так работает
+sudo kpackagetool6 --remove org.kde.plasma.lrc --type Plasma/Applet --global
+```
 
 После установки: «Добавить виджеты» → **LRC Lyrics**.
 

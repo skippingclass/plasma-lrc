@@ -32,6 +32,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QString text READ text NOTIFY textChanged)
     Q_PROPERTY(bool active READ isActive NOTIFY activeChanged)
     Q_PROPERTY(bool available READ isAvailable NOTIFY availableChanged)
+    Q_PROPERTY(QString error READ error NOTIFY availableChanged)
 
     // Player information coming from MPRIS
     Q_PROPERTY(QString player READ player NOTIFY playerChanged)
@@ -41,6 +42,7 @@ class LrcApplet : public Plasma::Applet
     // Configuration, mirrored here so that QML does not need to deal with
     // KConfigPropertyMap at all.
     Q_PROPERTY(QString placeholderText READ placeholderText NOTIFY settingsChanged)
+    Q_PROPERTY(QString binaryPath READ binaryPath NOTIFY settingsChanged)
     Q_PROPERTY(int maxCharacters READ maxCharacters NOTIFY settingsChanged)
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
     Q_PROPERTY(bool showTrackInfo READ showTrackInfo NOTIFY settingsChanged)
@@ -55,6 +57,11 @@ public:
     QString text() const
     {
         return m_text;
+    }
+    /// Why lrc_tty could not be run, empty when everything is fine.
+    QString error() const
+    {
+        return m_error;
     }
     bool isActive() const
     {
@@ -78,6 +85,7 @@ public:
     }
 
     QString placeholderText() const;
+    QString binaryPath() const;
     int maxCharacters() const;
     bool showIcon() const;
     bool showTrackInfo() const;
@@ -110,6 +118,7 @@ private:
     void setText(const QString &text);
     void setActive(bool active);
     void setAvailable(bool available);
+    void setError(const QString &error);
     void setPlaying(bool playing, bool known);
     void setTrackInfo(const QString &trackInfo);
     void setPlayer(const QString &player);
@@ -134,6 +143,7 @@ private:
     QProcess *m_process;
 
     QString m_text;
+    QString m_error;
     QString m_player;
     QString m_trackInfo;
     QString m_watchedService;

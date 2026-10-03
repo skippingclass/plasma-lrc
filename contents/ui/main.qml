@@ -29,16 +29,19 @@ PlasmoidItem {
         }
         return Plasmoid.placeholderText;
     }
+    readonly property string hintText: !Plasmoid.available //
+        ? i18n("Could not run %1: %2", Plasmoid.binaryPath, Plasmoid.error)
+        : displayText
 
     Plasmoid.backgroundHints: Plasmoid.location === PlasmaCore.Types.Desktop //
         ? PlasmaCore.Types.DefaultBackground
         : PlasmaCore.Types.NoBackground
     preferredRepresentation: compactRepresentation
 
-    toolTipMainText: Plasmoid.showTrackInfo && Plasmoid.trackInfo.length > 0 //
-        ? Plasmoid.trackInfo
-        : i18n("Now playing")
-    toolTipSubText: displayText
+    toolTipMainText: !Plasmoid.available //
+        ? i18n("lrc_tty not found")
+        : (Plasmoid.showTrackInfo && Plasmoid.trackInfo.length > 0 ? Plasmoid.trackInfo : i18n("Now playing"))
+    toolTipSubText: hintText
 
     compactRepresentation: MouseArea {
         id: compactArea
