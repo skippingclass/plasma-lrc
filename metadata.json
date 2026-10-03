@@ -1,0 +1,21 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "pirkov"
+            }
+        ],
+        "Category": "Multimedia",
+        "Description": "Shows the lyric that is currently being sung, using lrc_tty",
+        "Icon": "media-optical-music",
+        "Id": "org.kde.plasma.lrc",
+        "License": "MIT",
+        "Name": "LRC Lyrics",
+        "Version": "1.0",
+        "Website": "https://github.com/larsgrah/lrc_tty"
+    },
+    "X-Plasma-API": "declarativeapplet",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml"
+}

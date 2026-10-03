@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+                          http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+    <kcfgfile name=""/>
+
+    <entry name="binaryPath" type="String">
+        <label>Executable to run.</label>
+        <default>lrc_tty</default>
+    </entry>
+
+    <entry name="pollInterval" type="Int">
+        <label>How often to ask for the current line, in milliseconds.</label>
+        <default>1000</default>
+        <min>200</min>
+        <max>10000</max>
+    </entry>
+
+    <entry name="player" type="String">
+        <label>MPRIS player to query. Empty means auto-detect.</label>
+        <default></default>
+    </entry>
+
+    <entry name="showTimestamp" type="Bool">
+        <label>Prefix every line with its timestamp.</label>
+        <default>false</default>
+    </entry>
+
+    <entry name="showIcon" type="Bool">
+        <label>Show a note icon next to the lyrics.</label>
+        <default>true</default>
+    </entry>
+
+    <entry name="showTrackInfo" type="Bool">
+        <label>Show the current track in the tooltip.</label>
+        <default>true</default>
+    </entry>
+
+    <entry name="pauseWhenIdle" type="Bool">
+        <label>Stop polling while nothing is playing.</label>
+        <default>true</default>
+    </entry>
+
+    <entry name="placeholderText" type="String">
+        <label>Text shown when there are no lyrics.</label>
+        <default>♪</default>
+    </entry>
+
+    <entry name="maxCharacters" type="Int">
+        <label>Maximum amount of characters shown in the panel. 0 means no limit.</label>
+        <default>40</default>
+        <min>0</min>
+        <max>500</max>
+    </entry>
+</kcfg>
