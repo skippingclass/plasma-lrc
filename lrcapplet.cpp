@@ -35,6 +35,13 @@ constexpr int kPlayerListCacheMs = 5000;
 // Generous upper bound for a local MPRIS property fetch.
 constexpr int kDBusCallTimeoutMs = 5000;
 
+// All entries of contents/config/main.xml live in this group, and that is also
+// where KConfigLoader writes them (the applet's own group is only prepended to
+// grouped entries), so the settings have to be read back from here.
+const QString s_configGroup = QStringLiteral("General");
+// Matches the default of pollInterval in contents/config/main.xml.
+constexpr int kDefaultPollInterval = 200;
+
 const QString s_mprisPrefix = QStringLiteral("org.mpris.MediaPlayer2.");
 const QString s_playerPath = QStringLiteral("/org/mpris/MediaPlayer2");
 const QString s_playerInterface = QStringLiteral("org.mpris.MediaPlayer2.Player");
@@ -141,7 +148,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_process(new QProcess(this))
     , m_propertyWatcher(nullptr)
     , m_namesWatcher(nullptr)
-    , m_pollInterval(1000)
+    , m_pollInterval(kDefaultPollInterval)
     , m_maxCharacters(40)
     , m_showTimestamp(false)
     , m_showIcon(true)
@@ -252,12 +259,12 @@ void LrcApplet::refresh()
 
 QString LrcApplet::setting(const QString &key, const QString &defaultValue) const
 {
-    return config().readEntry(key, defaultValue);
+    return config().group(s_configGroup).readEntry(key, defaultValue);
 }
 
 int LrcApplet::intSetting(const QString &key, int defaultValue) const
 {
-    int value = config().readEntry(key, defaultValue);
+    int value = config().group(s_configGroup).readEntry(key, defaultValue);
     if (value <= 0) {
         value = defaultValue;
     }
@@ -266,7 +273,7 @@ int LrcApplet::intSetting(const QString &key, int defaultValue) const
 
 bool LrcApplet::boolSetting(const QString &key, bool defaultValue) const
 {
-    return config().readEntry(key, defaultValue);
+    return config().group(s_configGroup).readEntry(key, defaultValue);
 }
 
 void LrcApplet::readSettings()
@@ -274,7 +281,7 @@ void LrcApplet::readSettings()
     const QString binaryPath = setting(QStringLiteral("binaryPath"), QStringLiteral("lrc_tty"));
     const QString player = setting(QStringLiteral("player")).trimmed();
     const QString placeholder = setting(QStringLiteral("placeholderText"), QStringLiteral("♪"));
-    const int pollInterval = qBound(200, intSetting(QStringLiteral("pollInterval"), 1000), 10000);
+    const int pollInterval = qBound(200, intSetting(QStringLiteral("pollInterval"), kDefaultPollInterval), 10000);
     const int maxCharacters = qBound(0, intSetting(QStringLiteral("maxCharacters"), 40), 500);
     const bool showTimestamp = boolSetting(QStringLiteral("showTimestamp"), false);
     const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
