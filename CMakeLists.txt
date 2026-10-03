@@ -43,6 +43,8 @@ set(PLUGIN_ID "org.kde.plasma.lrc")
 add_library(${PLUGIN_ID} SHARED
     lrcapplet.cpp
     lrcapplet.h
+    spicylyrics.cpp
+    spicylyrics.h
 )
 
 set_target_properties(${PLUGIN_ID} PROPERTIES
@@ -54,6 +56,7 @@ target_link_libraries(${PLUGIN_ID} PRIVATE
     Qt6::Core
     Qt6::DBus
     Qt6::Widgets
+    Qt6::Network
     Qt6::Qml
     KF6::CoreAddons
     KF6::ConfigCore

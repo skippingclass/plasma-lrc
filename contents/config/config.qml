@@ -19,6 +19,12 @@ PlasmaConfiguration.ConfigModel {
     }
 
     PlasmaConfiguration.ConfigCategory {
+        name: i18n("Source")
+        icon: "emblem-symbolic-link"
+        source: "configSource.qml"
+    }
+
+    PlasmaConfiguration.ConfigCategory {
         name: i18n("Appearance")
         icon: "preferences-desktop-font"
         source: "configAppearance.qml"

@@ -14,15 +14,22 @@
 #include <QTimer>
 #include <QVariantMap>
 
+#include "spicylyrics.h"
+
 class QDBusPendingCallWatcher;
 
 /**
  * Panel widget showing the lyric line that is currently being sung.
  *
- * All the lyrics handling is delegated to lrc_tty(1), this applet only
- * periodically runs `lrc_tty --lines 1 --raw` and exposes whatever it printed
- * to QML. A bit of MPRIS/DBus bookkeeping is done on the side to figure out
- * which player is worth talking to and to show the track in the tooltip.
+ * Two sources are used. lrc_tty(1) is asked for the current line on a timer,
+ * the way lrc_tty --lines 1 --raw does it, and covers every MPRIS player
+ * through lrclib.net. When the player is the Spotify desktop client its track
+ * id is known, so the Spicy Lyrics API is asked as well: it answers with
+ * community-made word-level syncs, which also lets the word being sung right
+ * now be highlighted.
+ *
+ * A bit of MPRIS/DBus bookkeeping is done on the side to figure out which
+ * player is worth talking to, where playback is, and what the tooltip shows.
  */
 class LrcApplet : public Plasma::Applet
 {
@@ -33,6 +40,18 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(bool active READ isActive NOTIFY activeChanged)
     Q_PROPERTY(bool available READ isAvailable NOTIFY availableChanged)
     Q_PROPERTY(QString error READ error NOTIFY availableChanged)
+
+    // Word-level state, empty when the source has no word timings
+    Q_PROPERTY(QString word READ word NOTIFY wordChanged)
+    Q_PROPERTY(int wordStart READ wordStart NOTIFY wordChanged)
+    Q_PROPERTY(int wordEnd READ wordEnd NOTIFY wordChanged)
+    Q_PROPERTY(double wordProgress READ wordProgress NOTIFY wordChanged)
+    Q_PROPERTY(bool wordSynced READ isWordSynced NOTIFY lyricsChanged)
+
+    // Who the lyrics came from, required to be shown when the API is used
+    Q_PROPERTY(QString attribution READ attribution NOTIFY lyricsChanged)
+    Q_PROPERTY(QString attributionUrl READ attributionUrl NOTIFY lyricsChanged)
+    Q_PROPERTY(bool fromSpicyLyrics READ fromSpicyLyrics NOTIFY lyricsChanged)
 
     // Player information coming from MPRIS
     Q_PROPERTY(QString player READ player NOTIFY playerChanged)
@@ -46,6 +65,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(int maxCharacters READ maxCharacters NOTIFY settingsChanged)
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
     Q_PROPERTY(bool showTrackInfo READ showTrackInfo NOTIFY settingsChanged)
+    Q_PROPERTY(bool showAttribution READ showAttribution NOTIFY settingsChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -63,6 +83,37 @@ public:
     {
         return m_error;
     }
+    /// The word being sung right now, empty when there are no word timings.
+    QString word() const
+    {
+        return m_word;
+    }
+    /// Where that word starts inside text().
+    int wordStart() const
+    {
+        return m_wordStart;
+    }
+    /// Where that word ends inside text().
+    int wordEnd() const
+    {
+        return m_wordEnd;
+    }
+    /// How far through that word playback is, 0.0 to 1.0.
+    double wordProgress() const
+    {
+        return m_wordProgress;
+    }
+    bool isWordSynced() const
+    {
+        return m_wordSynced;
+    }
+    QString attribution() const;
+    QString attributionUrl() const;
+    bool fromSpicyLyrics() const
+    {
+        return m_fromSpicy;
+    }
+
     bool isActive() const
     {
         return m_active;
@@ -89,11 +140,14 @@ public:
     int maxCharacters() const;
     bool showIcon() const;
     bool showTrackInfo() const;
+    bool showAttribution() const;
 
 Q_SIGNALS:
     void textChanged();
     void activeChanged();
     void availableChanged();
+    void wordChanged();
+    void lyricsChanged();
     void playerChanged();
     void trackInfoChanged();
     void playingChanged();
@@ -108,6 +162,10 @@ private Q_SLOTS:
     void onPlayerPropertiesFetched();
     void onPlayerListFetched();
     void onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
+    void onSpicyLoaded(const QString &trackId, const Lyrics &lyrics);
+    void onSpicyMissing(const QString &trackId);
+    void onPositionFetched();
+    void updateWord();
 
 private:
     void startPolling();
@@ -123,6 +181,13 @@ private:
     void setTrackInfo(const QString &trackInfo);
     void setPlayer(const QString &player);
 
+    /// Called when the watched player reports a new Metadata map.
+    void applyMetadata(const QVariantMap &metadata);
+    /// Asks MPRIS for Position, and interpolates from there.
+    void requestPosition();
+    void requestSpicyLyrics();
+    void clearLyrics();
+
     /// Players to ask, in order of preference.
     QStringList playerCandidates();
     void refreshPlayerCandidates();
@@ -136,11 +201,16 @@ private:
     QString setting(const QString &key, const QString &defaultValue = QString()) const;
     int intSetting(const QString &key, int defaultValue) const;
     bool boolSetting(const QString &key, bool defaultValue) const;
+    /// API key from SPICY_LYRICS_SECRET_KEY, or from the widget config.
+    QString spicyKeySetting() const;
     void readSettings();
 
     QTimer m_timer;
     QTimer m_watchdog;
+    /// Fast enough for a word highlight to look like a highlight.
+    QTimer m_wordTimer;
     QProcess *m_process;
+    SpicyLyrics *m_spicy;
 
     QString m_text;
     QString m_error;
@@ -149,6 +219,7 @@ private:
     QString m_watchedService;
     QDBusPendingCallWatcher *m_propertyWatcher;
     QDBusPendingCallWatcher *m_namesWatcher;
+    QDBusPendingCallWatcher *m_positionWatcher;
 
     QString m_binaryPath;
     QString m_configuredPlayer;
@@ -158,7 +229,11 @@ private:
     bool m_showTimestamp;
     bool m_showIcon;
     bool m_showTrackInfo;
+    bool m_showAttribution;
     bool m_pauseWhenIdle;
+
+    QString m_spicyKey;
+    bool m_useSpicy;
 
     QStringList m_candidates;
     QElapsedTimer m_candidatesTimer;
@@ -172,4 +247,22 @@ private:
     bool m_playing;
     bool m_playingKnown;
     bool m_started;
+
+    // Word-level lyrics of the current track
+    Lyrics m_lyrics;
+    QString m_spotifyTrackId;
+    QString m_word;
+    int m_wordStart;
+    int m_wordEnd;
+    double m_wordProgress;
+    bool m_wordSynced;
+    bool m_fromSpicy;
+
+    qint64 m_positionMs;
+    qint64 m_positionBaseMs;
+    QElapsedTimer m_positionClock;
+    /// Rate limits asking the player for its position again.
+    QElapsedTimer m_positionRetries;
+    bool m_positionValid;
+    int m_lineIndex;
 };

@@ -17,6 +17,7 @@
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QFileInfo>
+#include <QProcessEnvironment>
 
 #include <algorithm>
 
@@ -41,6 +42,8 @@ constexpr int kDBusCallTimeoutMs = 5000;
 const QString s_configGroup = QStringLiteral("General");
 // Matches the default of pollInterval in contents/config/main.xml.
 constexpr int kDefaultPollInterval = 200;
+// How often the playback position may be asked for again while it stays unknown.
+constexpr qint64 kPositionRetryIntervalMs = 2000;
 
 const QString s_mprisPrefix = QStringLiteral("org.mpris.MediaPlayer2.");
 const QString s_playerPath = QStringLiteral("/org/mpris/MediaPlayer2");
@@ -146,14 +149,18 @@ QStringList mprisPlayersFromServiceNames(const QStringList &services)
 LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args)
     : Plasma::Applet(parent, data, args)
     , m_process(new QProcess(this))
+    , m_spicy(new SpicyLyrics(this))
     , m_propertyWatcher(nullptr)
     , m_namesWatcher(nullptr)
+    , m_positionWatcher(nullptr)
     , m_pollInterval(kDefaultPollInterval)
     , m_maxCharacters(40)
     , m_showTimestamp(false)
     , m_showIcon(true)
     , m_showTrackInfo(true)
+    , m_showAttribution(true)
     , m_pauseWhenIdle(true)
+    , m_useSpicy(true)
     , m_candidateIndex(0)
     , m_lastGoodCandidate(-1)
     , m_noLyricsCount(0)
@@ -162,11 +169,23 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_playing(false)
     , m_playingKnown(false)
     , m_started(false)
+    , m_wordStart(0)
+    , m_wordEnd(0)
+    , m_wordProgress(0.0)
+    , m_wordSynced(false)
+    , m_fromSpicy(false)
+    , m_positionMs(0)
+    , m_positionBaseMs(0)
+    , m_positionValid(false)
+    , m_lineIndex(-1)
 {
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
 
     m_timer.setTimerType(Qt::PreciseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
+
+    m_wordTimer.setInterval(40);
+    connect(&m_wordTimer, &QTimer::timeout, this, &LrcApplet::updateWord);
 
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, [this] {
@@ -197,6 +216,9 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
                                           QStringLiteral("NameOwnerChanged"),
                                           this,
                                           SLOT(onServiceOwnerChanged(QString,QString,QString)));
+
+    connect(m_spicy, &SpicyLyrics::loaded, this, &LrcApplet::onSpicyLoaded);
+    connect(m_spicy, &SpicyLyrics::missing, this, &LrcApplet::onSpicyMissing);
 }
 
 LrcApplet::~LrcApplet()
@@ -276,6 +298,18 @@ bool LrcApplet::boolSetting(const QString &key, bool defaultValue) const
     return config().group(s_configGroup).readEntry(key, defaultValue);
 }
 
+QString LrcApplet::spicyKeySetting() const
+{
+    // The API key may come from the widget config or from the environment; the
+    // latter keeps it out of the Plasma config file.
+    const QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    const QString fromEnvironment = environment.value(QStringLiteral("SPICY_LYRICS_SECRET_KEY")).trimmed();
+    if (!fromEnvironment.isEmpty()) {
+        return fromEnvironment;
+    }
+    return setting(QStringLiteral("spicyKey")).trimmed();
+}
+
 void LrcApplet::readSettings()
 {
     // An empty setting must never end up as an empty program name, otherwise
@@ -294,7 +328,10 @@ void LrcApplet::readSettings()
     const bool showTimestamp = boolSetting(QStringLiteral("showTimestamp"), false);
     const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
     const bool showTrackInfo = boolSetting(QStringLiteral("showTrackInfo"), true);
+    const bool showAttribution = boolSetting(QStringLiteral("showAttribution"), true);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), true);
+    const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
+    const QString spicyKey = spicyKeySetting();
 
     const bool changed = binaryPath != m_binaryPath //
         || player != m_configuredPlayer //
@@ -304,7 +341,10 @@ void LrcApplet::readSettings()
         || showTimestamp != m_showTimestamp //
         || showIcon != m_showIcon //
         || showTrackInfo != m_showTrackInfo //
-        || pauseWhenIdle != m_pauseWhenIdle;
+        || showAttribution != m_showAttribution //
+        || pauseWhenIdle != m_pauseWhenIdle //
+        || useSpicy != m_useSpicy //
+        || spicyKey != m_spicyKey;
 
     m_binaryPath = binaryPath;
     m_configuredPlayer = player;
@@ -314,11 +354,22 @@ void LrcApplet::readSettings()
     m_showTimestamp = showTimestamp;
     m_showIcon = showIcon;
     m_showTrackInfo = showTrackInfo;
+    m_showAttribution = showAttribution;
     m_pauseWhenIdle = pauseWhenIdle;
+    m_useSpicy = useSpicy;
+    m_spicyKey = spicyKey;
+
+    m_spicy->setKey(m_spicyKey);
+    m_spicy->setEnabled(m_useSpicy);
 
     if (changed) {
         Q_EMIT settingsChanged();
         invalidatePlayerCandidates();
+    }
+
+    // A new key is worth another try, even for the track that is playing now.
+    if (changed && m_useSpicy && !m_spicyKey.isEmpty() && !m_spotifyTrackId.isEmpty() && !m_fromSpicy) {
+        requestSpicyLyrics();
     }
 
     if (m_timer.interval() != m_pollInterval && m_timer.isActive()) {
@@ -351,6 +402,21 @@ bool LrcApplet::showTrackInfo() const
     return m_showTrackInfo;
 }
 
+bool LrcApplet::showAttribution() const
+{
+    return m_showAttribution;
+}
+
+QString LrcApplet::attribution() const
+{
+    return m_fromSpicy ? m_lyrics.attribution : QString();
+}
+
+QString LrcApplet::attributionUrl() const
+{
+    return m_fromSpicy ? m_lyrics.attributionUrl : QString();
+}
+
 void LrcApplet::poll()
 {
     if (!m_started || m_process->state() != QProcess::NotRunning) {
@@ -360,6 +426,13 @@ void LrcApplet::poll()
     // Nothing is playing, so there is nothing to fetch. The MPRIS watcher wakes
     // us up again as soon as playback starts.
     if (m_pauseWhenIdle && m_playingKnown && !m_playing) {
+        return;
+    }
+
+    // The API gave us word-level timings for this track: we time the line
+    // ourselves, so there is nothing left for lrc_tty to do until the track
+    // changes or the API turns out to have nothing.
+    if (m_fromSpicy && m_lyrics.isUsable()) {
         return;
     }
 
@@ -404,6 +477,11 @@ void LrcApplet::onProcessFinished()
 
     const QString output = QString::fromUtf8(m_process->readAllStandardOutput()).trimmed();
     if (m_process->exitStatus() != QProcess::NormalExit || m_process->exitCode() != 0) {
+        return;
+    }
+
+    // A track that the API timed better than lrc_tty does: ignore this answer.
+    if (m_fromSpicy && m_lyrics.isUsable()) {
         return;
     }
 
@@ -514,6 +592,210 @@ void LrcApplet::setTrackInfo(const QString &trackInfo)
     }
     m_trackInfo = trackInfo;
     Q_EMIT trackInfoChanged();
+}
+
+void LrcApplet::clearLyrics()
+{
+    m_lyrics = Lyrics();
+    m_word.clear();
+    m_wordStart = 0;
+    m_wordEnd = 0;
+    m_wordProgress = 0.0;
+    m_wordSynced = false;
+    m_fromSpicy = false;
+    m_positionMs = 0;
+    m_positionBaseMs = 0;
+    m_positionValid = false;
+    m_positionClock.invalidate();
+    m_lineIndex = -1;
+    m_wordTimer.stop();
+    Q_EMIT wordChanged();
+    Q_EMIT lyricsChanged();
+}
+
+void LrcApplet::applyMetadata(const QVariantMap &metadata)
+{
+    const QString trackId = SpicyLyrics::trackIdFromMpris(metadata.value(QStringLiteral("mpris:trackid")));
+    if (trackId == m_spotifyTrackId) {
+        return;
+    }
+
+    m_spotifyTrackId = trackId;
+    clearLyrics();
+
+    // Playback position is only meaningful for the new track, and it has to be
+    // asked for right away rather than after the retry delay.
+    m_positionValid = false;
+    m_positionBaseMs = 0;
+    m_positionRetries.invalidate();
+    requestPosition();
+    requestSpicyLyrics();
+}
+
+void LrcApplet::requestSpicyLyrics()
+{
+    if (!m_useSpicy || m_spotifyTrackId.isEmpty()) {
+        return;
+    }
+    m_spicy->request(m_spotifyTrackId);
+}
+
+void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
+{
+    // A slower request for the previous track may answer after we moved on.
+    if (trackId != m_spotifyTrackId) {
+        return;
+    }
+
+    m_lyrics = lyrics;
+    m_fromSpicy = true;
+    m_wordSynced = lyrics.type == LyricsType::Syllable;
+
+    // The line now comes from the API, so the process polling would only be a
+    // fallback for a track the API does not know.
+    requestPosition();
+    updateWord();
+    m_wordTimer.start();
+    Q_EMIT lyricsChanged();
+    poll();
+}
+
+void LrcApplet::onSpicyMissing(const QString &trackId)
+{
+    if (trackId != m_spotifyTrackId) {
+        return;
+    }
+    // Nothing from the API: lrc_tty keeps doing its job.
+    if (m_fromSpicy) {
+        clearLyrics();
+    }
+    poll();
+}
+
+void LrcApplet::requestPosition()
+{
+    if (m_watchedService.isEmpty()) {
+        return;
+    }
+
+    // updateWord() runs 25 times a second and asks for the position while it has
+    // none; a player that never answers must not turn that into a D-Bus flood.
+    if (m_positionWatcher) {
+        return;
+    }
+    if (m_positionRetries.isValid() && m_positionRetries.elapsed() < kPositionRetryIntervalMs) {
+        return;
+    }
+    m_positionRetries.start();
+
+    QDBusMessage message = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_propertiesInterface, QStringLiteral("Get"));
+    message << s_playerInterface << QStringLiteral("Position");
+
+    m_positionWatcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(message, kDBusCallTimeoutMs), this);
+    connect(m_positionWatcher, &QDBusPendingCallWatcher::finished, this, &LrcApplet::onPositionFetched);
+}
+
+void LrcApplet::onPositionFetched()
+{
+    QDBusPendingCallWatcher *watcher = m_positionWatcher;
+    if (!watcher) {
+        return;
+    }
+
+    // Properties.Get answers with a variant; QDBusPendingReply<qint64> refuses it
+    // ("got v, expected x"), so the variant is unwrapped by hand.
+    const QDBusPendingReply<QVariant> reply = *watcher;
+    m_positionWatcher = nullptr;
+    watcher->deleteLater();
+
+    if (reply.isError() || !reply.value().isValid()) {
+        return;
+    }
+
+    const qint64 positionUs = reply.value().toLongLong();
+    if (positionUs < 0) {
+        return;
+    }
+
+    m_positionBaseMs = positionUs / 1000;
+    m_positionValid = true;
+    m_positionClock.start();
+    m_positionRetries.start();
+}
+
+void LrcApplet::updateWord()
+{
+    if (!m_lyrics.isUsable()) {
+        return;
+    }
+
+    if (!m_positionValid) {
+        requestPosition();
+        return;
+    }
+
+    // MPRIS has no position signal, so the position is read once and advanced
+    // with the monotonic clock from here on.
+    m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0);
+
+    const int lineIndex = m_lyrics.lineAt(m_positionMs);
+    if (lineIndex < 0) {
+        // Between lines nobody is singing; keep whatever was shown.
+        return;
+    }
+
+    const LyricLine &line = m_lyrics.lines.at(lineIndex);
+    if (line.text != m_text) {
+        setText(line.text);
+        setActive(true);
+    }
+
+    // A new line starts without its first word, so a word from the line before
+    // must not stay highlighted for a tick.
+    if (lineIndex != m_lineIndex) {
+        m_lineIndex = lineIndex;
+        if (!m_word.isEmpty()) {
+            m_word.clear();
+            m_wordStart = 0;
+            m_wordEnd = 0;
+            m_wordProgress = 0.0;
+            Q_EMIT wordChanged();
+        }
+    }
+
+    if (!m_wordSynced || line.words.isEmpty()) {
+        if (!m_word.isEmpty() || m_wordProgress != 0.0) {
+            m_word.clear();
+            m_wordStart = 0;
+            m_wordEnd = 0;
+            m_wordProgress = 0.0;
+            Q_EMIT wordChanged();
+        }
+        return;
+    }
+
+    QString currentWord;
+    int currentStart = 0;
+    int currentEnd = 0;
+    double progress = 0.0;
+    for (const LyricWord &word : line.words) {
+        if (m_positionMs >= word.startMs && (m_positionMs < word.endMs || word.endMs <= word.startMs)) {
+            currentWord = word.text;
+            currentStart = word.textStart;
+            currentEnd = word.textEnd;
+            const qint64 span = word.endMs - word.startMs;
+            progress = span > 0 ? static_cast<double>(m_positionMs - word.startMs) / static_cast<double>(span) : 0.0;
+            break;
+        }
+    }
+
+    if (currentWord != m_word || qAbs(progress - m_wordProgress) > 0.02) {
+        m_word = currentWord;
+        m_wordStart = currentStart;
+        m_wordEnd = currentEnd;
+        m_wordProgress = progress;
+        Q_EMIT wordChanged();
+    }
 }
 
 void LrcApplet::setPlayer(const QString &player)
@@ -704,6 +986,13 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
     const auto statusIt = properties.constFind(QStringLiteral("PlaybackStatus"));
     if (statusIt != properties.constEnd()) {
         setPlaying(statusIt.value().toString().compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0, true);
+        if (m_playingKnown) {
+            // Playback state changed, so the interpolated position is stale and
+            // worth asking for without waiting out the retry delay.
+            m_positionValid = false;
+            m_positionRetries.invalidate();
+            requestPosition();
+        }
     }
 
     const auto metadataIt = properties.constFind(QStringLiteral("Metadata"));
@@ -724,6 +1013,7 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
         }
 
         setTrackInfo(trackInfo);
+        applyMetadata(metadata);
     }
 }
 

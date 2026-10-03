@@ -60,5 +60,20 @@
             <min>0</min>
             <max>500</max>
         </entry>
+
+        <entry name="useSpicyLyrics" type="Bool">
+            <label>Also ask the Spicy Lyrics API, which has word-level syncs for Spotify tracks.</label>
+            <default>true</default>
+        </entry>
+
+        <entry name="spicyKey" type="String">
+            <label>Spicy Lyrics API key. Falls back to SPICY_LYRICS_SECRET_KEY in the environment.</label>
+            <default></default>
+        </entry>
+
+        <entry name="showAttribution" type="Bool">
+            <label>Show who the lyrics came from. Required by the Spicy Lyrics API terms.</label>
+            <default>true</default>
+        </entry>
     </group>
 </kcfg>

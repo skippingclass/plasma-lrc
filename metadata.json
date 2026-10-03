@@ -7,12 +7,12 @@
             }
         ],
         "Category": "Multimedia",
-        "Description": "Shows the lyric that is currently being sung, using lrc_tty",
+        "Description": "Shows the lyric that is currently being sung, word by word if the source has timings for it",
         "Icon": "media-optical-music",
         "Id": "org.kde.plasma.lrc",
         "License": "MIT",
         "Name": "LRC Lyrics",
-        "Version": "1.0",
+        "Version": "1.1",
         "Website": "https://github.com/larsgrah/lrc_tty"
     },
     "X-Plasma-API": "declarativeapplet",
