@@ -22,6 +22,7 @@ KCM.SimpleKCM {
     property alias cfg_placeholderText: placeholderField.text
     property alias cfg_maxCharacters: maxCharactersField.value
     property alias cfg_compactCredit: compactCreditCheckBox.checked
+    property alias cfg_wordStyle: wordStyleBox.currentIndex
 
     Kirigami.FormLayout {
 
@@ -77,6 +78,13 @@ KCM.SimpleKCM {
             opacity: 0.75
             visible: compactCreditCheckBox.checked
             text: i18n("Next to the lyrics in the panel, show a short credit such as “· Spicy Lyrics”. The full credit with a link to the contributor is in the popup.")
+        }
+
+        QQC2.ComboBox {
+            id: wordStyleBox
+
+            Kirigami.FormData.label: i18n("Sung word:")
+            model: [i18n("Underlined"), i18n("Bold")]
         }
     }
 }

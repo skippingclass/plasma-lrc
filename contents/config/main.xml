@@ -75,5 +75,12 @@
             <label>Show a short credit next to the lyrics in the panel.</label>
             <default>true</default>
         </entry>
+
+        <entry name="wordStyle" type="Int">
+            <label>How the word being sung is marked: 0 is underline, 1 is bold.</label>
+            <default>0</default>
+            <min>0</min>
+            <max>1</max>
+        </entry>
     </group>
 </kcfg>

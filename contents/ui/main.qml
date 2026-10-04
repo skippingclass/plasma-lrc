@@ -35,23 +35,28 @@ PlasmoidItem {
         return Qt.rgba(base.r, base.g, base.b, 0.45);
     }
 
-    // The line with the word being sung underlined, for the panel.
+    // The word being sung is marked either with an underline or in bold, whichever
+    // the settings ask for.
+    readonly property string wordMark: Plasmoid.wordStyle === 1 ? "b" : "u"
+
+    // The line with the word being sung marked, for the panel.
     readonly property string compactLine: {
         if (!Plasmoid.wordSynced || Plasmoid.word.length === 0) {
             return escapeHtml(lyricText);
         }
         return escapeHtml(lyricText.substring(0, Plasmoid.wordStart))
-            + "<u>" + escapeHtml(Plasmoid.word) + "</u>"
+            + "<" + wordMark + ">" + escapeHtml(Plasmoid.word) + "</" + wordMark + ">"
             + escapeHtml(lyricText.substring(Plasmoid.wordEnd));
     }
 
-    // The line with the word being sung marked, for the popup.
+    // The line with the word being sung marked, for the popup: what has already
+    // been sung is dimmed.
     readonly property string fullLine: {
         if (!Plasmoid.wordSynced || Plasmoid.word.length === 0) {
             return escapeHtml(lyricText);
         }
         const sung = "<font color=\"" + dimmedColor + "\">" + escapeHtml(lyricText.substring(0, Plasmoid.wordStart)) + "</font>";
-        const current = "<b>" + escapeHtml(Plasmoid.word) + "</b>";
+        const current = "<" + wordMark + ">" + escapeHtml(Plasmoid.word) + "</" + wordMark + ">";
         const rest = escapeHtml(lyricText.substring(Plasmoid.wordEnd));
         return sung + current + rest;
     }
@@ -184,9 +189,9 @@ PlasmoidItem {
     fullRepresentation: LyricPopup {
         id: fullView
 
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 14
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 4
-        Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+        // The popup takes its size from the content. An explicit minimum or
+        // maximum here makes the window open at that size instead, and Plasma
+        // then remembers it in the panel configuration.
 
         trackInfo: Plasmoid.trackInfo
         showTrackInfo: Plasmoid.showTrackInfo

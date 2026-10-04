@@ -159,6 +159,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_showIcon(true)
     , m_showTrackInfo(true)
     , m_compactCredit(true)
+    , m_wordStyle(0)
     , m_pauseWhenIdle(true)
     , m_useSpicy(true)
     , m_candidateIndex(0)
@@ -330,6 +331,7 @@ void LrcApplet::readSettings()
     const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
     const bool showTrackInfo = boolSetting(QStringLiteral("showTrackInfo"), true);
     const bool compactCredit = boolSetting(QStringLiteral("compactCredit"), true);
+    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 0), 1);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), true);
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
@@ -343,6 +345,7 @@ void LrcApplet::readSettings()
         || showIcon != m_showIcon //
         || showTrackInfo != m_showTrackInfo //
         || compactCredit != m_compactCredit //
+        || wordStyle != m_wordStyle //
         || pauseWhenIdle != m_pauseWhenIdle //
         || useSpicy != m_useSpicy //
         || spicyKey != m_spicyKey;
@@ -356,6 +359,7 @@ void LrcApplet::readSettings()
     m_showIcon = showIcon;
     m_showTrackInfo = showTrackInfo;
     m_compactCredit = compactCredit;
+    m_wordStyle = wordStyle;
     m_pauseWhenIdle = pauseWhenIdle;
     m_useSpicy = useSpicy;
     m_spicyKey = spicyKey;
@@ -406,6 +410,11 @@ bool LrcApplet::showTrackInfo() const
 bool LrcApplet::compactCredit() const
 {
     return m_compactCredit;
+}
+
+int LrcApplet::wordStyle() const
+{
+    return m_wordStyle;
 }
 
 QString LrcApplet::attribution() const
@@ -777,15 +786,17 @@ void LrcApplet::updateWord()
         return;
     }
 
+    // The timings are per piece, but the highlight covers the whole word: a word
+    // that was sung in two pieces would otherwise blink between its halves.
     QString currentWord;
     int currentStart = 0;
     int currentEnd = 0;
     double progress = 0.0;
     for (const LyricWord &word : line.words) {
         if (m_positionMs >= word.startMs && (m_positionMs < word.endMs || word.endMs <= word.startMs)) {
-            currentWord = word.text;
-            currentStart = word.textStart;
-            currentEnd = word.textEnd;
+            currentWord = line.text.mid(word.groupStart, word.groupEnd - word.groupStart);
+            currentStart = word.groupStart;
+            currentEnd = word.groupEnd;
             const qint64 span = word.endMs - word.startMs;
             progress = span > 0 ? static_cast<double>(m_positionMs - word.startMs) / static_cast<double>(span) : 0.0;
             break;

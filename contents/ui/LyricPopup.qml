@@ -38,8 +38,15 @@ ColumnLayout {
 
     spacing: Kirigami.Units.smallSpacing
 
+    // The popup has to hug its content: an explicit maximumWidth or minimumHeight
+    // here makes the window grow to that size instead, and Plasma then keeps it
+    // in the panel configuration. The width is capped on the labels instead, so
+    // a long line wraps rather than stretching the window.
+    readonly property int maxWidth: Kirigami.Units.gridUnit * 16
+
     PlasmaComponents3.Label {
         Layout.fillWidth: true
+        Layout.maximumWidth: root.maxWidth
 
         text: root.trackInfo
         color: Kirigami.Theme.textColor
@@ -50,17 +57,17 @@ ColumnLayout {
 
     PlasmaComponents3.Label {
         Layout.fillWidth: true
-        Layout.fillHeight: true
+        Layout.maximumWidth: root.maxWidth
 
         text: root.hasLyrics ? root.line : root.placeholder
         textFormat: Text.RichText
         color: root.hasLyrics ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
         wrapMode: Text.Wrap
-        verticalAlignment: Text.AlignVCenter
     }
 
     PlasmaComponents3.Label {
         Layout.fillWidth: true
+        Layout.maximumWidth: root.maxWidth
 
         text: root.attributionUrl.length > 0 //
             ? "<a href=\"" + root.attributionUrl + "\">" + root.attribution + "</a>"

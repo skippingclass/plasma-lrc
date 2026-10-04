@@ -101,12 +101,16 @@ bool startsWithSpace(const QString &text)
 /**
  * Whether a space has to be inserted between two consecutive syllables.
  *
- * The API hands out syllables, not words: English gets split inside words
- * ("wa" + "nna", with the fragment marked IsPartOfWord) while Chinese,
- * Japanese and Korean have no spaces at all, and the whitespace between words
- * may or may not be part of a syllable's text.
+ * The API hands out syllables with no whitespace in them at all, so word
+ * boundaries are only marked by IsPartOfWord — and it marks the *first* piece of
+ * a word that was split, not the piece that carries on from it. Real example
+ * from the API: "o" flagged, then "k" plain gives "ok"; "har" flagged, then
+ * "dest," gives "hardest,". Reading the flag the other way round glues the
+ * previous word to this one and splits the word in two.
+ *
+ * Chinese, Japanese and Korean have no spaces at all, so they never get one.
  */
-bool needsSpace(const QString &previous, const QString &current, bool currentContinuesWord)
+bool needsSpace(const QString &previous, const QString &current, bool previousStartsSplitWord)
 {
     if (current.isEmpty()) {
         return false;
@@ -117,7 +121,7 @@ bool needsSpace(const QString &previous, const QString &current, bool currentCon
     if (previous.endsWith(QLatin1Char(' ')) || previous.isEmpty()) {
         return false;
     }
-    if (currentContinuesWord) {
+    if (previousStartsSplitWord) {
         return false;
     }
     // CJK text is written without spaces.
@@ -178,7 +182,8 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 
     QString built;
     QString previousPiece;
-    bool previousContinues = false;
+    bool previousStartsSplit = false;
+    QVector<bool> splitStarts;
 
     for (const QJsonValue &value : syllables) {
         const QJsonObject syllable = value.toObject();
@@ -186,14 +191,16 @@ bool readPart(const QJsonObject &part, LyricLine *line)
         if (text.isEmpty()) {
             continue;
         }
-        const bool continues = syllable.value(QStringLiteral("IsPartOfWord")).toBool();
+        // The flag belongs to the first piece of a split word, so it says that
+        // the *next* syllable continues this one, not that this one continues.
+        const bool startsSplitWord = syllable.value(QStringLiteral("IsPartOfWord")).toBool();
 
         LyricWord word;
         word.text = text;
         word.startMs = secondsToMs(syllable.value(QStringLiteral("StartTime")));
         word.endMs = secondsToMs(syllable.value(QStringLiteral("EndTime")));
 
-        const bool space = needsSpace(previousPiece, text, continues);
+        const bool space = needsSpace(previousPiece, text, previousStartsSplit);
         if (space) {
             built.append(QLatin1Char(' '));
         }
@@ -201,9 +208,10 @@ bool readPart(const QJsonObject &part, LyricLine *line)
         built.append(text);
         word.textEnd = static_cast<int>(built.size());
         line->words.append(word);
+        splitStarts.append(startsSplitWord);
 
         previousPiece = text;
-        previousContinues = continues;
+        previousStartsSplit = startsSplitWord;
     }
 
     // Line-synced responses may carry the whole line as a single string instead
@@ -220,6 +228,36 @@ bool readPart(const QJsonObject &part, LyricLine *line)
         word.textEnd = static_cast<int>(text.size());
         built = text;
         line->words.append(word);
+    }
+
+    // Whitespace at the edges is noise: it would show up as a gap between the
+    // lyric and the credit in the panel.
+    built = built.trimmed();
+    QVector<LyricWord> words;
+    words.reserve(line->words.size());
+    for (const LyricWord &word : line->words) {
+        if (word.textStart >= built.size()) {
+            continue;
+        }
+        LyricWord trimmed = word;
+        trimmed.textEnd = qMin(trimmed.textEnd, static_cast<int>(built.size()));
+        words.append(trimmed);
+    }
+    line->words = words;
+
+    // A word that arrived in pieces ends at the first piece without the flag, so
+    // "o" + "k" is one group while "think" + "ok" are two.
+    int groupStart = 0;
+    for (int i = 0; i < line->words.size(); ++i) {
+        const bool endsGroup = i >= splitStarts.size() || !splitStarts.at(i);
+        if (!endsGroup) {
+            continue;
+        }
+        for (int j = groupStart; j <= i && j < line->words.size(); ++j) {
+            line->words[j].groupStart = line->words.at(groupStart).textStart;
+            line->words[j].groupEnd = line->words.at(i).textEnd;
+        }
+        groupStart = i + 1;
     }
 
     line->text = built;

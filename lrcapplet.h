@@ -72,6 +72,8 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
     Q_PROPERTY(bool showTrackInfo READ showTrackInfo NOTIFY settingsChanged)
     Q_PROPERTY(bool compactCredit READ compactCredit NOTIFY settingsChanged)
+    /// 0 marks the current word with an underline, 1 with bold.
+    Q_PROPERTY(int wordStyle READ wordStyle NOTIFY settingsChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -162,6 +164,7 @@ public:
     bool showTrackInfo() const;
     /// Whether the panel shows the short credit next to the lyrics.
     bool compactCredit() const;
+    int wordStyle() const;
 
 Q_SIGNALS:
     void textChanged();
@@ -251,6 +254,7 @@ private:
     bool m_showIcon;
     bool m_showTrackInfo;
     bool m_compactCredit;
+    int m_wordStyle;
     bool m_pauseWhenIdle;
 
     QString m_spicyKey;

@@ -1,0 +1,235 @@
+/*
+ * SPDX-FileCopyrightText: 2026 pirkov
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Checks the lyric parser against answers the API really returns. Run it with
+ *
+ *   cmake -S . -B build -DPLASMA_LRC_TESTS=ON && cmake --build build
+ *   ./build/spicy-parser-test
+ */
+
+#include "spicylyrics.h"
+
+#include <QCoreApplication>
+
+#include <cstdio>
+
+namespace
+{
+int failures = 0;
+
+void check(const QString &what, bool ok, const QString &detail = QString())
+{
+    printf("%-56s %s%s\n", what.toUtf8().constData(), ok ? "ok" : "FAIL", detail.isEmpty() ? "" : (" — " + detail).toUtf8().constData());
+    if (!ok) {
+        ++failures;
+    }
+}
+}
+
+int main(int argc, char **argv)
+{
+    QCoreApplication app(argc, argv);
+
+    // --- id трека из MPRIS ---
+    check("mpris: /com/spotify/track/<id>", SpicyLyrics::trackIdFromMpris("/com/spotify/track/05NFt6hnomymkp09f4gGry") == "05NFt6hnomymkp09f4gGry");
+    check("mpris: spotify:track:<id>", SpicyLyrics::trackIdFromMpris("spotify:track:05NFt6hnomymkp09f4gGry") == "05NFt6hnomymkp09f4gGry");
+    check("mpris: пусто", SpicyLyrics::trackIdFromMpris("/com/spotify/track/short").isEmpty());
+
+    // --- Community sync: слова режутся, IsPartOfWord стоит на ПЕРВОМ куске ---
+    {
+        // Verified answer from api.spicylyrics.org for a word-synced track.
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable",
+          "UploadAttribution":{"Uploader":{"username":"uploader","url":"https://example/u"},
+                               "Maker":{"username":"maker","url":"https://example/m"}},
+          "Content":[
+            {"Type":"Vocal","Lead":{"Syllables":[
+              {"Text":"think","StartTime":1.0,"EndTime":1.4},
+              {"Text":"o","StartTime":1.4,"EndTime":1.6,"IsPartOfWord":true},
+              {"Text":"k","StartTime":1.6,"EndTime":1.8},
+              {"Text":"is","StartTime":1.9,"EndTime":2.1},
+              {"Text":"the","StartTime":2.2,"EndTime":2.4},
+              {"Text":"har","StartTime":2.5,"EndTime":2.7,"IsPartOfWord":true},
+              {"Text":"dest,","StartTime":2.7,"EndTime":3.1}],
+              "StartTime":1.0,"EndTime":3.1}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("community: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("community: без пробелов внутри слов", lyrics.lines.value(0).text == QStringLiteral("think ok is the hardest,"), lyrics.lines.value(0).text);
+        check("community: смещение продолжения", lyrics.lines.value(0).words.value(2).textStart == 7 && lyrics.lines.value(0).words.value(2).textEnd == 8,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).words.value(2).textStart).arg(lyrics.lines.value(0).words.value(2).textEnd));
+        check("community: границы разбитого слова", lyrics.lines.value(0).words.value(5).textStart == 16 && lyrics.lines.value(0).words.value(5).textEnd == 19,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).words.value(5).textStart).arg(lyrics.lines.value(0).words.value(5).textEnd));
+        // The highlight must cover the whole word, not one of its pieces:
+        // "think ok is the hardest," -> ok = 6..8, hardest, = 16..24.
+        check("community: группа для 'ok'", lyrics.lines.value(0).words.value(1).groupStart == 6 && lyrics.lines.value(0).words.value(1).groupEnd == 8,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).words.value(1).groupStart).arg(lyrics.lines.value(0).words.value(1).groupEnd));
+        check("community: у 'o' и 'k' одна группа",
+              lyrics.lines.value(0).words.value(1).groupStart == lyrics.lines.value(0).words.value(2).groupStart
+                  && lyrics.lines.value(0).words.value(1).groupEnd == lyrics.lines.value(0).words.value(2).groupEnd);
+        check("community: группа для 'hardest,'", lyrics.lines.value(0).words.value(5).groupStart == 16 && lyrics.lines.value(0).words.value(5).groupEnd == 24,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).words.value(5).groupStart).arg(lyrics.lines.value(0).words.value(5).groupEnd));
+        check("community: 'think' — отдельное слово", lyrics.lines.value(0).words.value(0).groupStart == 0 && lyrics.lines.value(0).words.value(0).groupEnd == 5,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).words.value(0).groupStart).arg(lyrics.lines.value(0).words.value(0).groupEnd));
+        check("community: текст группы = целое слово",
+              lyrics.lines.value(0).text.mid(lyrics.lines.value(0).words.value(1).groupStart,
+                  lyrics.lines.value(0).words.value(1).groupEnd - lyrics.lines.value(0).words.value(1).groupStart) == QStringLiteral("ok"));
+        check("community: выбор строки", lyrics.lineAt(2800) == 0, QString::number(lyrics.lineAt(2800)));
+        check("community: атрибуция", lyrics.attribution == QStringLiteral("Spicy Lyrics · made by @maker (@uploader)"), lyrics.attribution);
+        check("community: ссылка", lyrics.attributionUrl == QStringLiteral("https://example/m"), lyrics.attributionUrl);
+    }
+
+    // --- Несколько кусков одного слова подряд: E+very+bo+dy ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable","Content":[
+          {"Type":"Vocal","Lead":{"Syllables":[
+            {"Text":"know","StartTime":1.0,"EndTime":1.3},
+            {"Text":"E","StartTime":1.4,"EndTime":1.5,"IsPartOfWord":true},
+            {"Text":"very","StartTime":1.5,"EndTime":1.8,"IsPartOfWord":true},
+            {"Text":"bo","StartTime":1.8,"EndTime":2.0,"IsPartOfWord":true},
+            {"Text":"dy","StartTime":2.0,"EndTime":2.2}],
+            "StartTime":1.0,"EndTime":2.2}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("Everybody: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("Everybody: без лишних пробелов", lyrics.lines.value(0).text == QStringLiteral("know Everybody"), lyrics.lines.value(0).text);
+        check("Everybody: четыре куска — одна группа",
+              lyrics.lines.value(0).words.value(1).groupStart == 5 && lyrics.lines.value(0).words.value(1).groupEnd == 14,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).words.value(1).groupStart).arg(lyrics.lines.value(0).words.value(1).groupEnd));
+    }
+
+    // --- Пробелы в тексте слота, если они всё же есть ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable","Content":[
+          {"Type":"Vocal","Lead":{"Syllables":[
+            {"Text":"I ","StartTime":7.091,"EndTime":7.304},
+            {"Text":"rea","StartTime":7.304,"EndTime":7.488,"IsPartOfWord":true},
+            {"Text":"lly ","StartTime":7.488,"EndTime":7.729}],
+            "StartTime":7.091,"EndTime":7.729}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("пробелы в Text: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("пробелы в Text: без дублей", lyrics.lines.value(0).text == QStringLiteral("I really"), lyrics.lines.value(0).text);
+    }
+
+    // --- Без флагов: всё считается отдельными словами ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spotify","Type":"Syllable","Content":[
+          {"Lead":{"Syllables":[
+            {"Text":"Hello","StartTime":1.0,"EndTime":1.5},
+            {"Text":"world","StartTime":1.5,"EndTime":2.0}]}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("без флагов: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("без флагов: пробел между словами", lyrics.lines.value(0).text == QStringLiteral("Hello world"), lyrics.lines.value(0).text);
+        check("источник spotify: атрибуция Spotify", lyrics.attribution == QStringLiteral("Spotify"), lyrics.attribution);
+    }
+
+    // --- CJK: пробелов нет вовсе ---
+    {
+        const QByteArray json = R"({"Body":{"source":"apple_music","Type":"Syllable","Content":[
+          {"Lead":{"Syllables":[
+            {"Text":"遥","StartTime":0.917,"EndTime":1.169},
+            {"Text":"か","StartTime":1.169,"EndTime":1.385},
+            {"Text":"遠","StartTime":1.385,"EndTime":1.743},
+            {"Text":"く","StartTime":1.743,"EndTime":1.908}]}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("CJK: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("CJK: без пробелов", lyrics.lines.value(0).text == QStringLiteral("遥か遠く"), lyrics.lines.value(0).text);
+        check("источник apple: атрибуция", lyrics.attribution == QStringLiteral("Apple Music"), lyrics.attribution);
+    }
+
+    // --- Apple Music: текст прямо на записи, Lead нет вовсе ---
+    {
+        // Verified answer from api.spicylyrics.org for a track with no community
+        // sync: line-synced, Text and timings on the entry itself.
+        const QByteArray json = R"({"Body":{"id":"x","source":"apple_music","Type":"Line",
+          "StartTime":0.88,"EndTime":13.07,
+          "Content":[
+            {"Type":"Vocal","OppositeAligned":false,"Text":"You actually tried to injure yourself twice, didn't you?","StartTime":0.88,"EndTime":5.37},
+            {"Type":"Vocal","OppositeAligned":false,"Text":"Uh, this one was last week","StartTime":5.37,"EndTime":10.13},
+            {"Type":"Vocal","OppositeAligned":false,"Text":"I mean, uh, today is Monday","StartTime":10.13,"EndTime":13.07}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("apple: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("apple: тип Line", lyrics.type == LyricsType::Line);
+        check("apple: usable", lyrics.isUsable());
+        check("apple: 3 строки", lyrics.lines.size() == 3, QString::number(lyrics.lines.size()));
+        check("apple: текст строки", lyrics.lines.value(0).text == QStringLiteral("You actually tried to injure yourself twice, didn't you?"), lyrics.lines.value(0).text);
+        check("apple: тайминги строки", lyrics.lines.value(1).startMs == 5370 && lyrics.lines.value(1).endMs == 10130,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(1).startMs).arg(lyrics.lines.value(1).endMs));
+        check("apple: выбор строки по позиции", lyrics.lineAt(11000) == 2, QString::number(lyrics.lineAt(11000)));
+        check("apple: вне строки", lyrics.lineAt(20000) == -1, QString::number(lyrics.lineAt(20000)));
+    }
+
+    // --- Смешанная форма: часть строк с Lead, часть напрямую ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable","Content":[
+          {"Type":"Vocal","Lead":{"Syllables":[{"Text":"first ","StartTime":1.0,"EndTime":1.5},{"Text":"line","StartTime":1.5,"EndTime":2.0}],"StartTime":1.0,"EndTime":2.0}},
+          {"Type":"Vocal","Text":"second line","StartTime":2.0,"EndTime":4.0}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("смешанная: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("смешанная: обе строки", lyrics.lines.size() == 2, QString::number(lyrics.lines.size()));
+        check("смешанная: первая склеена", lyrics.lines.value(0).text == QStringLiteral("first line"), lyrics.lines.value(0).text);
+        check("смешанная: вторая как есть", lyrics.lines.value(1).text == QStringLiteral("second line"), lyrics.lines.value(1).text);
+    }
+
+    // --- Запись без текста пропускается, а не ломает разбор ---
+    {
+        const QByteArray json = R"({"Body":{"source":"apple_music","Type":"Line","Content":[
+          {"Type":"Vocal","StartTime":1.0,"EndTime":2.0},
+          {"Type":"Vocal","Text":"real line","StartTime":2.0,"EndTime":3.0}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("пустая запись пропущена", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("пустая запись: осталась одна", lyrics.lines.size() == 1, QString::number(lyrics.lines.size()));
+        check("пустая запись: текст верный", lyrics.lines.value(0).text == QStringLiteral("real line"), lyrics.lines.value(0).text);
+    }
+
+    // --- Line-синхронизацияcommunity ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spotify","Type":"Line","Content":[
+          {"Lead":{"Syllables":[{"Text":"first line","StartTime":1.0,"EndTime":4.0}],"StartTime":1.0,"EndTime":4.0}},
+          {"Lead":{"Syllables":[{"Text":"second line","StartTime":4.0,"EndTime":8.0}],"StartTime":4.0,"EndTime":8.0}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("line-sync: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("line-sync: тип", lyrics.type == LyricsType::Line);
+        check("line-sync: 2 строки", lyrics.lines.size() == 2, QString::number(lyrics.lines.size()));
+        check("line-sync: выбор по позиции", lyrics.lineAt(5000) == 1, QString::number(lyrics.lineAt(5000)));
+    }
+
+    // --- Static: без таймингов, для показа не годится ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spotify","Type":"Static","Content":[
+          {"Lead":{"Syllables":[{"Text":"a b","StartTime":0,"EndTime":0}]}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("static: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("static: не usable", !lyrics.isUsable());
+    }
+
+    // --- Мусор ---
+    {
+        Lyrics lyrics;
+        QString error;
+        check("мусор отклоняется", !SpicyLyrics::parse("not json at all", &lyrics, &error), error);
+        check("404-подобный ответ отклоняется", !SpicyLyrics::parse("{}", &lyrics, &error), error);
+        check("пустой Content отклоняется", !SpicyLyrics::parse(R"({"Body":{"Type":"Syllable","Content":[]}})", &lyrics, &error), error);
+    }
+
+    // --- Неизвестный источник ---
+    {
+        const QByteArray json = R"({"Body":{"source":"somewhere_else","Type":"Line","Content":[
+          {"Text":"x","StartTime":0,"EndTime":1}]}})";
+        Lyrics lyrics;
+        SpicyLyrics::parse(json, &lyrics, nullptr);
+        check("неизвестный источник: 'unknown source'", lyrics.attribution == QStringLiteral("unknown source"), lyrics.attribution);
+    }
+
+    printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");
+    return failures == 0 ? 0 : 1;
+}

@@ -25,6 +25,11 @@ struct LyricWord
     // the word that is being sung right now.
     int textStart = 0;
     int textEnd = 0;
+    // A word can arrive in several pieces ("o" + "k"), and the timings are per
+    // piece. These are the offsets of the whole word, so that the highlight
+    // covers "ok" instead of blinking between its halves.
+    int groupStart = 0;
+    int groupEnd = 0;
 };
 
 /**

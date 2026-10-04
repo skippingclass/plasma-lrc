@@ -79,3 +79,17 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json"
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/contents/"
     DESTINATION "${KDE_INSTALL_DATADIR}/plasma/plasmoids/${PLUGIN_ID}/contents"
 )
+
+# Off by default: the parser tests need no Plasma, only Qt, and they are the
+# only way to catch a response shape that quietly turns into "no lyrics".
+option(PLASMA_LRC_TESTS "Build the lyrics parser tests" OFF)
+if(PLASMA_LRC_TESTS)
+    add_executable(spicy-parser-test
+        tests/spicy-parser-test.cpp
+        spicylyrics.cpp
+        spicylyrics.h
+    )
+    target_link_libraries(spicy-parser-test PRIVATE Qt6::Core Qt6::Network)
+    enable_testing()
+    add_test(NAME spicy-parser COMMAND spicy-parser-test)
+endif()
