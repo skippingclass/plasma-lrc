@@ -71,7 +71,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(int maxCharacters READ maxCharacters NOTIFY settingsChanged)
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
     Q_PROPERTY(bool showTrackInfo READ showTrackInfo NOTIFY settingsChanged)
-    Q_PROPERTY(bool compactCredit READ compactCredit NOTIFY settingsChanged)
+    Q_PROPERTY(bool compactPanel READ compactPanel NOTIFY settingsChanged)
     /// 0 marks the current word with an underline, 1 with bold.
     Q_PROPERTY(int wordStyle READ wordStyle NOTIFY settingsChanged)
 
@@ -162,8 +162,8 @@ public:
     int maxCharacters() const;
     bool showIcon() const;
     bool showTrackInfo() const;
-    /// Whether the panel shows the short credit next to the lyrics.
-    bool compactCredit() const;
+    /// Whether the panel is left to the lyrics alone.
+    bool compactPanel() const;
     int wordStyle() const;
 
 Q_SIGNALS:
@@ -189,6 +189,8 @@ private Q_SLOTS:
     void onSpicyLoaded(const QString &trackId, const Lyrics &lyrics);
     void onSpicyMissing(const QString &trackId, MissingReason reason);
     void onPositionFetched();
+    /// Whether the reported position differs from ours by more than a seek.
+    bool positionJumped(qint64 reportedMs) const;
     void updateWord();
 
 private:
@@ -212,6 +214,9 @@ private:
     void requestSpicyLyrics();
     void clearLyrics();
 
+    /// Looks at the bus and at the scores, and moves on if something else is
+    /// more likely to be the music. Runs even while nothing is playing.
+    void considerPlayerSwitch();
     /// Asks every candidate what it is playing, and reorders them by how much
     /// that looks like music.
     void probeCandidates();
@@ -240,6 +245,8 @@ private:
     QTimer m_watchdog;
     /// Fast enough for a word highlight to look like a highlight.
     QTimer m_wordTimer;
+    /// Asks the bus who is playing, independently of whether anything plays.
+    QTimer m_busTimer;
     QProcess *m_process;
     SpicyLyrics *m_spicy;
 
@@ -260,7 +267,7 @@ private:
     bool m_showTimestamp;
     bool m_showIcon;
     bool m_showTrackInfo;
-    bool m_compactCredit;
+    bool m_compactPanel;
     int m_wordStyle;
     bool m_pauseWhenIdle;
 
@@ -300,6 +307,8 @@ private:
     QElapsedTimer m_positionClock;
     /// Rate limits asking the player for its position again.
     QElapsedTimer m_positionRetries;
+    /// Rate limits checking a known position against the player.
+    QElapsedTimer m_positionChecks;
     bool m_positionValid;
     int m_lineIndex;
 };

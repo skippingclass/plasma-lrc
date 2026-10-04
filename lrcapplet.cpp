@@ -50,6 +50,12 @@ const QString s_configGroup = QStringLiteral("General");
 constexpr int kDefaultPollInterval = 200;
 // How often the playback position may be asked for again while it stays unknown.
 constexpr qint64 kPositionRetryIntervalMs = 2000;
+// How often a known position is checked against the player, which is the only
+// way to hear about a seek: MPRIS has no signal for one.
+constexpr qint64 kPositionCheckMs = 1500;
+// A difference below this is the clock running slightly off, a bigger one means
+// playback was moved.
+constexpr qint64 kPositionSnapToleranceMs = 350;
 
 const QString s_mprisPrefix = QStringLiteral("org.mpris.MediaPlayer2.");
 const QString s_playerPath = QStringLiteral("/org/mpris/MediaPlayer2");
@@ -214,7 +220,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_showTimestamp(false)
     , m_showIcon(true)
     , m_showTrackInfo(true)
-    , m_compactCredit(true)
+    , m_compactPanel(false)
     , m_wordStyle(0)
     , m_pauseWhenIdle(true)
     , m_useSpicy(true)
@@ -244,6 +250,11 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
 
     m_wordTimer.setInterval(40);
     connect(&m_wordTimer, &QTimer::timeout, this, &LrcApplet::updateWord);
+
+    // Runs whether or not anything is playing: this is how a player that comes
+    // back after being closed gets noticed.
+    m_busTimer.setInterval(kPlayerRerankMs);
+    connect(&m_busTimer, &QTimer::timeout, this, &LrcApplet::considerPlayerSwitch);
 
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, [this] {
@@ -316,6 +327,7 @@ void LrcApplet::startPolling()
         refreshPlayerCandidates();
     }
 
+    m_busTimer.start();
     m_timer.start(m_pollInterval);
     poll();
 }
@@ -386,7 +398,7 @@ void LrcApplet::readSettings()
     const bool showTimestamp = boolSetting(QStringLiteral("showTimestamp"), false);
     const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
     const bool showTrackInfo = boolSetting(QStringLiteral("showTrackInfo"), true);
-    const bool compactCredit = boolSetting(QStringLiteral("compactCredit"), true);
+    const bool compactPanel = boolSetting(QStringLiteral("compactPanel"), false);
     const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 0), 1);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), true);
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
@@ -400,7 +412,7 @@ void LrcApplet::readSettings()
         || showTimestamp != m_showTimestamp //
         || showIcon != m_showIcon //
         || showTrackInfo != m_showTrackInfo //
-        || compactCredit != m_compactCredit //
+        || compactPanel != m_compactPanel //
         || wordStyle != m_wordStyle //
         || pauseWhenIdle != m_pauseWhenIdle //
         || useSpicy != m_useSpicy //
@@ -414,7 +426,7 @@ void LrcApplet::readSettings()
     m_showTimestamp = showTimestamp;
     m_showIcon = showIcon;
     m_showTrackInfo = showTrackInfo;
-    m_compactCredit = compactCredit;
+    m_compactPanel = compactPanel;
     m_wordStyle = wordStyle;
     m_pauseWhenIdle = pauseWhenIdle;
     m_useSpicy = useSpicy;
@@ -463,9 +475,9 @@ bool LrcApplet::showTrackInfo() const
     return m_showTrackInfo;
 }
 
-bool LrcApplet::compactCredit() const
+bool LrcApplet::compactPanel() const
 {
-    return m_compactCredit;
+    return m_compactPanel;
 }
 
 int LrcApplet::wordStyle() const
@@ -502,23 +514,17 @@ void LrcApplet::poll()
         return;
     }
 
-    const QStringList candidates = playerCandidates();
-    if (candidates.isEmpty()) {
-        // We have not heard from the bus yet (or there is no player at all).
-        if (!m_candidatesTimer.isValid() || m_candidatesTimer.elapsed() > kPlayerListCacheMs) {
-            refreshPlayerCandidates();
-        }
-        return;
-    }
-
     // Even with players known, the bus is asked again now and then: a music
     // player can appear long after we settled for something else, and whoever
     // looked like music last time may not be playing any more.
-    if (!m_candidatesTimer.isValid() || m_candidatesTimer.elapsed() > kPlayerRerankMs) {
-        refreshPlayerCandidates();
+    considerPlayerSwitch();
+
+    const QStringList candidates = playerCandidates();
+    if (candidates.isEmpty()) {
+        return;
     }
 
-    const QString player = candidates.at(qBound(0, m_candidateIndex, candidates.size() - 1));
+    const QString player = candidates.at(qBound(0, m_candidateIndex, int(candidates.size()) - 1));
     if (player != m_player) {
         setPlayer(player);
         unwatchPlayer();
@@ -534,6 +540,33 @@ void LrcApplet::poll()
 
     m_watchdog.start(kWatchdogTimeoutMs);
     m_process->start(m_binaryPath, arguments);
+}
+
+/**
+ * Keeps an eye on who is on the bus, whether or not anything is playing.
+ *
+ * This cannot live in poll(): that returns early while nothing plays, and a
+ * player that starts afterwards would then never be noticed at all. Coming back
+ * from a closed player is exactly that case, which is how the widget could end up
+ * blind to a player that had come back.
+ */
+void LrcApplet::considerPlayerSwitch()
+{
+    if (!m_started) {
+        return;
+    }
+
+    if (m_candidates.isEmpty()) {
+        // We have not heard from the bus yet (or there is no player at all).
+        if (!m_candidatesTimer.isValid() || m_candidatesTimer.elapsed() > kPlayerListCacheMs) {
+            refreshPlayerCandidates();
+        }
+        return;
+    }
+
+    if (!m_candidatesTimer.isValid() || m_candidatesTimer.elapsed() > kPlayerRerankMs) {
+        refreshPlayerCandidates();
+    }
 }
 
 void LrcApplet::onProcessFinished()
@@ -792,10 +825,35 @@ void LrcApplet::onPositionFetched()
         return;
     }
 
-    m_positionBaseMs = positionUs / 1000;
+    const qint64 reportedMs = positionUs / 1000;
+    const bool jumped = positionJumped(reportedMs);
+
+    m_positionBaseMs = reportedMs;
     m_positionValid = true;
     m_positionClock.start();
     m_positionRetries.start();
+
+    if (jumped && m_lyrics.isUsable() && m_lyrics.lineAt(reportedMs) < 0) {
+        // Playback was moved into a gap between lines. The line on screen belongs
+        // to a different part of the song now, so it goes away instead of
+        // pretending somebody is still singing it.
+        m_lineIndex = -1;
+        setText(QString());
+        setActive(false);
+    }
+}
+
+/// True when the answer differs from where we thought playback was by more than a
+/// seek is expected to move it.
+bool LrcApplet::positionJumped(qint64 reportedMs) const
+{
+    // Nothing to compare against yet: the first reading of a track is not a jump.
+    if (!m_positionValid || !m_positionClock.isValid()) {
+        return false;
+    }
+
+    const qint64 expected = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0);
+    return qAbs(reportedMs - expected) > kPositionSnapToleranceMs;
 }
 
 void LrcApplet::updateWord()
@@ -809,8 +867,15 @@ void LrcApplet::updateWord()
         return;
     }
 
-    // MPRIS has no position signal, so the position is read once and advanced
-    // with the monotonic clock from here on.
+    // MPRIS has no signal for either position or seeking, so the position is
+    // advanced with the monotonic clock and checked against the player now and
+    // then. Without the check a seek is not noticed until the track changes,
+    // which is what used to happen.
+    if (!m_positionChecks.isValid() || m_positionChecks.elapsed() > kPositionCheckMs) {
+        m_positionChecks.start();
+        requestPosition();
+    }
+
     m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0);
 
     const int lineIndex = m_lyrics.lineAt(m_positionMs);
@@ -1025,16 +1090,27 @@ void LrcApplet::sortCandidatesByScore()
     // that gives nothing has nothing to lose, so the best one is taken right
     // away.
     const int currentIndex = m_candidates.indexOf(m_player);
-    if (currentIndex < 0) {
-        m_candidateIndex = 0;
-    } else if (m_text.isEmpty() || m_playerScores.value(m_candidates.first(), 0) > m_playerScores.value(m_player, 0) + kPlayerSwitchMargin) {
-        m_candidateIndex = 0;
+    bool takeBest = currentIndex < 0;
+    if (currentIndex >= 0) {
+        takeBest = m_text.isEmpty() || m_playerScores.value(m_candidates.first(), 0) > m_playerScores.value(m_player, 0) + kPlayerSwitchMargin;
+        m_candidateIndex = takeBest ? 0 : currentIndex;
     } else {
-        m_candidateIndex = currentIndex;
+        m_candidateIndex = 0;
     }
 
     m_lastGoodCandidate = -1;
     m_noLyricsCount = 0;
+
+    // Switching has to happen here rather than in poll(): that returns early
+    // while nothing plays, which is exactly the state a player that is coming
+    // back is found in.
+    const QString wanted = m_candidates.value(m_candidateIndex);
+    if (takeBest && !wanted.isEmpty() && wanted != m_player) {
+        setPlayer(wanted);
+        unwatchPlayer();
+        watchPlayer();
+        poll();
+    }
 }
 
 void LrcApplet::unwatchPlayer()
@@ -1095,6 +1171,17 @@ void LrcApplet::onPlayerPropertiesChanged(const QString &interfaceName, const QV
 void LrcApplet::onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner)
 {
     Q_UNUSED(oldOwner);
+
+    // A player appeared. Who is playing may have changed without anything else
+    // happening, so the list is asked again right away instead of on the next
+    // scheduled sweep — otherwise a player that has just come back is not noticed
+    // for up to half a minute.
+    if (!newOwner.isEmpty() && name.startsWith(s_mprisPrefix)) {
+        m_candidatesTimer.invalidate();
+        considerPlayerSwitch();
+        return;
+    }
+
     // The player we were watching is gone: stop trusting its state and start
     // over with the remaining players. NameOwnerChanged reports the well-known
     // name in `name` and the unique one (":1.42") in `oldOwner`, so only the

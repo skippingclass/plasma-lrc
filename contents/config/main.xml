@@ -76,9 +76,9 @@
             <default></default>
         </entry>
 
-        <entry name="compactCredit" type="Bool">
-            <label>Show a short credit next to the lyrics in the panel.</label>
-            <default>true</default>
+        <entry name="compactPanel" type="Bool">
+            <label>Compact mode: keep the panel to the lyrics alone and leave the credit to the popup.</label>
+            <default>false</default>
         </entry>
 
         <entry name="wordStyle" type="Int">

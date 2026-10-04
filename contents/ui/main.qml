@@ -124,7 +124,13 @@ PlasmoidItem {
         Accessible.role: Accessible.StaticText
         Accessible.name: root.displayText
 
-        implicitWidth: compactLayout.implicitWidth
+        // The panel gives an applet the width it asks for and does not come back
+        // to it, so an empty lyric once meant a widget a few pixels wide, with the
+        // text wrapped to one letter per line. The floor keeps a usable width
+        // whatever the content happens to be at that moment.
+        readonly property int floorWidth: Kirigami.Units.gridUnit * 8
+
+        implicitWidth: Math.max(compactLayout.implicitWidth, floorWidth)
         implicitHeight: compactLayout.implicitHeight
 
         Layout.minimumWidth: implicitWidth
@@ -175,7 +181,7 @@ PlasmoidItem {
                 color: Kirigami.Theme.textColor
                 opacity: compactArea.containsMouse ? 0.85 : 0.6
                 elide: Text.ElideRight
-                visible: root.hasCredit && Plasmoid.compactCredit
+                visible: root.hasCredit && !Plasmoid.compactPanel
                 Layout.alignment: Qt.AlignVCenter
                 // The lyric gives up width first: without a minimum the panel
                 // squeezes this one down to nothing, and then there is no credit
