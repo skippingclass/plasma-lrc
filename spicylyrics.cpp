@@ -275,14 +275,23 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 
 int Lyrics::lineAt(qint64 positionMs) const
 {
-    // Lines are sorted by start time; a gap between them means nobody is
-    // singing, and the caller keeps showing whatever it had.
+    // Lines are sorted by start time, and a good part of them overlap: the next
+    // line often begins before the previous one ends, which is normal for words
+    // that are sung across a line break. The line that started last wins, so that
+    // a line shows up when it begins instead of when the previous one lets go of
+    // the screen. A gap between lines means nobody is singing, and the caller
+    // keeps showing whatever it had.
+    int found = -1;
     for (int i = 0; i < lines.size(); ++i) {
-        if (positionMs >= lines.at(i).startMs && positionMs < lines.at(i).endMs) {
-            return i;
+        const LyricLine &line = lines.at(i);
+        if (positionMs < line.startMs) {
+            break;
+        }
+        if (positionMs < line.endMs) {
+            found = i;
         }
     }
-    return -1;
+    return found;
 }
 
 SpicyLyrics::SpicyLyrics(QObject *parent)

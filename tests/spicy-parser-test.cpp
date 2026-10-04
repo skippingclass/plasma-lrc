@@ -212,6 +212,57 @@ int main(int argc, char **argv)
         check("static: не usable", !lyrics.isUsable());
     }
 
+
+    // --- Строки перекрываются: показывается та, что началась позже ---
+    {
+        // Real answers overlap often: the next line begins before the previous one
+        // ends, because a word is sung across the break. Measured on real tracks,
+        // 28 lines out of 54 used to show up late, once by 886ms, because the
+        // first matching line won.
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Line","Content":[
+          {"Text":"first line","StartTime":1.0,"EndTime":4.0},
+          {"Text":"second line","StartTime":3.5,"EndTime":6.0},
+          {"Text":"third line","StartTime":5.8,"EndTime":8.0}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("наложение: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("наложение: до начала второй — первая", lyrics.lineAt(2000) == 0, QString::number(lyrics.lineAt(2000)));
+        check("наложение: в перекрытии побеждает вторая", lyrics.lineAt(3700) == 1, QString::number(lyrics.lineAt(3700)));
+        check("наложение: на её конце — третья", lyrics.lineAt(5900) == 2, QString::number(lyrics.lineAt(5900)));
+        check("наложение: после конца третьей ничего", lyrics.lineAt(9000) == -1, QString::number(lyrics.lineAt(9000)));
+    }
+
+    // --- Быстрая строка: короткое слово между двумя ---
+    {
+        // A word of 50ms between two longer ones: a coarse tick falls in the gaps
+        // around it, and the applet lights the nearest word within reach.
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable","Content":[
+          {"Lead":{"Syllables":[
+            {"Text":"go","StartTime":1.00,"EndTime":1.30},
+            {"Text":"fast","StartTime":1.34,"EndTime":1.39},
+            {"Text":"now","StartTime":1.44,"EndTime":1.80}],"StartTime":1.0,"EndTime":1.8}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("быстрая строка: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("быстрая строка: текст", lyrics.lines.value(0).text == QStringLiteral("go fast now"), lyrics.lines.value(0).text);
+        check("быстрая строка: 20мс-слово на месте",
+              lyrics.lines.value(0).words.value(1).startMs == 1340 && lyrics.lines.value(0).words.value(1).endMs == 1390,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).words.value(1).startMs).arg(lyrics.lines.value(0).words.value(1).endMs));
+    }
+
+    // --- Промежуток между строками: ничего не поется ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Line","Content":[
+          {"Text":"one","StartTime":1.0,"EndTime":3.0},
+          {"Text":"two","StartTime":6.0,"EndTime":8.0}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("промежуток: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("промежуток: в промежутке пусто", lyrics.lineAt(4500) == -1, QString::number(lyrics.lineAt(4500)));
+        check("промежуток: до него первая", lyrics.lineAt(2000) == 0, QString::number(lyrics.lineAt(2000)));
+        check("промежуток: после него вторая", lyrics.lineAt(7000) == 1, QString::number(lyrics.lineAt(7000)));
+    }
+
     // --- Мусор ---
     {
         Lyrics lyrics;

@@ -56,6 +56,12 @@ constexpr qint64 kPositionCheckMs = 1500;
 // A difference below this is the clock running slightly off, a bigger one means
 // playback was moved.
 constexpr qint64 kPositionSnapToleranceMs = 350;
+// How far the position may fall from a word and still light it up: on a fast
+// line the gaps between words are shorter than a tick.
+constexpr qint64 kWordSnapToleranceMs = 150;
+// How often the word highlight is recomputed. Fast lines have words well under
+// 100ms, so a coarse tick skips them.
+constexpr int kWordTickMs = 20;
 
 const QString s_mprisPrefix = QStringLiteral("org.mpris.MediaPlayer2.");
 const QString s_playerPath = QStringLiteral("/org/mpris/MediaPlayer2");
@@ -248,7 +254,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     m_timer.setTimerType(Qt::PreciseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
 
-    m_wordTimer.setInterval(40);
+    m_wordTimer.setInterval(kWordTickMs);
     connect(&m_wordTimer, &QTimer::timeout, this, &LrcApplet::updateWord);
 
     // Runs whether or not anything is playing: this is how a player that comes
@@ -920,15 +926,40 @@ void LrcApplet::updateWord()
     int currentStart = 0;
     int currentEnd = 0;
     double progress = 0.0;
+
+    const LyricWord *active = nullptr;
     for (const LyricWord &word : line.words) {
         if (m_positionMs >= word.startMs && (m_positionMs < word.endMs || word.endMs <= word.startMs)) {
-            currentWord = line.text.mid(word.groupStart, word.groupEnd - word.groupStart);
-            currentStart = word.groupStart;
-            currentEnd = word.groupEnd;
-            const qint64 span = word.endMs - word.startMs;
-            progress = span > 0 ? static_cast<double>(m_positionMs - word.startMs) / static_cast<double>(span) : 0.0;
+            active = &word;
             break;
         }
+    }
+
+    if (!active) {
+        // The position fell between two words. On a fast line those gaps are
+        // shorter than the tick and the word in between would never light up, so
+        // the closest one within reach is used instead of dropping the highlight.
+        qint64 closest = kWordSnapToleranceMs + 1;
+        for (const LyricWord &word : line.words) {
+            const qint64 distance = m_positionMs < word.startMs ? word.startMs - m_positionMs
+                                                               : (m_positionMs > word.endMs ? m_positionMs - word.endMs : 0);
+            if (distance < closest) {
+                closest = distance;
+                active = &word;
+            }
+        }
+        if (closest > kWordSnapToleranceMs) {
+            active = nullptr;
+        }
+    }
+
+    if (active) {
+        currentWord = line.text.mid(active->groupStart, active->groupEnd - active->groupStart);
+        currentStart = active->groupStart;
+        currentEnd = active->groupEnd;
+        const qint64 span = active->endMs - active->startMs;
+        progress = span > 0 ? static_cast<double>(m_positionMs - active->startMs) / static_cast<double>(span) : 0.0;
+        progress = qBound(0.0, progress, 1.0);
     }
 
     if (currentWord != m_word || qAbs(progress - m_wordProgress) > 0.02) {
