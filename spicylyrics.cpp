@@ -6,6 +6,8 @@
 
 #include "spicylyrics.h"
 
+#include <algorithm>
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -67,6 +69,8 @@ MissingReason reasonFromMarker(const QByteArray &payload)
         ? MissingReason::NotFound
         : MissingReason::Unsynced;
 }
+/// How far back to look when the newest line has already ended.
+constexpr int kLineLookBack = 8;
 constexpr int kRequestTimeoutMs = 15000;
 // How many cache writes between sweeps for expired entries.
 constexpr int kPruneEveryWrites = 64;
@@ -236,16 +240,22 @@ bool readPart(const QJsonObject &part, LyricLine *line)
     // lyric and the credit in the panel.
     built = built.trimmed();
     QVector<LyricWord> words;
+    QVector<bool> trimmedStarts;
     words.reserve(line->words.size());
-    for (const LyricWord &word : line->words) {
+    for (int i = 0; i < line->words.size(); ++i) {
+        const LyricWord &word = line->words.at(i);
         if (word.textStart >= built.size()) {
             continue;
         }
         LyricWord trimmed = word;
         trimmed.textEnd = qMin(trimmed.textEnd, static_cast<int>(built.size()));
         words.append(trimmed);
+        // The flags travel with the words, or the grouping below would read the
+        // flag of a word that is no longer there.
+        trimmedStarts.append(i < splitStarts.size() ? splitStarts.at(i) : false);
     }
     line->words = words;
+    splitStarts = trimmedStarts;
 
     // A word that arrived in pieces ends at the first piece without the flag, so
     // "o" + "k" is one group while "think" + "ok" are two.
@@ -262,6 +272,18 @@ bool readPart(const QJsonObject &part, LyricLine *line)
         groupStart = i + 1;
     }
 
+    // The last piece of a line often carries the continuation flag with nothing
+    // behind it: the flag says how the word continues, and there is no next
+    // piece. Left alone, that word keeps empty bounds and can never light up,
+    // which is exactly how the last word of a line went dark.
+    if (groupStart < line->words.size()) {
+        const int end = line->words.size() - 1;
+        for (int j = groupStart; j <= end; ++j) {
+            line->words[j].groupStart = line->words.at(groupStart).textStart;
+            line->words[j].groupEnd = line->words.at(end).textEnd;
+        }
+    }
+
     line->text = built;
     line->startMs = secondsToMs(part.value(QStringLiteral("StartTime")));
     if (line->startMs <= 0 && !line->words.isEmpty()) {
@@ -275,7 +297,7 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 }
 }
 
-int Lyrics::lineAt(qint64 positionMs, int hint) const
+int Lyrics::lineAt(qint64 positionMs) const
 {
     // Lines are sorted by start time, and a good part of them overlap: the next
     // line often begins before the previous one ends, which is normal for words
@@ -284,19 +306,29 @@ int Lyrics::lineAt(qint64 positionMs, int hint) const
     // the screen. A gap between lines means nobody is singing, and the caller
     // keeps showing whatever it had.
     //
-    // @p hint is the line shown last time. Playback moves forward, so the search
-    // starts there instead of at the beginning: this runs fifty times a second.
-    int found = -1;
-    for (int i = qMax(0, qMin(hint, static_cast<int>(lines.size()) - 1)); i < lines.size(); ++i) {
+    // The search is a binary one: this runs fifty times a second, and a forward
+    // scan from the last match would leave the widget stuck whenever the
+    // position jumped backwards over it.
+    const auto it = std::upper_bound(lines.begin(), lines.end(), positionMs, [](qint64 value, const LyricLine &line) {
+        return value < line.startMs;
+    });
+    if (it == lines.begin()) {
+        return -1;
+    }
+    const int newest = static_cast<int>(it - lines.begin()) - 1;
+    if (positionMs < lines.at(newest).endMs) {
+        return newest;
+    }
+
+    // The newest line is over. A longer line that began earlier may still be
+    // running, and it is worth a short walk back to look for one.
+    for (int i = newest; i >= 0 && i > newest - kLineLookBack; --i) {
         const LyricLine &line = lines.at(i);
-        if (positionMs < line.startMs) {
-            break;
-        }
-        if (positionMs < line.endMs) {
-            found = i;
+        if (positionMs >= line.startMs && positionMs < line.endMs) {
+            return i;
         }
     }
-    return found;
+    return -1;
 }
 
 SpicyLyrics::SpicyLyrics(QObject *parent)

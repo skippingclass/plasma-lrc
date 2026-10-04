@@ -43,6 +43,10 @@ constexpr int kPlayerRerankMs = 30000;
 constexpr int kPlayerSwitchMargin = 5;
 // Generous upper bound for a local MPRIS property fetch.
 constexpr int kDBusCallTimeoutMs = 5000;
+// How long the last line stays after the song is over before the panel goes
+// empty. A pause between lines can be a second and a half, so this has to be
+// clearly longer than that.
+constexpr int kTailGraceMs = 2500;
 
 // All entries of contents/config/main.xml live in this group, and that is also
 // where KConfigLoader writes them (the applet's own group is only prepended to
@@ -53,8 +57,10 @@ constexpr int kDefaultPollInterval = 200;
 // How often the playback position may be asked for again while it stays unknown.
 constexpr qint64 kPositionRetryIntervalMs = 2000;
 // How often a known position is checked against the player, which is the only
-// way to hear about a seek: MPRIS has no signal for one.
-constexpr qint64 kPositionCheckMs = 1500;
+// way to hear about a seek: MPRIS has no signal for one. Nothing else in the
+// widget costs as much as a missed seek looking broken, so this is short: a
+// property read on the session bus is a fraction of a millisecond.
+constexpr qint64 kPositionCheckMs = 400;
 // A difference below this is the clock running slightly off, a bigger one means
 // playback was moved.
 constexpr qint64 kPositionSnapToleranceMs = 350;
@@ -64,6 +70,9 @@ constexpr qint64 kWordSnapToleranceMs = 150;
 // How often the word highlight is recomputed. Fast lines have words well under
 // 100ms, so a coarse tick skips them.
 constexpr int kWordTickMs = 20;
+// While the music is stopped the highlight does not move, but a seek still does,
+// so the position has to keep being watched, only less often.
+constexpr int kIdleTickMs = 250;
 
 const QString s_mprisPrefix = QStringLiteral("org.mpris.MediaPlayer2.");
 const QString s_playerPath = QStringLiteral("/org/mpris/MediaPlayer2");
@@ -735,12 +744,13 @@ void LrcApplet::setPlaying(bool playing, bool known)
         poll();
     }
 
-    // The word timer exists to move the highlight, and nothing moves while the
-    // music is stopped: fifty wake-ups a second for a frozen word.
+    // The word timer exists to move the highlight. While the music is stopped
+    // nothing moves, but a seek can still happen and MPRIS says nothing about
+    // one, so the timer keeps running at a lazy pace instead of standing still.
     if (known && !playing) {
-        m_wordTimer.stop();
+        m_wordTimer.start(kIdleTickMs);
     } else if (playing && m_lyrics.isUsable()) {
-        m_wordTimer.start();
+        m_wordTimer.start(kWordTickMs);
     }
 }
 
@@ -784,6 +794,12 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
     m_spotifyTrackId = trackId;
     clearLyrics();
 
+    // The last line of the track before stays on screen until the new track
+    // reaches its first line, which is seconds of someone else's words over the
+    // new song. An empty panel for a moment reads better than the wrong line.
+    setText(QString());
+    setActive(false);
+
     // Playback position is only meaningful for the new track, and it has to be
     // asked for right away rather than after the retry delay.
     m_positionValid = false;
@@ -816,7 +832,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
     // fallback for a track the API does not know.
     requestPosition();
     updateWord();
-    m_wordTimer.start();
+    m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
     Q_EMIT lyricsChanged();
     poll();
 }
@@ -840,12 +856,18 @@ void LrcApplet::requestPosition()
         return;
     }
 
-    // updateWord() runs 25 times a second and asks for the position while it has
-    // none; a player that never answers must not turn that into a D-Bus flood.
+    // One at a time: updateWord() runs 25 times a second and asks while it has
+    // no position, and a player that never answers must not turn that into a
+    // D-Bus flood.
     if (m_positionWatcher) {
         return;
     }
-    if (m_positionRetries.isValid() && m_positionRetries.elapsed() < kPositionRetryIntervalMs) {
+
+    // The retry delay is for a position that is not known yet. Once it is known,
+    // how often the player is asked is the caller's decision: the same throttle
+    // used to hold the periodic check back to two seconds, and a seek went
+    // unnoticed for all of it.
+    if (!m_positionValid && m_positionRetries.isValid() && m_positionRetries.elapsed() < kPositionRetryIntervalMs) {
         return;
     }
     m_positionRetries.start();
@@ -910,6 +932,18 @@ bool LrcApplet::positionJumped(qint64 reportedMs) const
     return qAbs(reportedMs - expected) > kPositionSnapToleranceMs;
 }
 
+void LrcApplet::clearWordHighlight()
+{
+    if (m_word.isEmpty() && m_wordProgress == 0.0) {
+        return;
+    }
+    m_word.clear();
+    m_wordStart = 0;
+    m_wordEnd = 0;
+    m_wordProgress = 0.0;
+    Q_EMIT wordChanged();
+}
+
 void LrcApplet::updateWord()
 {
     if (!m_lyrics.isUsable()) {
@@ -934,9 +968,17 @@ void LrcApplet::updateWord()
     // fix that; a setting does.
     m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0) + m_lyricOffset;
 
-    const int lineIndex = m_lyrics.lineAt(m_positionMs, m_lineIndex);
+    const int lineIndex = m_lyrics.lineAt(m_positionMs);
     if (lineIndex < 0) {
-        // Between lines nobody is singing; keep whatever was shown.
+        // Between lines nobody is singing, and a pause there is normal, so what
+        // is shown stays. Past the end of the last line there is nothing to keep:
+        // what stays would be the outro of a song that is over, and it looks like
+        // the panel has lost track of what is playing.
+        if (!m_lyrics.lines.isEmpty() && m_positionMs > m_lyrics.lines.last().endMs + kTailGraceMs) {
+            setText(QString());
+            setActive(false);
+            clearWordHighlight();
+        }
         return;
     }
 
@@ -951,23 +993,11 @@ void LrcApplet::updateWord()
     if (lineIndex != m_lineIndex) {
         m_lineIndex = lineIndex;
         m_wordCursor = 0;
-        if (!m_word.isEmpty()) {
-            m_word.clear();
-            m_wordStart = 0;
-            m_wordEnd = 0;
-            m_wordProgress = 0.0;
-            Q_EMIT wordChanged();
-        }
+        clearWordHighlight();
     }
 
     if (!m_wordSynced || line.words.isEmpty()) {
-        if (!m_word.isEmpty() || m_wordProgress != 0.0) {
-            m_word.clear();
-            m_wordStart = 0;
-            m_wordEnd = 0;
-            m_wordProgress = 0.0;
-            Q_EMIT wordChanged();
-        }
+        clearWordHighlight();
         return;
     }
 

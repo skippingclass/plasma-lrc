@@ -81,7 +81,7 @@ struct Lyrics
     }
 
     /// Index of the line that is being sung at @p positionMs, or -1.
-    int lineAt(qint64 positionMs, int hint = -1) const;
+    int lineAt(qint64 positionMs) const;
 };
 
 /**

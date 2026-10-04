@@ -197,6 +197,8 @@ private Q_SLOTS:
     /// Whether the reported position differs from ours by more than a seek.
     bool positionJumped(qint64 reportedMs) const;
     void updateWord();
+    /// Drops the word highlight, with a signal only if there was one.
+    void clearWordHighlight();
 
 private:
     void startPolling();

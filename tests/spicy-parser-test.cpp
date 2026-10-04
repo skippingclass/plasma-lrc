@@ -13,6 +13,7 @@
 #include "trackname.h"
 
 #include <QCoreApplication>
+#include <QFile>
 
 #include <cstdio>
 
@@ -32,6 +33,45 @@ void check(const QString &what, bool ok, const QString &detail = QString())
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+
+    // With a file as an argument, the answer is run through the parser and
+    // printed, so a track that misbehaves can be looked at without a player:
+    //   spicy-parser-test answer.json
+    if (argc > 1) {
+        QFile file(QString::fromLocal8Bit(argv[1]));
+        if (!file.open(QIODevice::ReadOnly)) {
+            qWarning("не открывается: %s", argv[1]);
+            return 1;
+        }
+        Lyrics lyrics;
+        const bool parsed = SpicyLyrics::parse(file.readAll(), &lyrics, nullptr);
+        fprintf(stderr, "разобрано=%d строк=%lld годно=%d тип=%d\n", (int)parsed, (long long)lyrics.lines.size(),
+              (int)lyrics.isUsable(), (int)lyrics.type);
+        for (int i = 0; i < qMin(5, int(lyrics.lines.size())); ++i) {
+            const LyricLine &line = lyrics.lines.at(i);
+            fprintf(stderr, "строка %d: %lld..%lld «%s» слов=%d\n", i, (long long)line.startMs, (long long)line.endMs,
+                  qPrintable(line.text), (int)line.words.size());
+            for (const LyricWord &word : line.words) {
+                fprintf(stderr, "   [%d:%d] %lld..%lld «%s»\n", word.groupStart, word.groupEnd, (long long)word.startMs,
+                      (long long)word.endMs, qPrintable(line.text.mid(word.groupStart, word.groupEnd - word.groupStart)));
+            }
+        }
+        // Every word has to end up with bounds of its own: a word with an empty
+        // range is a word the panel can never light up.
+        int empty = 0;
+        int total = 0;
+        for (const LyricLine &line : lyrics.lines) {
+            for (const LyricWord &word : line.words) {
+                ++total;
+                if (word.groupEnd <= word.groupStart) {
+                    ++empty;
+                }
+            }
+        }
+        fprintf(stderr, "слов=%d с пустой группой=%d\n", total, empty);
+
+        return parsed && empty == 0 ? 0 : 2;
+    }
 
     // --- id трека из MPRIS ---
     check("mpris: /com/spotify/track/<id>", SpicyLyrics::trackIdFromMpris("/com/spotify/track/05NFt6hnomymkp09f4gGry") == "05NFt6hnomymkp09f4gGry");
@@ -335,6 +375,67 @@ int main(int argc, char **argv)
         check("разделение: чужой артист не трогаем",
               artist == QStringLiteral("Someone Else") && title == QStringLiteral("Jay-Z - Song"),
               artist + " / " + title);
+    }
+
+    // --- Последнее слово строки с висящим флагом продолжения ---
+    {
+        // A real answer from api.spicylyrics.org for OsamaSon - Baghdad, where
+        // every sixteenth line or so ends with a piece that carries
+        // IsPartOfWord although nothing follows it. The last word then used to
+        // keep empty bounds and could never be lit up.
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable","Content":[
+          {"Type":"Vocal","Lead":{"Syllables":[
+            {"Text":"Pour","StartTime":7.526,"EndTime":7.655},
+            {"Text":"more,","StartTime":7.655,"EndTime":7.854},
+            {"Text":"not","StartTime":7.854,"EndTime":8.071},
+            {"Text":"enough","StartTime":8.071,"EndTime":8.546,"IsPartOfWord":true}],
+            "StartTime":7.526,"EndTime":9.036}}]}})";
+        Lyrics lyrics;
+        check("висящий флаг: парсится", SpicyLyrics::parse(json, &lyrics, nullptr) && lyrics.lines.size() == 1);
+        const LyricLine line = lyrics.lines.first();
+        check("висящий флаг: текст строки", line.text == QStringLiteral("Pour more, not enough"), line.text);
+        check("висящий флаг: слов четыре", line.words.size() == 4, QString::number(line.words.size()));
+        check("висящий флаг: последнее слово не пустое",
+              line.words.last().groupEnd > line.words.last().groupStart,
+              QString::number(line.words.last().groupEnd - line.words.last().groupStart));
+        check("висящий флаг: границы последнего слова",
+              line.text.mid(line.words.last().groupStart, line.words.last().groupEnd - line.words.last().groupStart)
+                  == QStringLiteral("enough"),
+              line.text.mid(line.words.last().groupStart, line.words.last().groupEnd - line.words.last().groupStart));
+        check("висящий флаг: время последнего слова",
+              line.words.last().startMs == 8071 && line.words.last().endMs == 8546,
+              qPrintable(QStringLiteral("%1..%2").arg(line.words.last().startMs).arg(line.words.last().endMs)));
+    }
+
+    // --- Перемотка назад ---
+    {
+        // Three lines with a gap between the first and the second. A search that
+        // only looks forward from the line shown last time cannot come back, and
+        // the panel stayed on whatever it had.
+        Lyrics lyrics;
+        lyrics.lines = {
+            {QStringLiteral("one"), 1000, 2000, {}},
+            {QStringLiteral("two"), 4000, 5000, {}},
+            {QStringLiteral("three"), 6000, 7000, {}},
+        };
+        const auto indexAt = [&lyrics](qint64 ms) { return QString::number(lyrics.lineAt(ms)); };
+        check("перемотка назад: вперёд", lyrics.lineAt(6500) == 2, indexAt(6500));
+        check("перемотка назад: назад", lyrics.lineAt(1500) == 0, indexAt(1500));
+        check("перемотка назад: в самое начало", lyrics.lineAt(0) == -1, indexAt(0));
+        check("перемотка назад: в промежуток", lyrics.lineAt(3000) == -1, indexAt(3000));
+        check("перемотка назад: сильно назад", lyrics.lineAt(500) == -1, indexAt(500));
+
+        // A line that started earlier and is still running counts as sung, even
+        // though the newest line has already ended.
+        Lyrics longLine;
+        longLine.lines = {
+            {QStringLiteral("long"), 0, 10000, {}},
+            {QStringLiteral("short"), 1000, 2000, {}},
+        };
+        check("перемотка назад: длинная строка после короткой", longLine.lineAt(5000) == 0,
+              QString::number(longLine.lineAt(5000)));
+        check("перемотка назад: конец длинной строки", longLine.lineAt(10000) == -1,
+              QString::number(longLine.lineAt(10000)));
     }
 
     // --- Мусор ---
