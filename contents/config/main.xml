@@ -76,6 +76,13 @@
             <default></default>
         </entry>
 
+        <entry name="lyricOffset" type="Int">
+            <label>Shift the lyrics by this many milliseconds. Negative is earlier.</label>
+            <default>0</default>
+            <min>-2000</min>
+            <max>2000</max>
+        </entry>
+
         <entry name="compactPanel" type="Bool">
             <label>Compact mode: keep the panel to the lyrics alone and leave the credit to the popup.</label>
             <default>false</default>

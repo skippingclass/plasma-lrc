@@ -6,6 +6,8 @@
 
 #include "lrcapplet.h"
 
+#include "trackname.h"
+
 #include <KLocalizedString>
 #include <KPluginFactory>
 
@@ -228,8 +230,10 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_showTrackInfo(true)
     , m_compactPanel(false)
     , m_wordStyle(0)
+    , m_lyricOffset(0)
     , m_pauseWhenIdle(true)
     , m_useSpicy(true)
+    , m_trackLengthUs(0)
     , m_candidateIndex(0)
     , m_lastGoodCandidate(-1)
     , m_noLyricsCount(0)
@@ -248,6 +252,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_positionBaseMs(0)
     , m_positionValid(false)
     , m_lineIndex(-1)
+    , m_wordCursor(0)
 {
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
 
@@ -340,11 +345,18 @@ void LrcApplet::startPolling()
 
 void LrcApplet::refresh()
 {
+    // The API lyrics have to go as well: poll() returns early while they are
+    // usable, so the button would do nothing at all on a track that has them.
+    clearLyrics();
+    m_spotifyTrackId.clear();
     invalidatePlayerCandidates();
     unwatchPlayer();
     setText(QString());
     setActive(false);
     setTrackInfo(QString());
+    m_trackArtist.clear();
+    m_trackTitle.clear();
+    m_trackLengthUs = 0;
     setPlaying(false, false);
 
     if (m_started) {
@@ -406,6 +418,7 @@ void LrcApplet::readSettings()
     const bool showTrackInfo = boolSetting(QStringLiteral("showTrackInfo"), true);
     const bool compactPanel = boolSetting(QStringLiteral("compactPanel"), false);
     const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 0), 1);
+    const int lyricOffset = qBound(-2000, intSetting(QStringLiteral("lyricOffset"), 0), 2000);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), true);
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
@@ -420,6 +433,7 @@ void LrcApplet::readSettings()
         || showTrackInfo != m_showTrackInfo //
         || compactPanel != m_compactPanel //
         || wordStyle != m_wordStyle //
+        || lyricOffset != m_lyricOffset //
         || pauseWhenIdle != m_pauseWhenIdle //
         || useSpicy != m_useSpicy //
         || spicyKey != m_spicyKey;
@@ -434,6 +448,7 @@ void LrcApplet::readSettings()
     m_showTrackInfo = showTrackInfo;
     m_compactPanel = compactPanel;
     m_wordStyle = wordStyle;
+    m_lyricOffset = lyricOffset;
     m_pauseWhenIdle = pauseWhenIdle;
     m_useSpicy = useSpicy;
     m_spicyKey = spicyKey;
@@ -491,6 +506,11 @@ int LrcApplet::wordStyle() const
     return m_wordStyle;
 }
 
+int LrcApplet::lyricOffset() const
+{
+    return m_lyricOffset;
+}
+
 QString LrcApplet::attribution() const
 {
     return m_fromSpicy ? m_lyrics.attribution : QString();
@@ -543,6 +563,25 @@ void LrcApplet::poll()
         arguments << QStringLiteral("--timestamp");
     }
     arguments << QStringLiteral("--player") << player;
+
+    // Browsers, YouTube and yt-dlp hand out titles like "Song (Official Video)
+    // [4K]" or "Artist - Topic", and lrclib matches on words. Tell lrc_tty what to
+    // look for, but only when cleaning the title actually changed something: a
+    // title that needs nothing is better left to the player.
+    QString artist = m_trackArtist;
+    QString title = m_trackTitle;
+    splitTrackArtistAndTitle(&artist, &title);
+    const QString cleanedTitle = cleanTrackTitle(title);
+    const QString cleanedArtist = cleanTrackArtist(artist);
+    if (!cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
+        arguments << QStringLiteral("--artist") << cleanedArtist;
+        arguments << QStringLiteral("--title") << cleanedTitle;
+    }
+    if (m_trackLengthUs > 0) {
+        // With several versions of a track, the length is what tells them apart.
+        // MPRIS reports it in microseconds, lrc_tty wants whole seconds.
+        arguments << QStringLiteral("--duration") << QString::number(m_trackLengthUs / 1000000);
+    }
 
     m_watchdog.start(kWatchdogTimeoutMs);
     m_process->start(m_binaryPath, arguments);
@@ -695,6 +734,14 @@ void LrcApplet::setPlaying(bool playing, bool known)
         // Playback started (or was resumed): go pick up where we left off.
         poll();
     }
+
+    // The word timer exists to move the highlight, and nothing moves while the
+    // music is stopped: fifty wake-ups a second for a frozen word.
+    if (known && !playing) {
+        m_wordTimer.stop();
+    } else if (playing && m_lyrics.isUsable()) {
+        m_wordTimer.start();
+    }
 }
 
 void LrcApplet::setTrackInfo(const QString &trackInfo)
@@ -721,6 +768,7 @@ void LrcApplet::clearLyrics()
     m_positionValid = false;
     m_positionClock.invalidate();
     m_lineIndex = -1;
+    m_wordCursor = 0;
     m_wordTimer.stop();
     Q_EMIT wordChanged();
     Q_EMIT lyricsChanged();
@@ -882,9 +930,11 @@ void LrcApplet::updateWord()
         requestPosition();
     }
 
-    m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0);
+    // Some syncs simply run early or late, and no amount of clever reading will
+    // fix that; a setting does.
+    m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0) + m_lyricOffset;
 
-    const int lineIndex = m_lyrics.lineAt(m_positionMs);
+    const int lineIndex = m_lyrics.lineAt(m_positionMs, m_lineIndex);
     if (lineIndex < 0) {
         // Between lines nobody is singing; keep whatever was shown.
         return;
@@ -900,6 +950,7 @@ void LrcApplet::updateWord()
     // must not stay highlighted for a tick.
     if (lineIndex != m_lineIndex) {
         m_lineIndex = lineIndex;
+        m_wordCursor = 0;
         if (!m_word.isEmpty()) {
             m_word.clear();
             m_wordStart = 0;
@@ -928,9 +979,16 @@ void LrcApplet::updateWord()
     double progress = 0.0;
 
     const LyricWord *active = nullptr;
-    for (const LyricWord &word : line.words) {
+    const int wordCount = static_cast<int>(line.words.size());
+    // Playback moves forward, so the walk continues from last time; a seek that
+    // goes back simply starts over.
+    const int from = m_positionMs >= line.words.value(qBound(0, m_wordCursor, wordCount - 1)).startMs ? qBound(0, m_wordCursor, wordCount - 1) : 0;
+
+    for (int i = from; i < wordCount; ++i) {
+        const LyricWord &word = line.words.at(i);
         if (m_positionMs >= word.startMs && (m_positionMs < word.endMs || word.endMs <= word.startMs)) {
             active = &word;
+            m_wordCursor = i;
             break;
         }
     }
@@ -940,7 +998,8 @@ void LrcApplet::updateWord()
         // shorter than the tick and the word in between would never light up, so
         // the closest one within reach is used instead of dropping the highlight.
         qint64 closest = kWordSnapToleranceMs + 1;
-        for (const LyricWord &word : line.words) {
+        for (int i = from; i < wordCount; ++i) {
+            const LyricWord &word = line.words.at(i);
             const qint64 distance = m_positionMs < word.startMs ? word.startMs - m_positionMs
                                                                : (m_positionMs > word.endMs ? m_positionMs - word.endMs : 0);
             if (distance < closest) {
@@ -950,6 +1009,8 @@ void LrcApplet::updateWord()
         }
         if (closest > kWordSnapToleranceMs) {
             active = nullptr;
+        } else {
+            m_wordCursor = static_cast<int>(active - line.words.constData());
         }
     }
 
@@ -962,12 +1023,17 @@ void LrcApplet::updateWord()
         progress = qBound(0.0, progress, 1.0);
     }
 
-    if (currentWord != m_word || qAbs(progress - m_wordProgress) > 0.02) {
+    // Only a change of the word itself is worth a signal. Progress moves on every
+    // tick, and emitting that had the panel rebuilding its rich text fifty times a
+    // second for something nobody draws.
+    if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd) {
         m_word = currentWord;
         m_wordStart = currentStart;
         m_wordEnd = currentEnd;
         m_wordProgress = progress;
         Q_EMIT wordChanged();
+    } else {
+        m_wordProgress = progress;
     }
 }
 
@@ -1078,6 +1144,16 @@ void LrcApplet::probeCandidates()
     }
     if (m_candidates.isEmpty()) {
         return;
+    }
+
+    // Players that went away keep their score otherwise, and a name that comes
+    // back later would be ranked by a reading from a session that is long gone.
+    QStringList live = m_candidates;
+    const QStringList gone = m_playerScores.keys();
+    for (const QString &name : gone) {
+        if (!live.removeOne(name)) {
+            m_playerScores.remove(name);
+        }
     }
 
     for (const QString &player : std::as_const(m_candidates)) {
@@ -1231,6 +1307,9 @@ void LrcApplet::onServiceOwnerChanged(const QString &name, const QString &oldOwn
     setActive(false);
     setPlaying(false, false);
     setTrackInfo(QString());
+    m_trackArtist.clear();
+    m_trackTitle.clear();
+    m_trackLengthUs = 0;
     invalidatePlayerCandidates();
     unwatchPlayer();
     poll();
@@ -1306,6 +1385,12 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
         }
 
         setTrackInfo(trackInfo);
+
+        m_trackArtist = toStringList(metadata.value(QStringLiteral("xesam:artist"))).join(QStringLiteral(", "));
+        m_trackTitle = metadata.value(QStringLiteral("xesam:title")).toString();
+        // MPRIS reports mpris:length in microseconds.
+        m_trackLengthUs = metadata.value(QStringLiteral("mpris:length")).toLongLong();
+
         applyMetadata(metadata);
     }
 }

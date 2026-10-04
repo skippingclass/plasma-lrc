@@ -68,6 +68,8 @@ MissingReason reasonFromMarker(const QByteArray &payload)
         : MissingReason::Unsynced;
 }
 constexpr int kRequestTimeoutMs = 15000;
+// How many cache writes between sweeps for expired entries.
+constexpr int kPruneEveryWrites = 64;
 
 qint64 secondsToMs(const QJsonValue &value)
 {
@@ -273,7 +275,7 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 }
 }
 
-int Lyrics::lineAt(qint64 positionMs) const
+int Lyrics::lineAt(qint64 positionMs, int hint) const
 {
     // Lines are sorted by start time, and a good part of them overlap: the next
     // line often begins before the previous one ends, which is normal for words
@@ -281,8 +283,11 @@ int Lyrics::lineAt(qint64 positionMs) const
     // a line shows up when it begins instead of when the previous one lets go of
     // the screen. A gap between lines means nobody is singing, and the caller
     // keeps showing whatever it had.
+    //
+    // @p hint is the line shown last time. Playback moves forward, so the search
+    // starts there instead of at the beginning: this runs fifty times a second.
     int found = -1;
-    for (int i = 0; i < lines.size(); ++i) {
+    for (int i = qMax(0, qMin(hint, static_cast<int>(lines.size()) - 1)); i < lines.size(); ++i) {
         const LyricLine &line = lines.at(i);
         if (positionMs < line.startMs) {
             break;
@@ -434,6 +439,26 @@ void SpicyLyrics::write(const QString &trackId, const QByteArray &payload)
     QFile file(cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json"));
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(payload);
+    }
+
+    // Entries are only ever read, never deleted, so without this the cache grows
+    // for as long as the widget exists. Every so often, drop what has expired.
+    if (++m_writesSincePrune >= kPruneEveryWrites) {
+        m_writesSincePrune = 0;
+        pruneCache();
+    }
+}
+
+void SpicyLyrics::pruneCache()
+{
+    QDir directory(cacheDirectory());
+    const QDateTime now = QDateTime::currentDateTime();
+    const QFileInfoList entries = directory.entryInfoList({QStringLiteral("*.json")}, QDir::Files);
+    for (const QFileInfo &entry : entries) {
+        const QDateTime modified = entry.lastModified();
+        if (!modified.isValid() || modified.msecsTo(now) > kCacheTtlMs) {
+            QFile::remove(entry.absoluteFilePath());
+        }
     }
 }
 

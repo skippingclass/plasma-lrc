@@ -20,6 +20,7 @@ KCM.SimpleKCM {
     property alias cfg_binaryPath: binaryPathField.text
     property alias cfg_player: playerField.text
     property alias cfg_ignoredPlayers: ignoredField.text
+    property alias cfg_lyricOffset: offsetField.value
     property alias cfg_pollInterval: pollIntervalField.value
     property alias cfg_showTimestamp: showTimestampCheckBox.checked
     property alias cfg_pauseWhenIdle: pauseWhenIdleCheckBox.checked
@@ -55,6 +56,31 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("MPRIS player:")
             placeholderText: i18n("auto-detect")
             Layout.fillWidth: true
+        }
+
+        QQC2.SpinBox {
+            id: offsetField
+
+            Kirigami.FormData.label: i18n("Lyric offset:")
+            from: -2000
+            to: 2000
+            stepSize: 50
+            textFromValue: function (value) {
+                return value > 0 ? "+" + value + " ms" : value + " ms";
+            }
+            valueFromText: function (text) {
+                return parseInt(text);
+            }
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            visible: offsetField.value !== 0
+            text: i18n("Negative shifts the lyrics earlier. Only needed when a sync is consistently ahead of or behind the music; the word highlight follows the same shift.")
         }
 
         QQC2.TextField {

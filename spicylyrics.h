@@ -81,7 +81,7 @@ struct Lyrics
     }
 
     /// Index of the line that is being sung at @p positionMs, or -1.
-    int lineAt(qint64 positionMs) const;
+    int lineAt(qint64 positionMs, int hint = -1) const;
 };
 
 /**
@@ -138,12 +138,15 @@ private:
     void load(const QString &trackId);
     /// Writes the cache entry for a track: a response, or a marker.
     void write(const QString &trackId, const QByteArray &payload);
+    /// Deletes cache entries that are past their time to live.
+    void pruneCache();
     void fetch(const QString &trackId);
     void emitMissing(const QString &trackId, MissingReason reason);
 
     QNetworkAccessManager m_network;
     QHash<QString, Lyrics> m_memoryCache;
     QTimer *m_watchdog;
+    int m_writesSincePrune = 0;
     QString m_key;
     bool m_enabled = false;
 };

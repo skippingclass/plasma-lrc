@@ -45,7 +45,9 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QString word READ word NOTIFY wordChanged)
     Q_PROPERTY(int wordStart READ wordStart NOTIFY wordChanged)
     Q_PROPERTY(int wordEnd READ wordEnd NOTIFY wordChanged)
-    Q_PROPERTY(double wordProgress READ wordProgress NOTIFY wordChanged)
+    // Progress inside the word being sung. No QML draws it, so it must not drag a
+    // signal behind it: a binding reads it when it wants it.
+    Q_PROPERTY(double wordProgress READ wordProgress)
     Q_PROPERTY(bool wordSynced READ isWordSynced NOTIFY lyricsChanged)
 
     // Who the lyrics came from, required to be shown when the API is used
@@ -74,6 +76,8 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(bool compactPanel READ compactPanel NOTIFY settingsChanged)
     /// 0 marks the current word with an underline, 1 with bold.
     Q_PROPERTY(int wordStyle READ wordStyle NOTIFY settingsChanged)
+    /// Milliseconds the lyrics are shifted by, for syncs that run early or late.
+    Q_PROPERTY(int lyricOffset READ lyricOffset NOTIFY settingsChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -165,6 +169,7 @@ public:
     /// Whether the panel is left to the lyrics alone.
     bool compactPanel() const;
     int wordStyle() const;
+    int lyricOffset() const;
 
 Q_SIGNALS:
     void textChanged();
@@ -254,6 +259,11 @@ private:
     QString m_error;
     QString m_player;
     QString m_trackInfo;
+    // Raw artist and title as the player reports them, used to build the lookup.
+    QString m_trackArtist;
+    QString m_trackTitle;
+    /// Track length as MPRIS reports it: microseconds.
+    qint64 m_trackLengthUs;
     QString m_watchedService;
     QDBusPendingCallWatcher *m_propertyWatcher;
     QDBusPendingCallWatcher *m_namesWatcher;
@@ -269,6 +279,7 @@ private:
     bool m_showTrackInfo;
     bool m_compactPanel;
     int m_wordStyle;
+    int m_lyricOffset;
     bool m_pauseWhenIdle;
 
     QString m_spicyKey;
@@ -311,4 +322,6 @@ private:
     QElapsedTimer m_positionChecks;
     bool m_positionValid;
     int m_lineIndex;
+    /// Where the word search starts inside the current line.
+    int m_wordCursor;
 };

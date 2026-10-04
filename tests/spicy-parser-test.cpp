@@ -10,6 +10,7 @@
  */
 
 #include "spicylyrics.h"
+#include "trackname.h"
 
 #include <QCoreApplication>
 
@@ -261,6 +262,79 @@ int main(int argc, char **argv)
         check("промежуток: в промежутке пусто", lyrics.lineAt(4500) == -1, QString::number(lyrics.lineAt(4500)));
         check("промежуток: до него первая", lyrics.lineAt(2000) == 0, QString::number(lyrics.lineAt(2000)));
         check("промежуток: после него вторая", lyrics.lineAt(7000) == 1, QString::number(lyrics.lineAt(7000)));
+    }
+
+
+    // --- Названия из браузера, YouTube и yt-dlp ---
+    {
+        // Real cases that lrclib does not match without cleaning.
+        check("шум в скобках: (Official Video)",
+              cleanTrackTitle(QStringLiteral("deaf note (Official Video)")) == QStringLiteral("deaf note"),
+              cleanTrackTitle(QStringLiteral("deaf note (Official Video)")));
+        check("шум в скобках: [4K] и хвост",
+              cleanTrackTitle(QStringLiteral("deaf note [4K]")) == QStringLiteral("deaf note"),
+              cleanTrackTitle(QStringLiteral("deaf note [4K]")));
+        check("шум: глава после палки",
+              cleanTrackTitle(QStringLiteral("Song | Lyrics video")) == QStringLiteral("Song"),
+              cleanTrackTitle(QStringLiteral("Song | Lyrics video")));
+        check("шум: feat в скобках",
+              cleanTrackTitle(QStringLiteral("Song (feat. Someone)")) == QStringLiteral("Song"),
+              cleanTrackTitle(QStringLiteral("Song (feat. Someone)")));
+        check("шум: feat без скобок",
+              cleanTrackTitle(QStringLiteral("Song feat. Someone")) == QStringLiteral("Song"),
+              cleanTrackTitle(QStringLiteral("Song feat. Someone")));
+        check("шум: висячее тире после скобок",
+              cleanTrackTitle(QStringLiteral("Song (Official Video) -")) == QStringLiteral("Song"),
+              cleanTrackTitle(QStringLiteral("Song (Official Video) -")));
+        check("шум: всё вместе",
+              cleanTrackTitle(QStringLiteral("Ken Carson - deaf note (with Playboi Carti) [Official Video] [4K] | Lyrics video"))
+                  == QStringLiteral("Ken Carson - deaf note (with Playboi Carti)"),
+              cleanTrackTitle(QStringLiteral("Ken Carson - deaf note (with Playboi Carti) [Official Video] [4K] | Lyrics video")));
+        check("чистое название не трогаем",
+              cleanTrackTitle(QStringLiteral("Breathe")) == QStringLiteral("Breathe"));
+        check("исполнитель: - Topic",
+              cleanTrackArtist(QStringLiteral("Artist - Topic")) == QStringLiteral("Artist"),
+              cleanTrackArtist(QStringLiteral("Artist - Topic")));
+        check("исполнитель: VEVO",
+              cleanTrackArtist(QStringLiteral("ArtistVEVO")) == QStringLiteral("Artist"),
+              cleanTrackArtist(QStringLiteral("ArtistVEVO")));
+        check("исполнитель: feat",
+              cleanTrackArtist(QStringLiteral("Artist feat. Someone")) == QStringLiteral("Artist"),
+              cleanTrackArtist(QStringLiteral("Artist feat. Someone")));
+        check("исполнитель: два исполнителя не трогаем",
+              cleanTrackArtist(QStringLiteral("Artist, Someone Else")) == QStringLiteral("Artist, Someone Else"));
+        check("исполнитель: чистый не трогаем",
+              cleanTrackArtist(QStringLiteral("Ken Carson")) == QStringLiteral("Ken Carson"));
+
+        // A channel name that has nothing to do with the artist is left alone:
+        // "Love - Hate" by Drake must not become artist "Love".
+        QString artist = QStringLiteral("Some Channel");
+        QString title = QStringLiteral("Ken Carson - deaf note");
+        splitTrackArtistAndTitle(&artist, &title);
+        check("разделение: чужой артист не делим",
+              artist == QStringLiteral("Some Channel") && title == QStringLiteral("Ken Carson - deaf note"),
+              artist + " / " + title);
+
+        artist = QString();
+        title = QStringLiteral("Ken Carson - deaf note");
+        splitTrackArtistAndTitle(&artist, &title);
+        check("разделение: пустой артист",
+              artist == QStringLiteral("Ken Carson") && title == QStringLiteral("deaf note"),
+              artist + " / " + title);
+
+        artist = QStringLiteral("Ken Carson");
+        title = QStringLiteral("Ken Carson - deaf note");
+        splitTrackArtistAndTitle(&artist, &title);
+        check("разделение: артист совпал",
+              artist == QStringLiteral("Ken Carson") && title == QStringLiteral("deaf note"),
+              artist + " / " + title);
+
+        artist = QStringLiteral("Someone Else");
+        title = QStringLiteral("Jay-Z - Song");
+        splitTrackArtistAndTitle(&artist, &title);
+        check("разделение: чужой артист не трогаем",
+              artist == QStringLiteral("Someone Else") && title == QStringLiteral("Jay-Z - Song"),
+              artist + " / " + title);
     }
 
     // --- Мусор ---
