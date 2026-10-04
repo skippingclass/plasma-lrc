@@ -212,6 +212,13 @@ private:
     void requestSpicyLyrics();
     void clearLyrics();
 
+    /// Asks every candidate what it is playing, and reorders them by how much
+    /// that looks like music.
+    void probeCandidates();
+    void sortCandidatesByScore();
+    /// Player names the user does not want to hear from.
+    QStringList ignoredPlayers() const;
+
     /// Players to ask, in order of preference.
     QStringList playerCandidates();
     void refreshPlayerCandidates();
@@ -261,6 +268,10 @@ private:
     bool m_useSpicy;
 
     QStringList m_candidates;
+    /// How much each player looks like a music player, see musicScore().
+    QHash<QString, int> m_playerScores;
+    /// Pending GetAll calls of probeCandidates().
+    QList<QDBusPendingCallWatcher *> m_probeWatchers;
     QElapsedTimer m_candidatesTimer;
 
     int m_candidateIndex;

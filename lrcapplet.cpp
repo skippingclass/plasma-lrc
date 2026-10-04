@@ -33,6 +33,12 @@ constexpr int kNoLyricsBeforeSwitchingPlayer = 3;
 // Enumerating bus names is a round trip to the bus, so don't do it on every
 // tick: this is also how quickly we notice a player that just started.
 constexpr int kPlayerListCacheMs = 5000;
+// Probing every player should not block the widget if one of them hangs.
+constexpr int kProbeTimeoutMs = 2000;
+// How often the bus is asked again who is playing, even when a player is found.
+constexpr int kPlayerRerankMs = 30000;
+// How much better another player has to look before playback is switched over.
+constexpr int kPlayerSwitchMargin = 5;
 // Generous upper bound for a local MPRIS property fetch.
 constexpr int kDBusCallTimeoutMs = 5000;
 
@@ -143,6 +149,56 @@ QStringList mprisPlayersFromServiceNames(const QStringList &services)
 
     sortByPreference(players);
     return players;
+}
+
+/**
+ * How much this player looks like it is playing music rather than something
+ * that merely implements MPRIS.
+ *
+ * Plenty of applications implement org.mpris.MediaPlayer2.Player for things
+ * that are not tracks: Telegram Desktop reports an unviewed voice message in a
+ * minimised window as "Playing", and the system then hands it out as the main
+ * media player. What tells a real player apart is the metadata a track has and a
+ * voice message does not: a length, an album, a track number, cover art.
+ */
+int musicScore(const QVariantMap &properties)
+{
+    const QVariantMap metadata = toVariantMap(properties.value(QStringLiteral("Metadata")));
+
+    int score = 0;
+    const QString status = properties.value(QStringLiteral("PlaybackStatus")).toString();
+    // Playing counts for more than paused: a paused music player still describes
+    // the track better than a "playing" voice message does.
+    if (status == QLatin1String("Playing")) {
+        score += 6;
+    } else if (status == QLatin1String("Paused")) {
+        score += 2;
+    }
+
+    if (metadata.value(QStringLiteral("mpris:length")).toLongLong() > 0) {
+        score += 2;
+    }
+    if (!metadata.value(QStringLiteral("xesam:album")).toString().isEmpty()) {
+        score += 2;
+    }
+    if (!metadata.value(QStringLiteral("mpris:artUrl")).toString().isEmpty()) {
+        score += 1;
+    }
+    if (!metadata.value(QStringLiteral("xesam:trackNumber")).isNull()) {
+        score += 1;
+    }
+    if (!toStringList(metadata.value(QStringLiteral("xesam:artist"))).isEmpty()) {
+        score += 1;
+    }
+
+    // The convention for "this is not a track" that Telegram Desktop and a few
+    // others use. Their titles are not lyrics either, so they go to the back
+    // rather than merely losing points.
+    if (metadata.value(QStringLiteral("mpris:trackid")).toString().startsWith(QLatin1String("/org/desktop_app/"))) {
+        score -= 10;
+    }
+
+    return score;
 }
 }
 
@@ -453,6 +509,13 @@ void LrcApplet::poll()
             refreshPlayerCandidates();
         }
         return;
+    }
+
+    // Even with players known, the bus is asked again now and then: a music
+    // player can appear long after we settled for something else, and whoever
+    // looked like music last time may not be playing any more.
+    if (!m_candidatesTimer.isValid() || m_candidatesTimer.elapsed() > kPlayerRerankMs) {
+        refreshPlayerCandidates();
     }
 
     const QString player = candidates.at(qBound(0, m_candidateIndex, candidates.size() - 1));
@@ -833,6 +896,19 @@ void LrcApplet::invalidatePlayerCandidates()
     m_namesWatcher = nullptr;
 }
 
+QStringList LrcApplet::ignoredPlayers() const
+{
+    QStringList ignored;
+    const QString raw = setting(QStringLiteral("ignoredPlayers"));
+    for (const QString &name : raw.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QString trimmed = name.trimmed();
+        if (!trimmed.isEmpty()) {
+            ignored.append(trimmed);
+        }
+    }
+    return ignored;
+}
+
 QStringList LrcApplet::playerCandidates()
 {
     if (!m_configuredPlayer.isEmpty()) {
@@ -880,11 +956,85 @@ void LrcApplet::onPlayerListFetched()
     m_candidates = mprisPlayersFromServiceNames(reply.value());
     m_candidatesTimer.start();
 
+    // Ask everyone what they are playing before picking one: the name alone says
+    // nothing about whether this is a music player.
+    probeCandidates();
+
     // Nothing is being watched at the moment, so this may be a good moment to
     // start paying attention to a player.
     if (m_watchedService.isEmpty() && m_player.isEmpty()) {
         poll();
     }
+}
+
+void LrcApplet::probeCandidates()
+{
+    qDeleteAll(m_probeWatchers);
+    m_probeWatchers.clear();
+
+    // Whatever the user named is gone before anybody is asked, so that the
+    // rotation cannot land on it either.
+    const QStringList ignored = ignoredPlayers();
+    if (!ignored.isEmpty()) {
+        m_candidates.removeIf([&ignored](const QString &player) {
+            return ignored.contains(player, Qt::CaseInsensitive);
+        });
+    }
+    if (m_candidates.isEmpty()) {
+        return;
+    }
+
+    for (const QString &player : std::as_const(m_candidates)) {
+        QDBusMessage message =
+            QDBusMessage::createMethodCall(s_mprisPrefix + player, s_playerPath, s_propertiesInterface, QStringLiteral("GetAll"));
+        message << s_playerInterface;
+
+        auto *watcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(message, kProbeTimeoutMs), this);
+        m_probeWatchers.append(watcher);
+
+        connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher, player] {
+            const QDBusPendingReply<QVariantMap> reply = *watcher;
+            m_probeWatchers.removeAll(watcher);
+            watcher->deleteLater();
+
+            if (reply.isError()) {
+                // A player that does not answer is no help, and an old score for
+                // it would be worse than none.
+                m_playerScores.remove(player);
+            } else {
+                m_playerScores.insert(player, musicScore(reply.value()));
+            }
+
+            if (!m_probeWatchers.isEmpty()) {
+                return;
+            }
+            sortCandidatesByScore();
+        });
+    }
+}
+
+void LrcApplet::sortCandidatesByScore()
+{
+    // A stable sort keeps the name-based preference as the tie breaker.
+    std::stable_sort(m_candidates.begin(), m_candidates.end(), [this](const QString &lhs, const QString &rhs) {
+        return m_playerScores.value(lhs, 0) > m_playerScores.value(rhs, 0);
+    });
+
+    // Where in the list to continue. A player that is giving us lyrics is left
+    // alone unless something else is much more likely to be the music; a player
+    // that gives nothing has nothing to lose, so the best one is taken right
+    // away.
+    const int currentIndex = m_candidates.indexOf(m_player);
+    if (currentIndex < 0) {
+        m_candidateIndex = 0;
+    } else if (m_text.isEmpty() || m_playerScores.value(m_candidates.first(), 0) > m_playerScores.value(m_player, 0) + kPlayerSwitchMargin) {
+        m_candidateIndex = 0;
+    } else {
+        m_candidateIndex = currentIndex;
+    }
+
+    m_lastGoodCandidate = -1;
+    m_noLyricsCount = 0;
 }
 
 void LrcApplet::unwatchPlayer()
@@ -944,12 +1094,23 @@ void LrcApplet::onPlayerPropertiesChanged(const QString &interfaceName, const QV
 
 void LrcApplet::onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner)
 {
+    Q_UNUSED(oldOwner);
     // The player we were watching is gone: stop trusting its state and start
-    // over with the remaining players.
-    if (m_watchedService.isEmpty() || name != m_watchedService || newOwner.isEmpty() || oldOwner != name) {
+    // over with the remaining players. NameOwnerChanged reports the well-known
+    // name in `name` and the unique one (":1.42") in `oldOwner`, so only the
+    // first and the empty newOwner can be compared here.
+    if (m_watchedService.isEmpty() || name != m_watchedService || !newOwner.isEmpty()) {
         return;
     }
 
+    // Everything we know belonged to that process. The lyrics have to go too:
+    // poll() returns early while the API lyrics are usable, so keeping them
+    // would freeze the last line on screen and stop the rotation to whatever
+    // player is left.
+    clearLyrics();
+    m_spotifyTrackId.clear();
+    setText(QString());
+    setActive(false);
     setPlaying(false, false);
     setTrackInfo(QString());
     invalidatePlayerCandidates();

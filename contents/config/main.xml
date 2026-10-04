@@ -29,6 +29,11 @@
             <default></default>
         </entry>
 
+        <entry name="ignoredPlayers" type="String">
+            <label>MPRIS players to never query, separated by commas.</label>
+            <default></default>
+        </entry>
+
         <entry name="showTimestamp" type="Bool">
             <label>Prefix every line with its timestamp.</label>
             <default>false</default>

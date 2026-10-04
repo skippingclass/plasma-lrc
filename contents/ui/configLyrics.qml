@@ -19,6 +19,7 @@ KCM.SimpleKCM {
 
     property alias cfg_binaryPath: binaryPathField.text
     property alias cfg_player: playerField.text
+    property alias cfg_ignoredPlayers: ignoredField.text
     property alias cfg_pollInterval: pollIntervalField.value
     property alias cfg_showTimestamp: showTimestampCheckBox.checked
     property alias cfg_pauseWhenIdle: pauseWhenIdleCheckBox.checked
@@ -54,6 +55,24 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("MPRIS player:")
             placeholderText: i18n("auto-detect")
             Layout.fillWidth: true
+        }
+
+        QQC2.TextField {
+            id: ignoredField
+
+            Kirigami.FormData.label: i18n("Never ask:")
+            placeholderText: i18n("TelegramDesktop, chromium.instance1234")
+            Layout.fillWidth: true
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            visible: ignoredField.text.length > 0
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Applications that implement MPRIS for things that are not tracks — a chat client reporting a voice message, for example — are recognised by their metadata and skipped on their own. This field is for the rest.")
         }
 
         QQC2.Label {
