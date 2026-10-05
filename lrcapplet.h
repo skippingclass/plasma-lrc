@@ -60,6 +60,8 @@ class LrcApplet : public Plasma::Applet
     // instead of blaming the API for a track it simply does not have.
     Q_PROPERTY(bool apiHasNoTimings READ apiHasNoTimings NOTIFY lyricsChanged)
     Q_PROPERTY(bool apiUnreachable READ apiUnreachable NOTIFY lyricsChanged)
+    /// True when the track has no Spotify id, so the API was never asked about it.
+    Q_PROPERTY(bool apiHasNoTrackId READ apiHasNoTrackId NOTIFY lyricsChanged)
 
     // Player information coming from MPRIS
     Q_PROPERTY(QString player READ player NOTIFY playerChanged)
@@ -135,6 +137,13 @@ public:
         return m_missingReason == MissingReason::Unsynced;
     }
     /// No answer at all: no network, key rejected, rate limited.
+    /// No Spotify track id means the API was never asked, which is a different
+    /// thing from it having answered that it does not know the track.
+    bool apiHasNoTrackId() const
+    {
+        return m_spotifyTrackId.isEmpty();
+    }
+
     bool apiUnreachable() const
     {
         return m_missingReason == MissingReason::Unreachable;
@@ -307,6 +316,8 @@ private:
 
     /// Whether anyone on the bus has been asked what it is playing yet.
     bool m_probed;
+    /// Whether the properties of the player just picked are still on their way.
+    bool m_awaitingState;
     int m_candidateIndex;
     int m_lastGoodCandidate;
     int m_noLyricsCount;

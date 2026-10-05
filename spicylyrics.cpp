@@ -379,12 +379,12 @@ QString SpicyLyrics::cacheDirectory()
     return QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/plasma-lrc/spicy");
 }
 
-QString SpicyLyrics::trackIdFromMpris(const QVariant &mprisTrackId)
+QString SpicyLyrics::trackIdFromMpris(const QString &trackId)
 {
-    const QString value = mprisTrackId.toString();
-    if (value.isEmpty()) {
+    if (trackId.isEmpty()) {
         return QString();
     }
+    const QString &value = trackId;
 
     // "/com/spotify/track/<id>" or "spotify:track:<id>" or just "<id>".
     static const QRegularExpression re(QStringLiteral("([A-Za-z0-9]{22})(?:$|[/?#])"));

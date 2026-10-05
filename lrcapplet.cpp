@@ -6,6 +6,7 @@
 
 #include "lrcapplet.h"
 
+#include "playermeta.h"
 #include "trackname.h"
 
 #include <KLocalizedString>
@@ -174,55 +175,6 @@ QStringList mprisPlayersFromServiceNames(const QStringList &services)
     return players;
 }
 
-/**
- * How much this player looks like it is playing music rather than something
- * that merely implements MPRIS.
- *
- * Plenty of applications implement org.mpris.MediaPlayer2.Player for things
- * that are not tracks: Telegram Desktop reports an unviewed voice message in a
- * minimised window as "Playing", and the system then hands it out as the main
- * media player. What tells a real player apart is the metadata a track has and a
- * voice message does not: a length, an album, a track number, cover art.
- */
-int musicScore(const QVariantMap &properties)
-{
-    const QVariantMap metadata = toVariantMap(properties.value(QStringLiteral("Metadata")));
-
-    int score = 0;
-    const QString status = properties.value(QStringLiteral("PlaybackStatus")).toString();
-    // Playing counts for more than paused: a paused music player still describes
-    // the track better than a "playing" voice message does.
-    if (status == QLatin1String("Playing")) {
-        score += 6;
-    } else if (status == QLatin1String("Paused")) {
-        score += 2;
-    }
-
-    if (metadata.value(QStringLiteral("mpris:length")).toLongLong() > 0) {
-        score += 2;
-    }
-    if (!metadata.value(QStringLiteral("xesam:album")).toString().isEmpty()) {
-        score += 2;
-    }
-    if (!metadata.value(QStringLiteral("mpris:artUrl")).toString().isEmpty()) {
-        score += 1;
-    }
-    if (!metadata.value(QStringLiteral("xesam:trackNumber")).isNull()) {
-        score += 1;
-    }
-    if (!toStringList(metadata.value(QStringLiteral("xesam:artist"))).isEmpty()) {
-        score += 1;
-    }
-
-    // The convention for "this is not a track" that Telegram Desktop and a few
-    // others use. Their titles are not lyrics either, so they go to the back
-    // rather than merely losing points.
-    if (metadata.value(QStringLiteral("mpris:trackid")).toString().startsWith(QLatin1String("/org/desktop_app/"))) {
-        score -= 10;
-    }
-
-    return score;
-}
 }
 
 LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args)
@@ -244,6 +196,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_useSpicy(true)
     , m_trackLengthUs(0)
     , m_probed(false)
+    , m_awaitingState(false)
     , m_candidateIndex(0)
     , m_lastGoodCandidate(-1)
     , m_noLyricsCount(0)
@@ -563,6 +516,13 @@ void LrcApplet::poll()
         return;
     }
 
+    // The player was just picked and its properties have not come back, so whether
+    // it plays anything is not known yet. Asking now means asking a player that may
+    // well be idle, and the pause guard cannot see that.
+    if (m_awaitingState) {
+        return;
+    }
+
     const QString player = candidates.at(qBound(0, m_candidateIndex, int(candidates.size()) - 1));
     if (!m_configuredPlayer.isEmpty() && !m_busPlayers.contains(player)) {
         // The widget is locked to a player that is not running. Launching lrc_tty
@@ -573,6 +533,11 @@ void LrcApplet::poll()
         setPlayer(player);
         unwatchPlayer();
         watchPlayer();
+        // Nothing is asked this time round: what this player is doing is not known
+        // yet, and asking anyway puts a line from a player that is not playing
+        // anything on the panel. Watching it leads to a poll of its own as soon as
+        // its properties say it is playing.
+        return;
     }
 
     QStringList arguments;
@@ -824,12 +789,15 @@ void LrcApplet::clearDisplay()
 
 void LrcApplet::applyMetadata(const QVariantMap &metadata)
 {
-    const QString trackId = SpicyLyrics::trackIdFromMpris(metadata.value(QStringLiteral("mpris:trackid")));
+    const QString trackId = SpicyLyrics::trackIdFromMpris(mprisTrackId(metadata.value(QStringLiteral("mpris:trackid"))));
     if (trackId == m_spotifyTrackId) {
         return;
     }
 
+    // Set before clearing: clearLyrics() notifies, and the UI has to read the new
+    // id, not the one of the track that just ended.
     m_spotifyTrackId = trackId;
+
     // The last line of the track before stays on screen until the new track
     // reaches its first line, which is seconds of someone else's words over the
     // new song. An empty panel for a moment reads better than the wrong line.
@@ -1287,8 +1255,19 @@ void LrcApplet::probeCandidates()
 
 void LrcApplet::sortCandidatesByScore()
 {
-    // A stable sort keeps the name-based preference as the tie breaker.
-    std::stable_sort(m_candidates.begin(), m_candidates.end(), [this](const QString &lhs, const QString &rhs) {
+    // Playing first, score second, and a stable sort so that the name-based
+    // preference settles what is left. A paused player describes a track better
+    // than a web page does and still loses: what is on the panel should be what is
+    // playing, and a Spotify paused in the middle of a song is not it.
+    const auto playing = [this](const QString &name) {
+        // The watched player is asked directly and knows right now; the others know
+        // what the last sweep read.
+        return name == m_player ? (m_playingKnown && m_playing) : m_playerPlaying.value(name, false);
+    };
+    std::stable_sort(m_candidates.begin(), m_candidates.end(), [this, &playing](const QString &lhs, const QString &rhs) {
+        if (playing(lhs) != playing(rhs)) {
+            return playing(lhs);
+        }
         return m_playerScores.value(lhs, 0) > m_playerScores.value(rhs, 0);
     });
 
@@ -1355,6 +1334,8 @@ void LrcApplet::unwatchPlayer()
         return;
     }
 
+    m_awaitingState = false;
+
     QDBusConnection bus = QDBusConnection::sessionBus();
     bus.disconnect(m_watchedService,
                    s_playerPath,
@@ -1381,13 +1362,15 @@ void LrcApplet::watchPlayer()
 
     m_watchedService = s_mprisPrefix + m_player;
 
-    // Whatever the previous player told us is not this one's. Until its properties
-    // come back the track is unknown, and a lookup made with the previous track's
-    // name and length is worse than one without them.
-    m_trackArtist.clear();
-    m_trackTitle.clear();
-    m_trackLengthUs = 0;
-    setTrackInfo(QString());
+    // Whatever the previous player told us is not this one's: not its track, not
+    // its length, and not the line on the panel. Leaving that last one is what put
+    // the words of one player under the name of another in the tooltip — and since
+    // a player nobody is listening to is not polled, that line could stay there for
+    // good. Until the new player's properties arrive there is nothing to show, and
+    // an empty panel says so honestly.
+    clearDisplay();
+
+    m_awaitingState = true;
 
     QDBusConnection bus = QDBusConnection::sessionBus();
     bus.connect(m_watchedService,
@@ -1467,7 +1450,10 @@ void LrcApplet::onPlayerPropertiesFetched()
     m_propertyWatcher = nullptr;
     watcher->deleteLater();
 
+    m_awaitingState = false;
     if (reply.isError()) {
+        // Nobody answered, so nothing is known about this player beyond its name.
+        // Letting the polling go on is better than staying silent forever.
         return;
     }
 
@@ -1476,6 +1462,8 @@ void LrcApplet::onPlayerPropertiesFetched()
 
 void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStringList &invalidated)
 {
+    m_awaitingState = false;
+
     if (invalidated.contains(QStringLiteral("PlaybackStatus"))) {
         // The player no longer knows its own status: poll blindly.
         setPlaying(false, false);
@@ -1508,8 +1496,7 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
     if (metadataIt != properties.constEnd()) {
         const QVariantMap metadata = toVariantMap(metadataIt.value());
 
-        QStringList artists = toStringList(metadata.value(QStringLiteral("xesam:artist")));
-        artists.removeAll(QString());
+        const QStringList artists = trackArtists(metadata.value(QStringLiteral("xesam:artist")));
         const QString title = metadata.value(QStringLiteral("xesam:title")).toString();
 
         QString trackInfo;

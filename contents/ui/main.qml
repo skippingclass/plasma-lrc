@@ -100,6 +100,9 @@ PlasmoidItem {
         if (!Plasmoid.spicyConfigured) {
             return i18n("via %1 — Spicy Lyrics is off or has no key", sourceName);
         }
+        if (Plasmoid.apiHasNoTrackId) {
+            return i18n("via %1 — this player gives no Spotify track, so the API was not asked", sourceName);
+        }
         if (Plasmoid.apiHasNoTimings) {
             return i18n("via %1 — the API has this track, but not in sync", sourceName);
         }

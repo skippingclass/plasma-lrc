@@ -120,7 +120,8 @@ public:
      * The desktop client reports "/com/spotify/track/<id>", other players and
      * the web player report "spotify:track:<id>".
      */
-    static QString trackIdFromMpris(const QVariant &mprisTrackId);
+    /// Takes the mpris:trackid as text: the caller has to unwrap the object path first.
+    static QString trackIdFromMpris(const QString &trackId);
 
     /// Parses an API response. Exposed for testing.
     static bool parse(const QByteArray &json, Lyrics *lyrics, QString *error);

@@ -10,9 +10,11 @@
  */
 
 #include "spicylyrics.h"
+#include "playermeta.h"
 #include "trackname.h"
 
 #include <QCoreApplication>
+#include <QDBusObjectPath>
 #include <QFile>
 
 #include <cstdio>
@@ -436,6 +438,88 @@ int main(int argc, char **argv)
               QString::number(longLine.lineAt(5000)));
         check("перемотка назад: конец длинной строки", longLine.lineAt(10000) == -1,
               QString::number(longLine.lineAt(10000)));
+    }
+
+    // --- mpris:trackid, который приходит object path ---
+    {
+        // MPRIS says mpris:trackid is an object path. Qt hands that over as a
+        // QDBusObjectPath, and QVariant::toString() on one answers with nothing:
+        // every rule about track ids, and the Spotify lookup, were reading an empty
+        // string for every player that follows the spec on this point.
+        QVariant pathValue = QVariant::fromValue(QDBusObjectPath(QStringLiteral("/org/chromium/MediaPlayer2/TrackList/TrackD317C300")));
+        check("object path: читается как текст",
+              mprisTrackId(pathValue) == QStringLiteral("/org/chromium/MediaPlayer2/TrackList/TrackD317C300"),
+              mprisTrackId(pathValue));
+        check("object path: обычная строка не ломается",
+              mprisTrackId(QStringLiteral("/com/spotify/track/3lCG3tM6k7DtPr2Pjg99C6"))
+                  == QStringLiteral("/com/spotify/track/3lCG3tM6k7DtPr2Pjg99C6"));
+        check("object path: Spotify id из object path",
+              SpicyLyrics::trackIdFromMpris(mprisTrackId(pathValue)).isEmpty());
+
+        QVariant spotifyPath = QVariant::fromValue(QDBusObjectPath(QStringLiteral("/com/spotify/track/3lCG3tM6k7DtPr2Pjg99C6")));
+        check("object path: Spotify id извлекается",
+              SpicyLyrics::trackIdFromMpris(mprisTrackId(spotifyPath)) == QStringLiteral("3lCG3tM6k7DtPr2Pjg99C6"),
+              SpicyLyrics::trackIdFromMpris(mprisTrackId(spotifyPath)));
+        check("object path: пусто остаётся пустым", mprisTrackId(QVariant()).isEmpty());
+    }
+
+    // --- Кто выглядит как музыка ---
+    {
+        // A real Spotify track, as Properties.GetAll reports it.
+        QVariantMap track;
+        track.insert(QStringLiteral("PlaybackStatus"), QStringLiteral("Playing"));
+        QVariantMap metadata;
+        metadata.insert(QStringLiteral("mpris:trackid"), QStringLiteral("/com/spotify/track/3lCG3tM6k7DtPr2Pjg99C6"));
+        metadata.insert(QStringLiteral("xesam:title"), QStringLiteral("Baghdad"));
+        metadata.insert(QStringLiteral("xesam:artist"), QStringList{QStringLiteral("OsamaSon")});
+        metadata.insert(QStringLiteral("xesam:album"), QStringLiteral("Alright"));
+        metadata.insert(QStringLiteral("mpris:length"), 200000000LL);
+        metadata.insert(QStringLiteral("mpris:artUrl"), QStringLiteral("https://example.invalid/cover"));
+        metadata.insert(QStringLiteral("xesam:trackNumber"), 1);
+        track.insert(QStringLiteral("Metadata"), metadata);
+        const int spotify = musicScore(track);
+
+        // The same answer as a browser gives it for a video on a social network,
+        // captured from a live session: an id the browser made up, an artist that
+        // is an empty string in a list, no album, and a length of forty seconds.
+        QVariantMap clip;
+        clip.insert(QStringLiteral("PlaybackStatus"), QStringLiteral("Paused"));
+        QVariantMap clipMetadata;
+        clipMetadata.insert(QStringLiteral("mpris:trackid"),
+                            QStringLiteral("/org/chromium/MediaPlayer2/TrackList/TrackD317C300AFFD9B213BAF1521CE5DD25A"));
+        clipMetadata.insert(QStringLiteral("xesam:title"), QStringLiteral("(2) Home / X"));
+        clipMetadata.insert(QStringLiteral("xesam:artist"), QStringList{QString()});
+        clipMetadata.insert(QStringLiteral("xesam:album"), QString());
+        clipMetadata.insert(QStringLiteral("mpris:length"), 39450701LL);
+        clipMetadata.insert(QStringLiteral("mpris:artUrl"), QStringLiteral("file:///tmp/.org.chromium.Chromium.BHsHKs"));
+        clip.insert(QStringLiteral("Metadata"), clipMetadata);
+        const int webClip = musicScore(clip);
+
+        check("оценка: настоящий трек набирает больше", spotify > webClip, QStringLiteral("%1 против %2").arg(spotify).arg(webClip));
+        check("оценка: клип в браузере уходит в минус", webClip < 0, QString::number(webClip));
+        check("оценка: пустой артист не считается артистом",
+              trackArtists(QStringList{QString()}).isEmpty(), trackArtists(QStringList{QString()}).join(QLatin1Char(',')));
+
+        // A YouTube video in the browser reports a real id, and must not be caught
+        // by the rule above whatever its metadata looks like.
+        QVariantMap youtube;
+        youtube.insert(QStringLiteral("PlaybackStatus"), QStringLiteral("Playing"));
+        QVariantMap youtubeMetadata;
+        youtubeMetadata.insert(QStringLiteral("mpris:trackid"), QStringLiteral("https://www.youtube.com/watch?v=dQw4w9WgXcQ"));
+        youtubeMetadata.insert(QStringLiteral("xesam:title"), QStringLiteral("deaf note"));
+        youtubeMetadata.insert(QStringLiteral("mpris:length"), 200000000LL);
+        youtube.insert(QStringLiteral("Metadata"), youtubeMetadata);
+        check("оценка: видео с YouTube не отсекается", musicScore(youtube) > 0, QString::number(musicScore(youtube)));
+
+        // A Telegram voice message is not music either, and says so in the id.
+        QVariantMap voice;
+        voice.insert(QStringLiteral("PlaybackStatus"), QStringLiteral("Playing"));
+        QVariantMap voiceMetadata;
+        voiceMetadata.insert(QStringLiteral("mpris:trackid"), QStringLiteral("/org/desktop_app/TelegramDesktop/voice"));
+        voiceMetadata.insert(QStringLiteral("xesam:title"), QStringLiteral("Voice message"));
+        voiceMetadata.insert(QStringLiteral("mpris:length"), 12000000LL);
+        voice.insert(QStringLiteral("Metadata"), voiceMetadata);
+        check("оценка: голосовое сообщение уходит в минус", musicScore(voice) < 0, QString::number(musicScore(voice)));
     }
 
     // --- Имена плееров из настроек ---

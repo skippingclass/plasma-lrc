@@ -47,6 +47,8 @@ add_library(${PLUGIN_ID} SHARED
     spicylyrics.h
     trackname.cpp
     trackname.h
+    playermeta.cpp
+    playermeta.h
 )
 
 set_target_properties(${PLUGIN_ID} PROPERTIES
@@ -92,8 +94,10 @@ if(PLASMA_LRC_TESTS)
         spicylyrics.h
         trackname.cpp
         trackname.h
+        playermeta.cpp
+        playermeta.h
     )
-    target_link_libraries(spicy-parser-test PRIVATE Qt6::Core Qt6::Network)
+    target_link_libraries(spicy-parser-test PRIVATE Qt6::Core Qt6::Network Qt6::DBus)
     enable_testing()
     add_test(NAME spicy-parser COMMAND spicy-parser-test)
 endif()
