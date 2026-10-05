@@ -6,8 +6,10 @@ pkgdesc="Plasma 6 panel widget that shows the lyric being sung, word by word whe
 arch=('x86_64' 'aarch64')
 url="https://github.com/skippingclass/plasma-lrc"
 license=('MIT')
-depends=('plasma-workspace>=6.0' 'kconfig' 'kcoreaddons' 'ki18n' 'qt6-base')
-makedepends=('cmake' 'ninja')
+# qt6-declarative carries Qt6::Qml, which the widget links against, and the QML
+# engine modules the panel views import.
+depends=('plasma-workspace>=6.0' 'kconfig' 'kcoreaddons' 'ki18n' 'qt6-base' 'qt6-declarative')
+makedepends=('cmake' 'ninja' 'qt6-declarative')
 optdepends=('lrc_tty: the program the widget asks for lyrics; without it only the Spicy Lyrics API works (https://aur.archlinux.org/packages/lrc_tty)')
 source=("git+$url.git")
 sha256sums=('SKIP')
