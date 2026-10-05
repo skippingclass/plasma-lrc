@@ -438,6 +438,24 @@ int main(int argc, char **argv)
               QString::number(longLine.lineAt(10000)));
     }
 
+    // --- Имена плееров из настроек ---
+    {
+        // The names on the bus carry an instance number that changes every start,
+        // so a name written in the settings has to match loosely.
+        check("плеер: точное имя", playerNameMatches(QStringLiteral("spotify"), QStringLiteral("spotify")));
+        check("плеер: регистр не важен", playerNameMatches(QStringLiteral("Spotify"), QStringLiteral("spotify")));
+        check("плеер: часть имени",
+              playerNameMatches(QStringLiteral("chromium"), QStringLiteral("chromium.instance18422")));
+        // Matching is symmetric: what the user typed is looked for inside the name
+        // on the bus. A lock written down with an instance number stops working
+        // when that number changes, which is what the hint in the settings is for.
+        check("плеер: хвост имени",
+              playerNameMatches(QStringLiteral("instance18422"), QStringLiteral("chromium.instance18422")));
+        check("плеер: лишние пробелы", playerNameMatches(QStringLiteral("  spotify  "), QStringLiteral("spotify")));
+        check("плеер: пустое имя не подходит", !playerNameMatches(QString(), QStringLiteral("spotify")));
+        check("плеер: чужое имя", !playerNameMatches(QStringLiteral("spotify"), QStringLiteral("mpv")));
+    }
+
     // --- Мусор ---
     {
         Lyrics lyrics;

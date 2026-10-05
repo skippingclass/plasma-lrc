@@ -42,6 +42,15 @@ QString tidy(QString value)
 }
 }
 
+bool playerNameMatches(const QString &configured, const QString &playerName)
+{
+    const QString wanted = configured.trimmed();
+    if (wanted.isEmpty() || playerName.isEmpty()) {
+        return false;
+    }
+    return playerName.compare(wanted, Qt::CaseInsensitive) == 0 || playerName.contains(wanted, Qt::CaseInsensitive);
+}
+
 QString cleanTrackTitle(QString title)
 {
     title = tidy(title);

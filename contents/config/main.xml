@@ -24,8 +24,13 @@
             <max>10000</max>
         </entry>
 
+        <entry name="preferredPlayer" type="String">
+            <label>Player to prefer while it is playing. Empty means none. Part of the name is enough.</label>
+            <default></default>
+        </entry>
+
         <entry name="player" type="String">
-            <label>MPRIS player to query. Empty means auto-detect.</label>
+            <label>Player to follow and nothing else. Empty means auto-detect. Part of the name is enough.</label>
             <default></default>
         </entry>
 

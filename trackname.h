@@ -9,6 +9,15 @@
 #include <QString>
 
 /**
+ * Whether an MPRIS player name is the one the user wrote down.
+ *
+ * Names on the bus carry more than the bare application: a browser is
+ * "chromium.instance18422", and which number that is changes with every start. So
+ * "chromium", "Chromium" and the full name all have to mean the same player.
+ */
+bool playerNameMatches(const QString &configured, const QString &playerName);
+
+/**
  * Cleans up the artist and title a media player reports.
  *
  * Browsers, YouTube and yt-dlp hand out things like "Song (Official Video) [4K]"

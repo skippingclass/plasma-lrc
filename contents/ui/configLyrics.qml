@@ -19,6 +19,7 @@ KCM.SimpleKCM {
 
     property alias cfg_binaryPath: binaryPathField.text
     property alias cfg_player: playerField.text
+    property alias cfg_preferredPlayer: preferredField.text
     property alias cfg_ignoredPlayers: ignoredField.text
     property alias cfg_lyricOffset: offsetField.value
     property alias cfg_pollInterval: pollIntervalField.value
@@ -51,9 +52,27 @@ KCM.SimpleKCM {
         }
 
         QQC2.TextField {
+            id: preferredField
+
+            Kirigami.FormData.label: i18n("Favourite player:")
+            placeholderText: i18n("spotify")
+            Layout.fillWidth: true
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            visible: preferredField.text.length > 0
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Used while it is playing. Part of the name is enough, so \"chrome\" covers every chromium instance. If it is not playing, the widget keeps to the usual choice instead of waiting for it.")
+        }
+
+        QQC2.TextField {
             id: playerField
 
-            Kirigami.FormData.label: i18n("MPRIS player:")
+            Kirigami.FormData.label: i18n("Lock to player:")
             placeholderText: i18n("auto-detect")
             Layout.fillWidth: true
         }
@@ -108,7 +127,7 @@ KCM.SimpleKCM {
             visible: playerField.text.length > 0
             wrapMode: Text.Wrap
             opacity: 0.75
-            text: i18n("Run 'lrc_tty --list-players' to see which players are available. Leave this empty to try all of them.")
+            text: i18n("With a name here the widget follows that player and nothing else, which is what you want when two of them report tracks. Part of the name is enough. While the player is not running the panel stays empty, and the widget picks it up as soon as it starts. Leave this empty to let the widget decide.")
         }
 
         QQC2.CheckBox {

@@ -23,6 +23,7 @@ ColumnLayout {
 
     /// Track as MPRIS reports it.
     property string trackInfo
+    property string playerName
     property bool showTrackInfo: true
 
     /// The line, with the current word already marked up.
@@ -48,7 +49,11 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.maximumWidth: root.maxWidth
 
-        text: root.trackInfo
+        // The player is named here because the settings take a player name, and
+        // the one on the bus is not always the one a person would guess.
+        text: root.playerName.length > 0 //
+            ? i18n("%1 — %2", root.trackInfo, root.playerName)
+            : root.trackInfo
         color: Kirigami.Theme.textColor
         opacity: 0.75
         elide: Text.ElideRight

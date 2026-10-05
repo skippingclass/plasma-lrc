@@ -112,7 +112,15 @@ PlasmoidItem {
     toolTipMainText: !Plasmoid.available //
         ? i18n("lrc_tty not found")
         : (Plasmoid.showTrackInfo && Plasmoid.trackInfo.length > 0 ? Plasmoid.trackInfo : i18n("Now playing"))
-    toolTipSubText: !Plasmoid.available ? hintText : hintText + "  " + attributionHint
+    toolTipSubText: [!Plasmoid.available ? hintText : hintText + "  " + attributionHint,
+                     // The name the settings need: "chromium" and the full
+                     // "chromium.instance18422" mean the same thing, and nobody
+                     // guesses that without being told.
+                     Plasmoid.player.length > 0 ? i18n("player: %1", Plasmoid.player) : ""]
+                    .filter(function (line) {
+                        return line.length > 0;
+                    })
+                    .join("\n")
 
     compactRepresentation: MouseArea {
         id: compactArea
@@ -200,6 +208,7 @@ PlasmoidItem {
         // then remembers it in the panel configuration.
 
         trackInfo: Plasmoid.trackInfo
+        playerName: Plasmoid.player
         showTrackInfo: Plasmoid.showTrackInfo
 
         line: root.fullLine

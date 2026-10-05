@@ -220,6 +220,8 @@ private:
     void requestPosition();
     void requestSpicyLyrics();
     void clearLyrics();
+    /// Takes the previous track's line, track name and API lyrics off the panel.
+    void clearDisplay();
 
     /// Looks at the bus and at the scores, and moves on if something else is
     /// more likely to be the music. Runs even while nothing is playing.
@@ -233,6 +235,8 @@ private:
 
     /// Players to ask, in order of preference.
     QStringList playerCandidates();
+    /// The candidates a locked name stands for, or all of them when nothing is locked.
+    QStringList matchingPlayers(const QStringList &players) const;
     void refreshPlayerCandidates();
     void invalidatePlayerCandidates();
 
@@ -272,7 +276,10 @@ private:
     QDBusPendingCallWatcher *m_positionWatcher;
 
     QString m_binaryPath;
+    /// The player the widget is locked to, empty for automatic choice.
     QString m_configuredPlayer;
+    /// The player to prefer while it is playing, empty for none.
+    QString m_preferredPlayer;
     QString m_placeholderText;
     int m_pollInterval;
     int m_maxCharacters;
@@ -288,12 +295,18 @@ private:
     bool m_useSpicy;
 
     QStringList m_candidates;
+    /// Every MPRIS name on the bus, before the lock is applied.
+    QStringList m_busPlayers;
     /// How much each player looks like a music player, see musicScore().
     QHash<QString, int> m_playerScores;
+    /// Whether each player on the bus says it is playing right now.
+    QHash<QString, bool> m_playerPlaying;
     /// Pending GetAll calls of probeCandidates().
     QList<QDBusPendingCallWatcher *> m_probeWatchers;
     QElapsedTimer m_candidatesTimer;
 
+    /// Whether anyone on the bus has been asked what it is playing yet.
+    bool m_probed;
     int m_candidateIndex;
     int m_lastGoodCandidate;
     int m_noLyricsCount;

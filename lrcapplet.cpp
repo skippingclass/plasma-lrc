@@ -243,6 +243,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_pauseWhenIdle(true)
     , m_useSpicy(true)
     , m_trackLengthUs(0)
+    , m_probed(false)
     , m_candidateIndex(0)
     , m_lastGoodCandidate(-1)
     , m_noLyricsCount(0)
@@ -356,16 +357,9 @@ void LrcApplet::refresh()
 {
     // The API lyrics have to go as well: poll() returns early while they are
     // usable, so the button would do nothing at all on a track that has them.
-    clearLyrics();
-    m_spotifyTrackId.clear();
+    clearDisplay();
     invalidatePlayerCandidates();
     unwatchPlayer();
-    setText(QString());
-    setActive(false);
-    setTrackInfo(QString());
-    m_trackArtist.clear();
-    m_trackTitle.clear();
-    m_trackLengthUs = 0;
     setPlaying(false, false);
 
     if (m_started) {
@@ -419,6 +413,7 @@ void LrcApplet::readSettings()
         ? QStringLiteral("lrc_tty")
         : configuredPath;
     const QString player = setting(QStringLiteral("player")).trimmed();
+    const QString preferredPlayer = setting(QStringLiteral("preferredPlayer")).trimmed();
     const QString placeholder = setting(QStringLiteral("placeholderText"), QStringLiteral("♪"));
     const int pollInterval = qBound(200, intSetting(QStringLiteral("pollInterval"), kDefaultPollInterval), 10000);
     const int maxCharacters = qBound(0, intSetting(QStringLiteral("maxCharacters"), 40), 500);
@@ -434,6 +429,7 @@ void LrcApplet::readSettings()
 
     const bool changed = binaryPath != m_binaryPath //
         || player != m_configuredPlayer //
+        || preferredPlayer != m_preferredPlayer //
         || placeholder != m_placeholderText //
         || pollInterval != m_pollInterval //
         || maxCharacters != m_maxCharacters //
@@ -449,6 +445,7 @@ void LrcApplet::readSettings()
 
     m_binaryPath = binaryPath;
     m_configuredPlayer = player;
+    m_preferredPlayer = preferredPlayer;
     m_placeholderText = placeholder;
     m_pollInterval = pollInterval;
     m_maxCharacters = maxCharacters;
@@ -559,7 +556,19 @@ void LrcApplet::poll()
         return;
     }
 
+    // Nobody has been asked what they are playing yet, so the list is still in
+    // whatever order the bus handed it over. Asking now would query the wrong
+    // player once and put a line on the panel that is not there.
+    if (!m_probed) {
+        return;
+    }
+
     const QString player = candidates.at(qBound(0, m_candidateIndex, int(candidates.size()) - 1));
+    if (!m_configuredPlayer.isEmpty() && !m_busPlayers.contains(player)) {
+        // The widget is locked to a player that is not running. Launching lrc_tty
+        // five times a second to be told so is pointless.
+        return;
+    }
     if (player != m_player) {
         setPlayer(player);
         unwatchPlayer();
@@ -573,6 +582,13 @@ void LrcApplet::poll()
     }
     arguments << QStringLiteral("--player") << player;
 
+    // The artist, the title and the length belong to the player being watched, and
+    // a swap between them happens: the list is re-ranked, and one poll can go to
+    // the next candidate before its properties have been read. Asking lrc_tty
+    // about one track with the name and the length of another is worse than asking
+    // about nothing in particular.
+    const bool trackBelongsToPlayer = m_watchedService == s_mprisPrefix + player;
+
     // Browsers, YouTube and yt-dlp hand out titles like "Song (Official Video)
     // [4K]" or "Artist - Topic", and lrclib matches on words. Tell lrc_tty what to
     // look for, but only when cleaning the title actually changed something: a
@@ -582,11 +598,11 @@ void LrcApplet::poll()
     splitTrackArtistAndTitle(&artist, &title);
     const QString cleanedTitle = cleanTrackTitle(title);
     const QString cleanedArtist = cleanTrackArtist(artist);
-    if (!cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
+    if (trackBelongsToPlayer && !cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
         arguments << QStringLiteral("--artist") << cleanedArtist;
         arguments << QStringLiteral("--title") << cleanedTitle;
     }
-    if (m_trackLengthUs > 0) {
+    if (trackBelongsToPlayer && m_trackLengthUs > 0) {
         // With several versions of a track, the length is what tells them apart.
         // MPRIS reports it in microseconds, lrc_tty wants whole seconds.
         arguments << QStringLiteral("--duration") << QString::number(m_trackLengthUs / 1000000);
@@ -784,6 +800,28 @@ void LrcApplet::clearLyrics()
     Q_EMIT lyricsChanged();
 }
 
+/**
+ * Takes everything off the panel that belonged to what was playing.
+ *
+ * Both sources go through here, so a new track, a stopped player and the end of a
+ * song all end the same way: nothing of the previous one is left hanging on the
+ * panel.
+ */
+void LrcApplet::clearDisplay()
+{
+    clearLyrics();
+    m_spotifyTrackId.clear();
+    m_lineIndex = -1;
+    setText(QString());
+    setActive(false);
+    setTrackInfo(QString());
+    m_trackArtist.clear();
+    m_trackTitle.clear();
+    m_trackLengthUs = 0;
+    m_positionValid = false;
+    m_positionBaseMs = 0;
+}
+
 void LrcApplet::applyMetadata(const QVariantMap &metadata)
 {
     const QString trackId = SpicyLyrics::trackIdFromMpris(metadata.value(QStringLiteral("mpris:trackid")));
@@ -792,11 +830,13 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
     }
 
     m_spotifyTrackId = trackId;
-    clearLyrics();
-
     // The last line of the track before stays on screen until the new track
     // reaches its first line, which is seconds of someone else's words over the
     // new song. An empty panel for a moment reads better than the wrong line.
+    // The track fields stay: the metadata of the new one has just been read, and
+    // it is what the lookup needs.
+    clearLyrics();
+    m_lineIndex = -1;
     setText(QString());
     setActive(false);
 
@@ -1079,6 +1119,8 @@ void LrcApplet::setPlayer(const QString &player)
 void LrcApplet::invalidatePlayerCandidates()
 {
     m_candidates.clear();
+    m_busPlayers.clear();
+    m_probed = false;
     m_candidatesTimer.invalidate();
     m_candidateIndex = 0;
     m_lastGoodCandidate = -1;
@@ -1103,21 +1145,33 @@ QStringList LrcApplet::ignoredPlayers() const
 
 QStringList LrcApplet::playerCandidates()
 {
-    if (!m_configuredPlayer.isEmpty()) {
-        return {m_configuredPlayer};
+    return m_candidates;
+}
+
+/**
+ * The players a name written in the settings stands for.
+ *
+ * With nothing configured that is everybody on the bus. With a lock it is whoever
+ * matches, and the name as written when nobody matches yet — so a locked widget
+ * waits for its player instead of quietly following another one.
+ */
+QStringList LrcApplet::matchingPlayers(const QStringList &players) const
+{
+    if (m_configuredPlayer.isEmpty()) {
+        return players;
     }
 
-    return m_candidates;
+    QStringList matched;
+    for (const QString &player : players) {
+        if (playerNameMatches(m_configuredPlayer, player)) {
+            matched.append(player);
+        }
+    }
+    return matched.isEmpty() ? QStringList{m_configuredPlayer} : matched;
 }
 
 void LrcApplet::refreshPlayerCandidates()
 {
-    if (!m_configuredPlayer.isEmpty()) {
-        m_candidates = {m_configuredPlayer};
-        m_candidatesTimer.start();
-        return;
-    }
-
     QDBusMessage message = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"),
                                                           QStringLiteral("/org/freedesktop/DBus"),
                                                           QStringLiteral("org.freedesktop.DBus"),
@@ -1145,7 +1199,8 @@ void LrcApplet::onPlayerListFetched()
         return;
     }
 
-    m_candidates = mprisPlayersFromServiceNames(reply.value());
+    m_busPlayers = mprisPlayersFromServiceNames(reply.value());
+    m_candidates = matchingPlayers(m_busPlayers);
     m_candidatesTimer.start();
 
     // Ask everyone what they are playing before picking one: the name alone says
@@ -1166,6 +1221,14 @@ void LrcApplet::probeCandidates()
 
     // Whatever the user named is gone before anybody is asked, so that the
     // rotation cannot land on it either.
+    // A locked widget whose player is not on the bus right now: the name stays in
+    // the list so that it is used the moment it appears, but there is nobody to
+    // ask about it.
+    if (!m_candidates.isEmpty() && !m_busPlayers.contains(m_candidates.first()) && m_candidates.size() == 1
+        && !m_configuredPlayer.isEmpty()) {
+        return;
+    }
+
     const QStringList ignored = ignoredPlayers();
     if (!ignored.isEmpty()) {
         m_candidates.removeIf([&ignored](const QString &player) {
@@ -1203,8 +1266,15 @@ void LrcApplet::probeCandidates()
                 // A player that does not answer is no help, and an old score for
                 // it would be worse than none.
                 m_playerScores.remove(player);
+                m_playerPlaying.remove(player);
             } else {
                 m_playerScores.insert(player, musicScore(reply.value()));
+                // Whether it is playing right now decides the favourite player and
+                // whether the one we watch may be left, so it is kept apart from
+                // the score: a score of a paused player is still high.
+                m_playerPlaying.insert(player,
+                                       reply.value().value(QStringLiteral("PlaybackStatus")).toString()
+                                           == QLatin1String("Playing"));
             }
 
             if (!m_probeWatchers.isEmpty()) {
@@ -1222,14 +1292,39 @@ void LrcApplet::sortCandidatesByScore()
         return m_playerScores.value(lhs, 0) > m_playerScores.value(rhs, 0);
     });
 
-    // Where in the list to continue. A player that is giving us lyrics is left
-    // alone unless something else is much more likely to be the music; a player
-    // that gives nothing has nothing to lose, so the best one is taken right
-    // away.
+    // The favourite player goes to the front, but only while it is actually
+    // playing: an idle favourite must not leave the panel empty waiting for it.
+    // Compared this way it also covers a name written down loosely, like
+    // "chromium" for "chromium.instance18422".
+    if (!m_preferredPlayer.isEmpty()) {
+        for (int i = 1; i < m_candidates.size(); ++i) {
+            if (m_playerPlaying.value(m_candidates.at(i), false) && playerNameMatches(m_preferredPlayer, m_candidates.at(i))) {
+                m_candidates.move(i, 0);
+                break;
+            }
+        }
+    }
+
+    // Where in the list to continue, and whether to jump to the top of it.
+    //
+    // A player that is playing is left alone unless the newcomer looks a lot more
+    // like music, because switching mid-song cuts it off, which is worse than one
+    // switch too many. A player that is not playing has nothing to lose, so the
+    // best candidate takes over at once — and it has to, or a line left over from
+    // a player that stopped holds the panel for good.
+    //
+    // That last case is why this used to be broken at login: Spotify scoring 12
+    // could not pass a paused player scoring 8 by the five points the rule asked
+    // for, so the widget kept whatever it had found first, and only a restart of
+    // plasmashell cleared it.
     const int currentIndex = m_candidates.indexOf(m_player);
+    const int currentScore = m_playerScores.value(m_player, 0);
+    const int bestScore = m_playerScores.value(m_candidates.first(), 0);
+    const bool currentIsPlaying = m_playingKnown && m_playing;
+
     bool takeBest = currentIndex < 0;
     if (currentIndex >= 0) {
-        takeBest = m_text.isEmpty() || m_playerScores.value(m_candidates.first(), 0) > m_playerScores.value(m_player, 0) + kPlayerSwitchMargin;
+        takeBest = currentIsPlaying ? bestScore > currentScore + kPlayerSwitchMargin : bestScore > 0 && m_candidates.first() != m_player;
         m_candidateIndex = takeBest ? 0 : currentIndex;
     } else {
         m_candidateIndex = 0;
@@ -1237,6 +1332,7 @@ void LrcApplet::sortCandidatesByScore()
 
     m_lastGoodCandidate = -1;
     m_noLyricsCount = 0;
+    m_probed = true;
 
     // Switching has to happen here rather than in poll(): that returns early
     // while nothing plays, which is exactly the state a player that is coming
@@ -1285,6 +1381,14 @@ void LrcApplet::watchPlayer()
 
     m_watchedService = s_mprisPrefix + m_player;
 
+    // Whatever the previous player told us is not this one's. Until its properties
+    // come back the track is unknown, and a lookup made with the previous track's
+    // name and length is worse than one without them.
+    m_trackArtist.clear();
+    m_trackTitle.clear();
+    m_trackLengthUs = 0;
+    setTrackInfo(QString());
+
     QDBusConnection bus = QDBusConnection::sessionBus();
     bus.connect(m_watchedService,
                 s_playerPath,
@@ -1331,15 +1435,8 @@ void LrcApplet::onServiceOwnerChanged(const QString &name, const QString &oldOwn
     // poll() returns early while the API lyrics are usable, so keeping them
     // would freeze the last line on screen and stop the rotation to whatever
     // player is left.
-    clearLyrics();
-    m_spotifyTrackId.clear();
-    setText(QString());
-    setActive(false);
+    clearDisplay();
     setPlaying(false, false);
-    setTrackInfo(QString());
-    m_trackArtist.clear();
-    m_trackTitle.clear();
-    m_trackLengthUs = 0;
     invalidatePlayerCandidates();
     unwatchPlayer();
     poll();
@@ -1387,13 +1484,23 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
 
     const auto statusIt = properties.constFind(QStringLiteral("PlaybackStatus"));
     if (statusIt != properties.constEnd()) {
-        setPlaying(statusIt.value().toString().compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0, true);
+        const QString status = statusIt.value().toString();
+        setPlaying(status.compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0, true);
         if (m_playingKnown) {
             // Playback state changed, so the interpolated position is stale and
             // worth asking for without waiting out the retry delay.
             m_positionValid = false;
             m_positionRetries.invalidate();
             requestPosition();
+        }
+
+        // Stopped is not paused. A paused track keeps its line, because it is
+        // still the track being listened to; a stopped player has nothing left to
+        // say, and polling has already stopped by then, so nothing else would ever
+        // take the line down. That is how a closed YouTube tab left its text on
+        // the panel for the rest of the session.
+        if (status.compare(QLatin1String("Stopped"), Qt::CaseInsensitive) == 0) {
+            clearDisplay();
         }
     }
 
@@ -1416,8 +1523,22 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
 
         setTrackInfo(trackInfo);
 
-        m_trackArtist = toStringList(metadata.value(QStringLiteral("xesam:artist"))).join(QStringLiteral(", "));
-        m_trackTitle = metadata.value(QStringLiteral("xesam:title")).toString();
+        const QString artist = toStringList(metadata.value(QStringLiteral("xesam:artist"))).join(QStringLiteral(", "));
+        // A player that dropped its metadata has stopped as far as we are
+        // concerned, whether it says so or not: browsers keep an MPRIS service
+        // alive long after the tab that played something is closed.
+        if (trackInfo.isEmpty()) {
+            clearDisplay();
+        } else if (!title.isEmpty() && title != m_trackTitle) {
+            // A different track: its line has nothing to do with the one on
+            // screen. The API path already blanks on a track change, and without
+            // this the two sources behaved differently — the stale line stayed up
+            // until lrc_tty answered with the new one.
+            clearDisplay();
+        }
+
+        m_trackArtist = artist;
+        m_trackTitle = title;
         // MPRIS reports mpris:length in microseconds.
         m_trackLengthUs = metadata.value(QStringLiteral("mpris:length")).toLongLong();
 
