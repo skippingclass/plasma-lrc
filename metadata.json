@@ -12,8 +12,8 @@
         "Id": "org.kde.plasma.lrc",
         "License": "MIT",
         "Name": "LRC Lyrics",
-        "Version": "1.1",
-        "Website": "https://github.com/larsgrah/lrc_tty"
+        "Version": "1.2",
+        "Website": "https://github.com/skippingclass/plasma-lrc"
     },
     "X-Plasma-API": "declarativeapplet",
     "X-Plasma-API-Minimum-Version": "6.0",

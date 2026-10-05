@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MIT
+#
+# The applet is a shared object that plasmashell has already mapped into its own
+# address space. A restart is the only way to make it load the code that was just
+# installed; without one the panel keeps showing the previous version.
+
+# This script runs as root, and root has no session bus of its own: a plain
+# `systemctl --user` fails with "Failed to connect to bus". The session belongs to
+# whoever ran pacman, so every call is made as them.
+_plasma_systemctl() {
+    local user="$1" runtime="$2"
+    shift 2
+
+    if command -v runuser >/dev/null; then
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" systemctl --user "$@"
+    else
+        sudo -u "$user" env XDG_RUNTIME_DIR="$runtime" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" systemctl --user "$@"
+    fi
+}
+
+_restart_plasmashell() {
+    local user="${SUDO_USER:-}"
+    local runtime="/run/user/$(id -u "${user:-root}")"
+
+    if [[ -z "$user" || "$user" == "root" || ! -d "$runtime" ]]; then
+        echo "No desktop session of your own was found, so plasmashell was not restarted."
+        echo "Log out and back in, or run: systemctl --user restart plasma-plasmashell.service"
+        return 0
+    fi
+
+    # Restarting an inactive unit would start plasmashell where there is no
+    # session at all, which is not what anybody wants from a package install.
+    if ! _plasma_systemctl "$user" "$runtime" is-active --quiet plasma-plasmashell.service; then
+        echo "plasmashell is not running, so there was nothing to restart."
+        echo "The widget will be picked up the next time you log in."
+        return 0
+    fi
+
+    _plasma_systemctl "$user" "$runtime" restart plasma-plasmashell.service || {
+        echo "Could not restart plasmashell. Log out and back in for the widget to take effect."
+    }
+}
+
+post_install() {
+    _restart_plasmashell
+    echo
+    echo "Add the widget: right-click the panel -> Add Widgets -> LRC Lyrics"
+}
+
+post_upgrade() {
+    _restart_plasmashell
+}
+
+post_remove() {
+    _restart_plasmashell
+    echo "The widget stays on the panel as an empty placeholder until you remove it there."
+}
