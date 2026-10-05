@@ -73,7 +73,7 @@ QString cleanTrackArtist(QString artist)
     return tidy(artist);
 }
 
-void splitTrackArtistAndTitle(QString *artist, QString *title)
+void splitTrackArtistAndTitle(QString *artist, QString *title, bool fromWebPage)
 {
     if (!artist || !title) {
         return;
@@ -91,12 +91,7 @@ void splitTrackArtistAndTitle(QString *artist, QString *title)
     }
 
     const QString current = tidy(*artist);
-    if (current.isEmpty()) {
-        *artist = left;
-        *title = right;
-        return;
-    }
-    if (left.contains(current, Qt::CaseInsensitive)) {
+    if (current.isEmpty() || fromWebPage || left.contains(current, Qt::CaseInsensitive)) {
         *artist = left;
         *title = right;
     }

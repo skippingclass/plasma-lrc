@@ -463,6 +463,38 @@ int main(int argc, char **argv)
         check("object path: пусто остаётся пустым", mprisTrackId(QVariant()).isEmpty());
     }
 
+        // A browser reports the channel that uploaded the video, so the artist it
+        // gives has nothing to do with the title next to it. Both uploads of one
+        // song have to end up as the same lookup: measured, the raw query never
+        // matches and the split one always does.
+        {
+            QString pageArtist = QStringLiteral("SmokeSipper");
+            QString pageTitle = QStringLiteral("OG Buda \u2014 \u0421\u0430\u0431\u0430\u043a\u0430 (A.D.H.D)");
+            splitTrackArtistAndTitle(&pageArtist, &pageTitle, true);
+            check("разделение: страница, канал не совпал с исполнителем",
+                  pageArtist == QStringLiteral("OG Buda") && pageTitle == QStringLiteral("\u0421\u0430\u0431\u0430\u043a\u0430 (A.D.H.D)"),
+                  pageArtist + " / " + pageTitle);
+        }
+
+        // The same title from a music player, where "artist - song" is a title like
+        // any other and must not be taken apart.
+        {
+            QString realArtist = QStringLiteral("Drake");
+            QString realTitle = QStringLiteral("Love - Hate");
+            splitTrackArtistAndTitle(&realArtist, &realTitle, false);
+            check("разделение: у настоящего игрока «Love - Hate» не трогаем",
+                  realArtist == QStringLiteral("Drake") && realTitle == QStringLiteral("Love - Hate"),
+                  realArtist + " / " + realTitle);
+        }
+
+        // A page's session is recognised by the id the browser made up.
+        check("веб-сессия: браузерный id",
+              looksLikeWebPageSession(QStringLiteral("/org/chromium/MediaPlayer2/TrackList/TrackD317C300")));
+        check("веб-сессия: настоящий id не веб",
+              !looksLikeWebPageSession(QStringLiteral("https://www.youtube.com/watch?v=dQw4w9WgXcQ")));
+        check("веб-сессия: spotify не веб",
+              !looksLikeWebPageSession(QStringLiteral("/com/spotify/track/3lCG3tM6k7DtPr2Pjg99C6")));
+
     // --- Кто выглядит как музыка ---
     {
         // A real Spotify track, as Properties.GetAll reports it.

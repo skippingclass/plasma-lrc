@@ -28,9 +28,13 @@ QString cleanTrackTitle(QString title);
 QString cleanTrackArtist(QString artist);
 
 /**
- * Splits "Artist - Song" when a player puts the channel name in the artist field.
+ * Splits "Artist - Song" when a player puts something else in the artist field.
  *
- * Only when the artist is empty or the left half contains what the player said,
- * so a title like "Jay-Z - Song" is not torn apart by accident.
+ * A browser reports the channel that uploaded a video, so "Ken Carson - deaf note"
+ * arrives with the artist set to whichever channel did the upload. The split
+ * therefore happens when the artist is empty, when the left half contains what the
+ * player said, or when @p fromWebPage says the metadata came from a web page
+ * rather than from a music player — the last one is what keeps "Love - Hate" by
+ * Drake from being torn into artist "Love" when it arrives from mpv.
  */
-void splitTrackArtistAndTitle(QString *artist, QString *title);
+void splitTrackArtistAndTitle(QString *artist, QString *title, bool fromWebPage = false);

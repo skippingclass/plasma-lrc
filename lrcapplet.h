@@ -279,6 +279,12 @@ private:
     QString m_trackTitle;
     /// Track length as MPRIS reports it: microseconds.
     qint64 m_trackLengthUs;
+    /// The id was made up by a browser for a media session of a web page.
+    bool m_webPageSession;
+    /// Whether to hand lrc_tty the cleaned artist and title, or what the player said.
+    bool m_useCleanedLookup;
+    /// Whether the query that is running passed the cleaned artist and title.
+    bool m_lastLookupWasCleaned;
     QString m_watchedService;
     QDBusPendingCallWatcher *m_propertyWatcher;
     QDBusPendingCallWatcher *m_namesWatcher;

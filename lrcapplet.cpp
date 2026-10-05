@@ -195,6 +195,9 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_pauseWhenIdle(true)
     , m_useSpicy(true)
     , m_trackLengthUs(0)
+    , m_webPageSession(false)
+    , m_useCleanedLookup(true)
+    , m_lastLookupWasCleaned(false)
     , m_probed(false)
     , m_awaitingState(false)
     , m_candidateIndex(0)
@@ -560,10 +563,12 @@ void LrcApplet::poll()
     // title that needs nothing is better left to the player.
     QString artist = m_trackArtist;
     QString title = m_trackTitle;
-    splitTrackArtistAndTitle(&artist, &title);
+    // A browser that made up the id also made up the metadata next to it, and the
+    // "artist" there is whichever channel uploaded the video.
+    splitTrackArtistAndTitle(&artist, &title, m_webPageSession);
     const QString cleanedTitle = cleanTrackTitle(title);
     const QString cleanedArtist = cleanTrackArtist(artist);
-    if (trackBelongsToPlayer && !cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
+    if (m_useCleanedLookup && trackBelongsToPlayer && !cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
         arguments << QStringLiteral("--artist") << cleanedArtist;
         arguments << QStringLiteral("--title") << cleanedTitle;
     }
@@ -573,6 +578,7 @@ void LrcApplet::poll()
         arguments << QStringLiteral("--duration") << QString::number(m_trackLengthUs / 1000000);
     }
 
+    m_lastLookupWasCleaned = arguments.size() > 5;
     m_watchdog.start(kWatchdogTimeoutMs);
     m_process->start(m_binaryPath, arguments);
 }
@@ -638,6 +644,14 @@ void LrcApplet::onProcessFinished()
     }
 
     if (isNoLyricsMarker(line)) {
+        // The cleaned query found nothing. Before giving up on the track, try the
+        // title as the player reported it: the cleaning is a guess about a video
+        // title, and a song whose own name contains a dash ("Love - Hate") is
+        // exactly what it gets wrong.
+        if (m_useCleanedLookup && m_lastLookupWasCleaned) {
+            m_useCleanedLookup = false;
+            return;
+        }
         ++m_noLyricsCount;
         // There is a small chance that the currently selected player simply has
         // no lyrics for this track: give the others a try before giving up.
@@ -783,6 +797,8 @@ void LrcApplet::clearDisplay()
     m_trackArtist.clear();
     m_trackTitle.clear();
     m_trackLengthUs = 0;
+    m_webPageSession = false;
+    m_useCleanedLookup = true;
     m_positionValid = false;
     m_positionBaseMs = 0;
 }
@@ -1510,7 +1526,7 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
 
         setTrackInfo(trackInfo);
 
-        const QString artist = toStringList(metadata.value(QStringLiteral("xesam:artist"))).join(QStringLiteral(", "));
+        const QString artist = trackArtists(metadata.value(QStringLiteral("xesam:artist"))).join(QStringLiteral(", "));
         // A player that dropped its metadata has stopped as far as we are
         // concerned, whether it says so or not: browsers keep an MPRIS service
         // alive long after the tab that played something is closed.
@@ -1523,6 +1539,12 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
             // until lrc_tty answered with the new one.
             clearDisplay();
         }
+
+        // Set after the clearing above, which resets it: this describes the
+        // metadata that has just arrived, not what is on the panel. A browser that
+        // made the id up also made the metadata up, and the "artist" there is
+        // whichever channel uploaded the video rather than who recorded it.
+        m_webPageSession = looksLikeWebPageSession(mprisTrackId(metadata.value(QStringLiteral("mpris:trackid"))));
 
         m_trackArtist = artist;
         m_trackTitle = title;

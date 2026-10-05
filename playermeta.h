@@ -51,3 +51,14 @@ bool playerNameMatches(const QString &configured, const QString &playerName);
  * out. A media session for a web page carries [""] and nothing else.
  */
 QStringList trackArtists(const QVariant &value);
+
+/**
+ * Whether the track id is one a browser invented for a media session a web page
+ * created for itself, rather than an id the site reported.
+ *
+ * A browser reports the id of what is playing — a URL, a Spotify track, a file.
+ * When it makes one up under /org/chromium/MediaPlayer2/, the metadata next to it
+ * is whatever the page called itself and its uploader, not the credits of a song:
+ * enough to tell that the "artist" may be a channel name.
+ */
+bool looksLikeWebPageSession(const QString &trackId);

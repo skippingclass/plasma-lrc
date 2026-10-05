@@ -61,6 +61,11 @@ QStringList trackArtists(const QVariant &value)
     return artists;
 }
 
+bool looksLikeWebPageSession(const QString &trackId)
+{
+    return trackId.startsWith(QLatin1String("/org/chromium/MediaPlayer2/"));
+}
+
 bool playerNameMatches(const QString &configured, const QString &playerName)
 {
     const QString wanted = configured.trimmed();
@@ -116,7 +121,7 @@ int musicScore(const QVariantMap &properties)
     // what the page calls itself is what lands on the panel — "(2) Home / X".
     // YouTube and the rest report a real id, a URL or a file path, and are not
     // touched by this.
-    if (trackId.startsWith(QLatin1String("/org/chromium/MediaPlayer2/"))) {
+    if (looksLikeWebPageSession(trackId)) {
         score -= 6;
     }
 
