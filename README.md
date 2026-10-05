@@ -3,7 +3,7 @@
 **Виджет панели Plasma 6: показывает строку песни, которая сейчас поётся, а если источник
 отдаёт пословные тайминги — ещё и подсвечивает слово.**
 
-[![aur](https://img.shields.io/aur/v/plasma-lrc?label=aur&logo=archlinux&style=flat)](https://aur.archlinux.org/packages/plasma-lrc)
+[![aur](https://img.shields.io/aur/v/plasma6-applet-lrc-git?label=aur&logo=archlinux&style=flat)](https://aur.archlinux.org/packages/plasma6-applet-lrc-git)
 [![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![plasma](https://img.shields.io/badge/plasma-6-1d99f37?style=flat-square)](https://kde.org/plasma-desktop/)
 
@@ -65,11 +65,13 @@ API, процесс `lrc_tty` не запускается вовсе.
 ### Arch Linux
 
 ```sh
-yay -S plasma-lrc
+yay -S plasma6-applet-lrc-git
 ```
 
 Ставится в систему, `plasmashell` перезапускается сам. Виджет появляется в
-«Добавить виджеты».
+«Добавить виджеты». Пакет называется по канонам Arch: `plasma6-applet-` — виджет
+панели, `-git` — источники берутся из репозитория, поэтому новая версия появляется
+сама после коммита.
 
 ### Вручную из репозитория
 
