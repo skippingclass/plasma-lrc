@@ -82,7 +82,7 @@
         </entry>
 
         <entry name="lyricOffset" type="Int">
-            <label>Shift the lyrics by this many milliseconds. Negative is earlier.</label>
+            <label>Shift the lyrics by this many milliseconds. Positive delays lyrics (if they are rushing ahead), negative shows them earlier.</label>
             <default>0</default>
             <min>-2000</min>
             <max>2000</max>

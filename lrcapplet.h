@@ -365,6 +365,11 @@ private:
     QElapsedTimer m_positionRetries;
     /// Rate limits checking a known position against the player.
     QElapsedTimer m_positionChecks;
+    /// Measures D-Bus IPC round-trip latency to compensate transit delay.
+    QElapsedTimer m_positionFetchTimer;
+    /// Monotonic generation counter to invalidate asynchronous fetches across track changes.
+    quint64 m_lookupGeneration = 0;
+    quint64 m_processGeneration = 0;
     bool m_positionValid;
     int m_lineIndex;
     /// Where the word search starts inside the current line.

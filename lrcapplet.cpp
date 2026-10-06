@@ -66,9 +66,12 @@ constexpr qint64 kPositionCheckMs = 400;
 // A difference below this is the clock running slightly off, a bigger one means
 // playback was moved.
 constexpr qint64 kPositionSnapToleranceMs = 350;
-// How far the position may fall from a word and still light it up: on a fast
-// line the gaps between words are shorter than a tick.
-constexpr qint64 kWordSnapToleranceMs = 150;
+// How long a word highlight may linger across a tiny gap between syllables (<= 80ms)
+// to prevent flicker, without ever snapping forward to future words.
+constexpr qint64 kWordGapHoldMs = 80;
+// Hardware audio buffer latency compensation for PipeWire / PulseAudio / ALSA.
+// MPRIS Position reports decoder stream time, which leads acoustic output by buffer depth (~90ms).
+constexpr qint64 kAudioLeadCompensationMs = 90;
 // How often the word highlight is recomputed. Fast lines have words well under
 // 100ms, so a coarse tick skips them.
 constexpr int kWordTickMs = 20;
@@ -557,6 +560,11 @@ void LrcApplet::onProcessFinished()
     m_watchdog.stop();
     m_fetchingLrc = false;
 
+    // If the track changed while the process was running, discard output from the old track.
+    if (m_processGeneration != m_lookupGeneration) {
+        return;
+    }
+
     if (!m_available) {
         setAvailable(true);
         setError(QString());
@@ -716,6 +724,8 @@ void LrcApplet::clearLyrics()
     m_lineIndex = -1;
     m_wordCursor = 0;
     m_wordTimer.stop();
+    setText(QString());
+    setActive(false);
     Q_EMIT wordChanged();
     Q_EMIT lyricsChanged();
 }
@@ -761,6 +771,8 @@ void LrcApplet::clearDisplay()
     m_positionClock.invalidate();
     m_positionRetries.invalidate();
     m_positionChecks.invalidate();
+    m_positionFetchTimer.invalidate();
+    ++m_lookupGeneration;
 }
 
 void LrcApplet::applyMetadata(const QVariantMap &metadata)
@@ -875,6 +887,7 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
     }
 
     m_fetchingLrc = true;
+    m_processGeneration = m_lookupGeneration;
     m_watchdog.start(kWatchdogTimeoutMs);
     m_process->start(m_binaryPath, arguments);
 }
@@ -890,6 +903,9 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
     m_lyrics = lyrics;
     m_fromSpicy = true;
     m_wordSynced = lyrics.type == LyricsType::Syllable;
+    m_lineIndex = -1;
+    m_wordCursor = 0;
+    clearWordHighlight();
 
     requestPosition();
     m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
@@ -930,6 +946,7 @@ void LrcApplet::requestPosition()
         return;
     }
     m_positionRetries.start();
+    m_positionFetchTimer.start();
 
     QDBusMessage message = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_propertiesInterface, QStringLiteral("Get"));
     message << s_playerInterface << QStringLiteral("Position");
@@ -960,7 +977,15 @@ void LrcApplet::onPositionFetched()
         return;
     }
 
-    const qint64 reportedMs = positionUs / 1000;
+    const qint64 rttMs = m_positionFetchTimer.isValid() ? m_positionFetchTimer.elapsed() : 0;
+    const qint64 reportedMs = (positionUs / 1000) + (rttMs / 2);
+
+    // If the reported position exceeds the track duration by more than 1s, it is
+    // stale data from a previous track before the player playhead reset.
+    if (m_trackLengthUs > 0 && reportedMs > (m_trackLengthUs / 1000) + 1000) {
+        return;
+    }
+
     const bool jumped = positionJumped(reportedMs);
 
     m_positionBaseMs = reportedMs;
@@ -1027,7 +1052,25 @@ void LrcApplet::updateWord()
 
     // Some syncs simply run early or late, and no amount of clever reading will
     // fix that; a setting does.
-    m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0) + m_lyricOffset;
+    // kAudioLeadCompensationMs compensates for the PipeWire/ALSA DAC audio buffer depth,
+    // bringing the decoder playhead into alignment with what comes out of the speakers.
+    // m_lyricOffset is subtracted so that positive values delay the lyrics (shift them later).
+    m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0) - kAudioLeadCompensationMs - m_lyricOffset;
+    if (m_positionMs < 0) {
+        m_positionMs = 0;
+    }
+
+    // Before the first line of the track (intro), clear any stale or phantom text.
+    if (!m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs) {
+        m_lineIndex = -1;
+        m_wordCursor = 0;
+        clearWordHighlight();
+        if (!m_text.isEmpty()) {
+            setText(QString());
+            setActive(false);
+        }
+        return;
+    }
 
     const int lineIndex = m_lyrics.lineAt(m_positionMs);
     if (lineIndex < 0) {
@@ -1093,23 +1136,15 @@ void LrcApplet::updateWord()
     }
 
     if (!active) {
-        // The position fell between two words. On a fast line those gaps are
-        // shorter than the tick and the word in between would never light up, so
-        // the closest one within reach is used instead of dropping the highlight.
-        qint64 closest = kWordSnapToleranceMs + 1;
-        for (int i = from; i < wordCount; ++i) {
-            const LyricWord &word = line.words.at(i);
-            const qint64 distance = m_positionMs < word.startMs ? word.startMs - m_positionMs
-                                                               : (m_positionMs > word.endMs ? m_positionMs - word.endMs : 0);
-            if (distance < closest) {
-                closest = distance;
-                active = &word;
+        // The position fell between two words. NEVER snap forward to a future word
+        // (which causes karaoke highlights to jump ahead before the vocal begins).
+        // If the previous word just ended within a small micro-gap (kWordGapHoldMs),
+        // keep it highlighted to prevent jarring flicker between fast syllables.
+        if (m_wordCursor >= 0 && m_wordCursor < wordCount) {
+            const LyricWord &prevWord = line.words.at(m_wordCursor);
+            if (m_positionMs >= prevWord.endMs && (m_positionMs - prevWord.endMs) <= kWordGapHoldMs) {
+                active = &prevWord;
             }
-        }
-        if (closest > kWordSnapToleranceMs) {
-            active = nullptr;
-        } else {
-            m_wordCursor = static_cast<int>(active - line.words.constData());
         }
     }
 

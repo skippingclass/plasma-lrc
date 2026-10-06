@@ -99,7 +99,7 @@ KCM.SimpleKCM {
             wrapMode: Text.Wrap
             opacity: 0.75
             visible: offsetField.value !== 0
-            text: i18n("Negative shifts the lyrics earlier. Only needed when a sync is consistently ahead of or behind the music; the word highlight follows the same shift.")
+            text: i18n("Positive delays the lyrics (shifts later if they are rushing ahead of the music); negative shows them earlier.")
         }
 
         QQC2.TextField {
