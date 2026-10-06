@@ -43,6 +43,8 @@ set(PLUGIN_ID "org.kde.plasma.lrc")
 add_library(${PLUGIN_ID} SHARED
     lrcapplet.cpp
     lrcapplet.h
+    lrcparser.cpp
+    lrcparser.h
     spicylyrics.cpp
     spicylyrics.h
     trackname.cpp
@@ -90,6 +92,8 @@ option(PLASMA_LRC_TESTS "Build the lyrics parser tests" OFF)
 if(PLASMA_LRC_TESTS)
     add_executable(spicy-parser-test
         tests/spicy-parser-test.cpp
+        lrcparser.cpp
+        lrcparser.h
         spicylyrics.cpp
         spicylyrics.h
         trackname.cpp

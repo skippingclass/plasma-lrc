@@ -10,6 +10,7 @@
  */
 
 #include "spicylyrics.h"
+#include "lrcparser.h"
 #include "playermeta.h"
 #include "trackname.h"
 
@@ -588,6 +589,68 @@ int main(int argc, char **argv)
         Lyrics lyrics;
         SpicyLyrics::parse(json, &lyrics, nullptr);
         check("неизвестный источник: 'unknown source'", lyrics.attribution == QStringLiteral("unknown source"), lyrics.attribution);
+    }
+
+    // --- LrcParser: Разбор стандартного формата .lrc ---
+    {
+        const QString lrc = QStringLiteral(
+            "[ti:Test Song]\n"
+            "[ar:Test Artist]\n"
+            "[00:03.76] First line\n"
+            "[00:07.09] Second line\n"
+            "[00:10.12] Third line\n"
+            "[00:15.00] \n"
+        );
+        Lyrics lyrics;
+        const bool parsed = LrcParser::parseLrc(lrc, &lyrics, 20000);
+        check("lrc: парсится", parsed);
+        check("lrc: usable", lyrics.isUsable());
+        check("lrc: тип Line", lyrics.type == LyricsType::Line);
+        check("lrc: 3 строки (пустая отсечена)", lyrics.lines.size() == 3, QString::number(lyrics.lines.size()));
+        check("lrc: текст 1-й строки", lyrics.lines.value(0).text == QStringLiteral("First line"), lyrics.lines.value(0).text);
+        check("lrc: тайминги 1-й строки", lyrics.lines.value(0).startMs == 3760 && lyrics.lines.value(0).endMs == 7090,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(0).startMs).arg(lyrics.lines.value(0).endMs));
+        check("lrc: тайминги 3-й строки ограничены пустой строкой",
+              lyrics.lines.value(2).startMs == 10120 && lyrics.lines.value(2).endMs == 15000,
+              QStringLiteral("%1..%2").arg(lyrics.lines.value(2).startMs).arg(lyrics.lines.value(2).endMs));
+        check("lrc: выбор строки по позиции", lyrics.lineAt(5000) == 0, QString::number(lyrics.lineAt(5000)));
+        check("lrc: вторая строка", lyrics.lineAt(8000) == 1, QString::number(lyrics.lineAt(8000)));
+        check("lrc: третья строка", lyrics.lineAt(12000) == 2, QString::number(lyrics.lineAt(12000)));
+        check("lrc: пауза после пустой строки", lyrics.lineAt(16000) == -1, QString::number(lyrics.lineAt(16000)));
+        check("lrc: атрибуция lrclib", lyrics.attribution == QStringLiteral("lrclib"), lyrics.attribution);
+        check("lrc: ссылка lrclib.net", lyrics.attributionUrl == QStringLiteral("https://lrclib.net"), lyrics.attributionUrl);
+    }
+
+    // --- LrcParser: Теги смещения (offset) и миллисекунды из 3 цифр ---
+    {
+        const QString lrc = QStringLiteral(
+            "[offset: 500]\n"
+            "[01:02.345] Offset line\n"
+        );
+        Lyrics lyrics;
+        check("lrc offset: парсится", LrcParser::parseLrc(lrc, &lyrics));
+        check("lrc offset: время сдвинуто на +500мс",
+              lyrics.lines.value(0).startMs == 62845,
+              QString::number(lyrics.lines.value(0).startMs));
+    }
+
+    // --- LrcParser: Несколько таймкодов на одной строке ---
+    {
+        const QString lrc = QStringLiteral(
+            "[00:01.00][00:05.00] Repeated chorus\n"
+        );
+        Lyrics lyrics;
+        check("lrc repeat: парсится", LrcParser::parseLrc(lrc, &lyrics));
+        check("lrc repeat: создано 2 строки", lyrics.lines.size() == 2, QString::number(lyrics.lines.size()));
+        check("lrc repeat: времена 1000 и 5000",
+              lyrics.lines.value(0).startMs == 1000 && lyrics.lines.value(1).startMs == 5000);
+    }
+
+    // --- LrcParser: Пустой или невалидный ввод ---
+    {
+        Lyrics lyrics;
+        check("lrc invalid: пустая строка", !LrcParser::parseLrc(QString(), &lyrics));
+        check("lrc invalid: только метаданные", !LrcParser::parseLrc(QStringLiteral("[ti:Title]\n[ar:Artist]"), &lyrics));
     }
 
     printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");

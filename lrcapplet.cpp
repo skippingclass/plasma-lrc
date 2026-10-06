@@ -6,6 +6,7 @@
 
 #include "lrcapplet.h"
 
+#include "lrcparser.h"
 #include "playermeta.h"
 #include "trackname.h"
 
@@ -213,6 +214,8 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_wordProgress(0.0)
     , m_wordSynced(false)
     , m_fromSpicy(false)
+    , m_fetchingFromSpicy(false)
+    , m_fetchingLrc(false)
     , m_missingReason(MissingReason::Unsynced)
     , m_positionMs(0)
     , m_positionBaseMs(0)
@@ -379,7 +382,7 @@ void LrcApplet::readSettings()
     const bool compactPanel = boolSetting(QStringLiteral("compactPanel"), false);
     const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 0), 1);
     const int lyricOffset = qBound(-2000, intSetting(QStringLiteral("lyricOffset"), 0), 2000);
-    const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), true);
+    const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), false);
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
 
@@ -425,7 +428,7 @@ void LrcApplet::readSettings()
 
     // A new key is worth another try, even for the track that is playing now.
     if (changed && m_useSpicy && !m_spicyKey.isEmpty() && !m_spotifyTrackId.isEmpty() && !m_fromSpicy) {
-        requestSpicyLyrics();
+        requestLyrics();
     }
 
     if (m_timer.interval() != m_pollInterval && m_timer.isActive()) {
@@ -475,112 +478,50 @@ int LrcApplet::lyricOffset() const
 
 QString LrcApplet::attribution() const
 {
-    return m_fromSpicy ? m_lyrics.attribution : QString();
+    return m_lyrics.attribution;
 }
 
 QString LrcApplet::attributionUrl() const
 {
-    return m_fromSpicy ? m_lyrics.attributionUrl : QString();
+    return m_lyrics.attributionUrl;
 }
 
 void LrcApplet::poll()
 {
-    if (!m_started || m_process->state() != QProcess::NotRunning) {
+    if (!m_started) {
         return;
     }
 
-    // Nothing is playing, so there is nothing to fetch. The MPRIS watcher wakes
-    // us up again as soon as playback starts.
-    if (m_pauseWhenIdle && m_playingKnown && !m_playing) {
+    // If lyrics are already loaded and usable, the local monotonic timer drives the display
+    if (m_lyrics.isUsable()) {
         return;
     }
 
-    // The API gave us word-level timings for this track: we time the line
-    // ourselves, so there is nothing left for lrc_tty to do until the track
-    // changes or the API turns out to have nothing.
-    if (m_fromSpicy && m_lyrics.isUsable()) {
-        return;
-    }
-
-    // Even with players known, the bus is asked again now and then: a music
-    // player can appear long after we settled for something else, and whoever
-    // looked like music last time may not be playing any more.
     considerPlayerSwitch();
 
     const QStringList candidates = playerCandidates();
-    if (candidates.isEmpty()) {
-        return;
-    }
-
-    // Nobody has been asked what they are playing yet, so the list is still in
-    // whatever order the bus handed it over. Asking now would query the wrong
-    // player once and put a line on the panel that is not there.
-    if (!m_probed) {
-        return;
-    }
-
-    // The player was just picked and its properties have not come back, so whether
-    // it plays anything is not known yet. Asking now means asking a player that may
-    // well be idle, and the pause guard cannot see that.
-    if (m_awaitingState) {
+    if (candidates.isEmpty() || !m_probed || m_awaitingState) {
         return;
     }
 
     const QString player = candidates.at(qBound(0, m_candidateIndex, int(candidates.size()) - 1));
     if (!m_configuredPlayer.isEmpty() && !m_busPlayers.contains(player)) {
-        // The widget is locked to a player that is not running. Launching lrc_tty
-        // five times a second to be told so is pointless.
         return;
     }
     if (player != m_player) {
         setPlayer(player);
         unwatchPlayer();
         watchPlayer();
-        // Nothing is asked this time round: what this player is doing is not known
-        // yet, and asking anyway puts a line from a player that is not playing
-        // anything on the panel. Watching it leads to a poll of its own as soon as
-        // its properties say it is playing.
         return;
     }
 
-    QStringList arguments;
-    arguments << QStringLiteral("--lines") << QStringLiteral("1") << QStringLiteral("--raw");
-    if (m_showTimestamp) {
-        arguments << QStringLiteral("--timestamp");
-    }
-    arguments << QStringLiteral("--player") << player;
-
-    // The artist, the title and the length belong to the player being watched, and
-    // a swap between them happens: the list is re-ranked, and one poll can go to
-    // the next candidate before its properties have been read. Asking lrc_tty
-    // about one track with the name and the length of another is worse than asking
-    // about nothing in particular.
-    const bool trackBelongsToPlayer = m_watchedService == s_mprisPrefix + player;
-
-    // Browsers, YouTube and yt-dlp hand out titles like "Song (Official Video)
-    // [4K]" or "Artist - Topic", and lrclib matches on words. Tell lrc_tty what to
-    // look for, but only when cleaning the title actually changed something: a
-    // title that needs nothing is better left to the player.
-    QString artist = m_trackArtist;
-    QString title = m_trackTitle;
-    // A browser that made up the id also made up the metadata next to it, and the
-    // "artist" there is whichever channel uploaded the video.
-    splitTrackArtistAndTitle(&artist, &title, m_webPageSession);
-    const QString cleanedTitle = cleanTrackTitle(title);
-    const QString cleanedArtist = cleanTrackArtist(artist);
-    if (m_useCleanedLookup && trackBelongsToPlayer && !cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
-        arguments << QStringLiteral("--artist") << cleanedArtist;
-        arguments << QStringLiteral("--title") << cleanedTitle;
-    }
-    if (trackBelongsToPlayer && m_trackLengthUs > 0) {
-        // With several versions of a track, the length is what tells them apart.
-        // MPRIS reports it in microseconds, lrc_tty wants whole seconds.
-        arguments << QStringLiteral("--duration") << QString::number(m_trackLengthUs / 1000000);
+    if (m_fetchingFromSpicy || m_fetchingLrc || m_process->state() != QProcess::NotRunning) {
+        return;
     }
 
-    m_lastLookupWasCleaned = arguments.size() > 5;
-    m_watchdog.start(kWatchdogTimeoutMs);
-    m_process->start(m_binaryPath, arguments);
+    if (!m_trackTitle.isEmpty() && !m_lyrics.isUsable()) {
+        requestLyrics();
+    }
 }
 
 /**
@@ -613,6 +554,7 @@ void LrcApplet::considerPlayerSwitch()
 void LrcApplet::onProcessFinished()
 {
     m_watchdog.stop();
+    m_fetchingLrc = false;
 
     if (!m_available) {
         setAvailable(true);
@@ -622,54 +564,44 @@ void LrcApplet::onProcessFinished()
         }
     }
 
-    const QString output = QString::fromUtf8(m_process->readAllStandardOutput()).trimmed();
-    if (m_process->exitStatus() != QProcess::NormalExit || m_process->exitCode() != 0) {
-        return;
-    }
-
     // A track that the API timed better than lrc_tty does: ignore this answer.
     if (m_fromSpicy && m_lyrics.isUsable()) {
         return;
     }
 
-    // lrc_tty prints a single line, but be forgiving about trailing noise.
-    QString line;
-    const QStringList lines = output.split(QLatin1Char('\n'));
-    for (int i = lines.size() - 1; i >= 0; --i) {
-        const QString candidate = lines.at(i).trimmed();
-        if (!candidate.isEmpty()) {
-            line = candidate;
-            break;
-        }
-    }
+    const QString output = QString::fromUtf8(m_process->readAllStandardOutput());
+    const int exitCode = m_process->exitCode();
+    const QProcess::ExitStatus exitStatus = m_process->exitStatus();
 
-    if (isNoLyricsMarker(line)) {
-        // The cleaned query found nothing. Before giving up on the track, try the
-        // title as the player reported it: the cleaning is a guess about a video
-        // title, and a song whose own name contains a dash ("Love - Hate") is
-        // exactly what it gets wrong.
-        if (m_useCleanedLookup && m_lastLookupWasCleaned) {
-            m_useCleanedLookup = false;
-            return;
-        }
-        ++m_noLyricsCount;
-        // There is a small chance that the currently selected player simply has
-        // no lyrics for this track: give the others a try before giving up.
-        if (m_noLyricsCount >= kNoLyricsBeforeSwitchingPlayer && playerCandidates().size() > 1) {
-            m_noLyricsCount = 0;
-            m_candidateIndex = (m_lastGoodCandidate >= 0 && m_lastGoodCandidate != m_candidateIndex) ? m_lastGoodCandidate
-                                                                                                  : m_candidateIndex + 1;
-            unwatchPlayer();
-        }
-        setText(QString());
-        setActive(false);
+    Lyrics parsed;
+    const qint64 durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
+    const bool ok = (exitStatus == QProcess::NormalExit && exitCode == 0 && LrcParser::parseLrc(output, &parsed, durationMs));
+
+    if (ok && parsed.isUsable()) {
+        m_lyrics = parsed;
+        m_fromSpicy = false;
+        m_wordSynced = false;
+        m_lineIndex = -1;
+        m_noLyricsCount = 0;
+        m_lastGoodCandidate = m_candidateIndex;
+        m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
+        updateWord();
+        Q_EMIT lyricsChanged();
         return;
     }
 
-    m_noLyricsCount = 0;
-    m_lastGoodCandidate = m_candidateIndex;
-    setText(line);
-    setActive(true);
+    // The cleaned query found nothing. Before giving up on the track, try the
+    // title as the player reported it: the cleaning is a guess about a video
+    // title, and a song whose own name contains a dash ("Love - Hate") is
+    // exactly what it gets wrong.
+    if (m_useCleanedLookup && m_lastLookupWasCleaned) {
+        m_useCleanedLookup = false;
+        fetchLrcLyrics(true);
+        return;
+    }
+
+    setText(QString());
+    setActive(false);
 }
 
 void LrcApplet::onProcessFailedToStart()
@@ -767,11 +699,14 @@ void LrcApplet::clearLyrics()
     m_wordProgress = 0.0;
     m_wordSynced = false;
     m_fromSpicy = false;
+    m_fetchingFromSpicy = false;
+    m_fetchingLrc = false;
     m_missingReason = MissingReason::Unsynced;
     m_positionMs = 0;
     m_positionBaseMs = 0;
     m_positionValid = false;
     m_positionClock.invalidate();
+    m_positionRetries.invalidate();
     m_lineIndex = -1;
     m_wordCursor = 0;
     m_wordTimer.stop();
@@ -788,6 +723,17 @@ void LrcApplet::clearLyrics()
  */
 void LrcApplet::clearDisplay()
 {
+    if (m_positionWatcher) {
+        delete m_positionWatcher;
+        m_positionWatcher = nullptr;
+    }
+
+    if (m_process->state() != QProcess::NotRunning) {
+        m_process->kill();
+        m_process->waitForFinished(50);
+    }
+    m_watchdog.stop();
+
     clearLyrics();
     m_spotifyTrackId.clear();
     m_lineIndex = -1;
@@ -799,66 +745,143 @@ void LrcApplet::clearDisplay()
     m_trackLengthUs = 0;
     m_webPageSession = false;
     m_useCleanedLookup = true;
+    m_lastLookupWasCleaned = false;
+    m_fetchingFromSpicy = false;
+    m_fetchingLrc = false;
     m_positionValid = false;
     m_positionBaseMs = 0;
+    m_positionClock.invalidate();
+    m_positionRetries.invalidate();
+    m_positionChecks.invalidate();
 }
 
 void LrcApplet::applyMetadata(const QVariantMap &metadata)
 {
+    const QStringList artists = trackArtists(metadata.value(QStringLiteral("xesam:artist")));
+    const QString title = metadata.value(QStringLiteral("xesam:title")).toString();
+    const QString artist = artists.join(QStringLiteral(", "));
     const QString trackId = SpicyLyrics::trackIdFromMpris(mprisTrackId(metadata.value(QStringLiteral("mpris:trackid"))));
-    if (trackId == m_spotifyTrackId) {
+    const qint64 lengthUs = metadata.value(QStringLiteral("mpris:length")).toLongLong();
+
+    QString trackInfo;
+    if (!artists.isEmpty() && !title.isEmpty()) {
+        trackInfo = artists.join(QStringLiteral(", ")) + QStringLiteral(" — ") + title;
+    } else if (!title.isEmpty()) {
+        trackInfo = title;
+    } else {
+        trackInfo = artists.join(QStringLiteral(", "));
+    }
+
+    if (trackInfo.isEmpty()) {
+        clearDisplay();
         return;
     }
 
-    // Set before clearing: clearLyrics() notifies, and the UI has to read the new
-    // id, not the one of the track that just ended.
-    m_spotifyTrackId = trackId;
+    const bool trackChanged = (title != m_trackTitle || artist != m_trackArtist || (!trackId.isEmpty() && trackId != m_spotifyTrackId));
 
-    // The last line of the track before stays on screen until the new track
-    // reaches its first line, which is seconds of someone else's words over the
-    // new song. An empty panel for a moment reads better than the wrong line.
-    // The track fields stay: the metadata of the new one has just been read, and
-    // it is what the lookup needs.
-    clearLyrics();
-    m_lineIndex = -1;
-    setText(QString());
-    setActive(false);
+    if (trackChanged) {
+        clearDisplay();
 
-    // Playback position is only meaningful for the new track, and it has to be
-    // asked for right away rather than after the retry delay.
-    m_positionValid = false;
-    m_positionBaseMs = 0;
-    m_positionRetries.invalidate();
-    requestPosition();
-    requestSpicyLyrics();
+        setTrackInfo(trackInfo);
+        m_webPageSession = looksLikeWebPageSession(mprisTrackId(metadata.value(QStringLiteral("mpris:trackid"))));
+        m_trackArtist = artist;
+        m_trackTitle = title;
+        m_trackLengthUs = lengthUs;
+        m_spotifyTrackId = trackId;
+
+        requestPosition();
+        requestLyrics();
+    } else {
+        setTrackInfo(trackInfo);
+        m_trackLengthUs = lengthUs;
+        if (!m_lyrics.isUsable() && !m_fetchingFromSpicy && !m_fetchingLrc) {
+            requestLyrics();
+        }
+    }
+}
+
+void LrcApplet::requestLyrics()
+{
+    if (m_watchedService.isEmpty() || m_trackTitle.isEmpty()) {
+        return;
+    }
+
+    // 1. If Spotify and Spicy is enabled with a key, try Spicy Lyrics first
+    if (m_useSpicy && !m_spotifyTrackId.isEmpty() && !m_spicyKey.isEmpty()) {
+        m_fetchingFromSpicy = true;
+        m_fetchingLrc = false;
+        m_spicy->request(m_spotifyTrackId);
+        return;
+    }
+
+    // 2. Otherwise, fetch LRC via lrc_tty --dump
+    m_fetchingFromSpicy = false;
+    fetchLrcLyrics();
 }
 
 void LrcApplet::requestSpicyLyrics()
 {
-    if (!m_useSpicy || m_spotifyTrackId.isEmpty()) {
+    requestLyrics();
+}
+
+void LrcApplet::fetchLrcLyrics(bool rawFallback)
+{
+    if (m_watchedService.isEmpty() || m_player.isEmpty() || m_trackTitle.isEmpty()) {
         return;
     }
-    m_spicy->request(m_spotifyTrackId);
+
+    if (m_process->state() != QProcess::NotRunning) {
+        m_process->kill();
+        m_process->waitForFinished(50);
+    }
+
+    QStringList arguments;
+    arguments << QStringLiteral("--dump");
+    arguments << QStringLiteral("--player") << m_player;
+
+    const bool trackBelongsToPlayer = (m_watchedService == s_mprisPrefix + m_player);
+
+    if (!rawFallback && m_useCleanedLookup && trackBelongsToPlayer) {
+        QString artist = m_trackArtist;
+        QString title = m_trackTitle;
+        splitTrackArtistAndTitle(&artist, &title, m_webPageSession);
+        const QString cleanedTitle = cleanTrackTitle(title);
+        const QString cleanedArtist = cleanTrackArtist(artist);
+        if (!cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
+            arguments << QStringLiteral("--artist") << cleanedArtist;
+            arguments << QStringLiteral("--title") << cleanedTitle;
+            m_lastLookupWasCleaned = true;
+        } else {
+            m_lastLookupWasCleaned = false;
+        }
+    } else {
+        m_lastLookupWasCleaned = false;
+    }
+
+    if (trackBelongsToPlayer && m_trackLengthUs > 0) {
+        arguments << QStringLiteral("--duration") << QString::number(m_trackLengthUs / 1000000);
+    }
+
+    m_fetchingLrc = true;
+    m_watchdog.start(kWatchdogTimeoutMs);
+    m_process->start(m_binaryPath, arguments);
 }
 
 void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
 {
-    // A slower request for the previous track may answer after we moved on.
     if (trackId != m_spotifyTrackId) {
         return;
     }
 
+    m_fetchingFromSpicy = false;
     m_lyrics = lyrics;
     m_fromSpicy = true;
     m_wordSynced = lyrics.type == LyricsType::Syllable;
 
-    // The line now comes from the API, so the process polling would only be a
-    // fallback for a track the API does not know.
     requestPosition();
-    updateWord();
     m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
+    updateWord();
     Q_EMIT lyricsChanged();
-    poll();
 }
 
 void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
@@ -866,12 +889,11 @@ void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
     if (trackId != m_spotifyTrackId) {
         return;
     }
+    m_fetchingFromSpicy = false;
     m_missingReason = reason;
-    // Nothing from the API: lrc_tty keeps doing its job.
-    if (m_fromSpicy) {
-        clearLyrics();
-    }
-    poll();
+
+    // Fall back to full LRC via lrc_tty --dump
+    fetchLrcLyrics();
 }
 
 void LrcApplet::requestPosition()
@@ -940,6 +962,8 @@ void LrcApplet::onPositionFetched()
         m_lineIndex = -1;
         setText(QString());
         setActive(false);
+    } else if (m_lyrics.isUsable()) {
+        updateWord();
     }
 }
 
@@ -1346,6 +1370,15 @@ void LrcApplet::unwatchPlayer()
     delete m_propertyWatcher;
     m_propertyWatcher = nullptr;
 
+    delete m_positionWatcher;
+    m_positionWatcher = nullptr;
+
+    if (m_process->state() != QProcess::NotRunning) {
+        m_process->kill();
+        m_process->waitForFinished(50);
+    }
+    m_watchdog.stop();
+
     if (m_watchedService.isEmpty()) {
         return;
     }
@@ -1511,46 +1544,6 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
     const auto metadataIt = properties.constFind(QStringLiteral("Metadata"));
     if (metadataIt != properties.constEnd()) {
         const QVariantMap metadata = toVariantMap(metadataIt.value());
-
-        const QStringList artists = trackArtists(metadata.value(QStringLiteral("xesam:artist")));
-        const QString title = metadata.value(QStringLiteral("xesam:title")).toString();
-
-        QString trackInfo;
-        if (!artists.isEmpty() && !title.isEmpty()) {
-            trackInfo = artists.join(QStringLiteral(", ")) + QStringLiteral(" — ") + title;
-        } else if (!title.isEmpty()) {
-            trackInfo = title;
-        } else {
-            trackInfo = artists.join(QStringLiteral(", "));
-        }
-
-        setTrackInfo(trackInfo);
-
-        const QString artist = trackArtists(metadata.value(QStringLiteral("xesam:artist"))).join(QStringLiteral(", "));
-        // A player that dropped its metadata has stopped as far as we are
-        // concerned, whether it says so or not: browsers keep an MPRIS service
-        // alive long after the tab that played something is closed.
-        if (trackInfo.isEmpty()) {
-            clearDisplay();
-        } else if (!title.isEmpty() && title != m_trackTitle) {
-            // A different track: its line has nothing to do with the one on
-            // screen. The API path already blanks on a track change, and without
-            // this the two sources behaved differently — the stale line stayed up
-            // until lrc_tty answered with the new one.
-            clearDisplay();
-        }
-
-        // Set after the clearing above, which resets it: this describes the
-        // metadata that has just arrived, not what is on the panel. A browser that
-        // made the id up also made the metadata up, and the "artist" there is
-        // whichever channel uploaded the video rather than who recorded it.
-        m_webPageSession = looksLikeWebPageSession(mprisTrackId(metadata.value(QStringLiteral("mpris:trackid"))));
-
-        m_trackArtist = artist;
-        m_trackTitle = title;
-        // MPRIS reports mpris:length in microseconds.
-        m_trackLengthUs = metadata.value(QStringLiteral("mpris:length")).toLongLong();
-
         applyMetadata(metadata);
     }
 }

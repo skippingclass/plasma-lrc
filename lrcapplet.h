@@ -15,6 +15,7 @@
 #include <QVariantMap>
 
 #include "spicylyrics.h"
+#include "lrcparser.h"
 
 class QDBusPendingCallWatcher;
 
@@ -227,7 +228,9 @@ private:
     void applyMetadata(const QVariantMap &metadata);
     /// Asks MPRIS for Position, and interpolates from there.
     void requestPosition();
+    void requestLyrics();
     void requestSpicyLyrics();
+    void fetchLrcLyrics(bool rawFallback = false);
     void clearLyrics();
     /// Takes the previous track's line, track name and API lyrics off the panel.
     void clearDisplay();
@@ -343,6 +346,8 @@ private:
     double m_wordProgress;
     bool m_wordSynced;
     bool m_fromSpicy;
+    bool m_fetchingFromSpicy;
+    bool m_fetchingLrc;
     MissingReason m_missingReason;
 
     qint64 m_positionMs;

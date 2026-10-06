@@ -23,8 +23,6 @@
 #include <QStandardPaths>
 #include <QTimer>
 
-#include <algorithm>
-
 namespace
 {
 const QByteArray s_defaultApiRoot = QByteArrayLiteral("https://api.spicylyrics.org/v1/lyrics/");

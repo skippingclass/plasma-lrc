@@ -56,7 +56,7 @@
 
         <entry name="pauseWhenIdle" type="Bool">
             <label>Stop polling while nothing is playing.</label>
-            <default>true</default>
+            <default>false</default>
         </entry>
 
         <entry name="placeholderText" type="String">
