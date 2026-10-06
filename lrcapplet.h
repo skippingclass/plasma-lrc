@@ -74,6 +74,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QString placeholderText READ placeholderText NOTIFY settingsChanged)
     Q_PROPERTY(QString binaryPath READ binaryPath NOTIFY settingsChanged)
     Q_PROPERTY(int maxCharacters READ maxCharacters NOTIFY settingsChanged)
+    Q_PROPERTY(bool showTimestamp READ showTimestamp NOTIFY settingsChanged)
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
     Q_PROPERTY(bool showTrackInfo READ showTrackInfo NOTIFY settingsChanged)
     Q_PROPERTY(bool compactPanel READ compactPanel NOTIFY settingsChanged)
@@ -88,6 +89,11 @@ public:
 
     void configChanged() override;
     void constraintsEvent(Constraints constraints) override;
+
+    bool showTimestamp() const
+    {
+        return m_showTimestamp;
+    }
 
     QString text() const
     {
@@ -340,6 +346,8 @@ private:
     // Word-level lyrics of the current track
     Lyrics m_lyrics;
     QString m_spotifyTrackId;
+    QString m_mprisTrackId;
+    bool m_lyricsLookupDone;
     QString m_word;
     int m_wordStart;
     int m_wordEnd;

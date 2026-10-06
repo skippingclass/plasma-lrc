@@ -107,8 +107,8 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
         return false;
     }
 
-    // Sort by timestamp
-    std::sort(rawLines.begin(), rawLines.end(), [](const RawLine &lhs, const RawLine &rhs) {
+    // Sort by timestamp stably to preserve original file order for identical timestamps
+    std::stable_sort(rawLines.begin(), rawLines.end(), [](const RawLine &lhs, const RawLine &rhs) {
         return lhs.startMs < rhs.startMs;
     });
 

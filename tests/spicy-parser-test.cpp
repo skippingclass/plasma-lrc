@@ -653,6 +653,45 @@ int main(int argc, char **argv)
         check("lrc invalid: только метаданные", !LrcParser::parseLrc(QStringLiteral("[ti:Title]\n[ar:Artist]"), &lyrics));
     }
 
+    // --- LrcParser: Стабильная сортировка для одинаковых меток времени ---
+    {
+        const QString lrc = QStringLiteral(
+            "[00:01.00] Vocals Part 1\n"
+            "[00:01.00] Vocals Part 2\n"
+            "[00:02.00] Next line\n"
+        );
+        Lyrics lyrics;
+        check("lrc stable: парсится", LrcParser::parseLrc(lrc, &lyrics));
+        check("lrc stable: порядок первой строки сохранён", lyrics.lines.value(0).text == QStringLiteral("Vocals Part 1"));
+        check("lrc stable: порядок второй строки сохранён", lyrics.lines.value(1).text == QStringLiteral("Vocals Part 2"));
+    }
+
+    // --- trackname: Unicode-тире при очистке названий ---
+    {
+        check("cleanTitle: en-dash удаляется", cleanTrackTitle(QStringLiteral("Bohemian Rhapsody – [Official Video]")) == QStringLiteral("Bohemian Rhapsody"));
+        check("cleanTitle: em-dash удаляется", cleanTrackTitle(QStringLiteral("Bohemian Rhapsody — [4K 60FPS]")) == QStringLiteral("Bohemian Rhapsody"));
+    }
+
+    // --- trackname: Разделение для YouTube / браузеров ---
+    {
+        QString artist = QStringLiteral("Queen Official");
+        QString title = QStringLiteral("Queen - Bohemian Rhapsody");
+        splitTrackArtistAndTitle(&artist, &title, false);
+        check("splitTitle: Queen Official канал -> Queen", artist == QStringLiteral("Queen") && title == QStringLiteral("Bohemian Rhapsody"), artist + " / " + title);
+
+        QString fArtist = QStringLiteral("Channel");
+        QString fTitle = QStringLiteral("Radiohead - Creep");
+        splitTrackArtistAndTitle(&fArtist, &fTitle, true);
+        check("splitTitle: fromWebPage=true -> Radiohead", fArtist == QStringLiteral("Radiohead") && fTitle == QStringLiteral("Creep"), fArtist + " / " + fTitle);
+    }
+
+    // --- playermeta: Распознавание браузерных сессий ---
+    {
+        check("webSession: firefox", looksLikeWebPageSession(QStringLiteral("/some/path"), QStringLiteral("firefox.instance123")));
+        check("webSession: chromium", looksLikeWebPageSession(QStringLiteral("/org/chromium/MediaPlayer2/123"), QString()));
+        check("webSession: spotify не браузер", !looksLikeWebPageSession(QStringLiteral("/com/spotify/track/123"), QStringLiteral("spotify")));
+    }
+
     printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");
     return failures == 0 ? 0 : 1;
 }

@@ -55,7 +55,7 @@ constexpr int kTailGraceMs = 2500;
 // grouped entries), so the settings have to be read back from here.
 const QString s_configGroup = QStringLiteral("General");
 // Matches the default of pollInterval in contents/config/main.xml.
-constexpr int kDefaultPollInterval = 200;
+constexpr int kDefaultPollInterval = 2000;
 // How often the playback position may be asked for again while it stays unknown.
 constexpr qint64 kPositionRetryIntervalMs = 2000;
 // How often a known position is checked against the player, which is the only
@@ -216,6 +216,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_fromSpicy(false)
     , m_fetchingFromSpicy(false)
     , m_fetchingLrc(false)
+    , m_lyricsLookupDone(false)
     , m_missingReason(MissingReason::Unsynced)
     , m_positionMs(0)
     , m_positionBaseMs(0)
@@ -374,7 +375,7 @@ void LrcApplet::readSettings()
     const QString player = setting(QStringLiteral("player")).trimmed();
     const QString preferredPlayer = setting(QStringLiteral("preferredPlayer")).trimmed();
     const QString placeholder = setting(QStringLiteral("placeholderText"), QStringLiteral("♪"));
-    const int pollInterval = qBound(200, intSetting(QStringLiteral("pollInterval"), kDefaultPollInterval), 10000);
+    const int pollInterval = qBound(500, intSetting(QStringLiteral("pollInterval"), kDefaultPollInterval), 10000);
     const int maxCharacters = qBound(0, intSetting(QStringLiteral("maxCharacters"), 40), 500);
     const bool showTimestamp = boolSetting(QStringLiteral("showTimestamp"), false);
     const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
@@ -492,8 +493,8 @@ void LrcApplet::poll()
         return;
     }
 
-    // If lyrics are already loaded and usable, the local monotonic timer drives the display
-    if (m_lyrics.isUsable()) {
+    // If lyrics are already loaded and usable, or lookup has completed for this track, skip polling
+    if (m_lyrics.isUsable() || m_lyricsLookupDone) {
         return;
     }
 
@@ -519,7 +520,7 @@ void LrcApplet::poll()
         return;
     }
 
-    if (!m_trackTitle.isEmpty() && !m_lyrics.isUsable()) {
+    if (!m_trackTitle.isEmpty() && !m_lyrics.isUsable() && !m_lyricsLookupDone) {
         requestLyrics();
     }
 }
@@ -583,6 +584,7 @@ void LrcApplet::onProcessFinished()
         m_wordSynced = false;
         m_lineIndex = -1;
         m_noLyricsCount = 0;
+        m_lyricsLookupDone = true;
         m_lastGoodCandidate = m_candidateIndex;
         m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
         updateWord();
@@ -600,6 +602,7 @@ void LrcApplet::onProcessFinished()
         return;
     }
 
+    m_lyricsLookupDone = true;
     setText(QString());
     setActive(false);
 }
@@ -607,6 +610,8 @@ void LrcApplet::onProcessFinished()
 void LrcApplet::onProcessFailedToStart()
 {
     m_watchdog.stop();
+    m_fetchingLrc = false;
+    m_lyricsLookupDone = true;
     // QProcess knows better than we do what went wrong ("No such file or
     // directory", permission denied, ...), so show that instead of guessing.
     setError(m_process->errorString());
@@ -701,6 +706,7 @@ void LrcApplet::clearLyrics()
     m_fromSpicy = false;
     m_fetchingFromSpicy = false;
     m_fetchingLrc = false;
+    m_lyricsLookupDone = false;
     m_missingReason = MissingReason::Unsynced;
     m_positionMs = 0;
     m_positionBaseMs = 0;
@@ -736,6 +742,8 @@ void LrcApplet::clearDisplay()
 
     clearLyrics();
     m_spotifyTrackId.clear();
+    m_mprisTrackId.clear();
+    m_lyricsLookupDone = false;
     m_lineIndex = -1;
     setText(QString());
     setActive(false);
@@ -760,7 +768,8 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
     const QStringList artists = trackArtists(metadata.value(QStringLiteral("xesam:artist")));
     const QString title = metadata.value(QStringLiteral("xesam:title")).toString();
     const QString artist = artists.join(QStringLiteral(", "));
-    const QString trackId = SpicyLyrics::trackIdFromMpris(mprisTrackId(metadata.value(QStringLiteral("mpris:trackid"))));
+    const QString rawTrackId = mprisTrackId(metadata.value(QStringLiteral("mpris:trackid")));
+    const QString trackId = SpicyLyrics::trackIdFromMpris(rawTrackId);
     const qint64 lengthUs = metadata.value(QStringLiteral("mpris:length")).toLongLong();
 
     QString trackInfo;
@@ -777,24 +786,27 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         return;
     }
 
-    const bool trackChanged = (title != m_trackTitle || artist != m_trackArtist || (!trackId.isEmpty() && trackId != m_spotifyTrackId));
+    const bool trackChanged = (title != m_trackTitle || artist != m_trackArtist
+        || (!trackId.isEmpty() && trackId != m_spotifyTrackId)
+        || (!rawTrackId.isEmpty() && rawTrackId != m_mprisTrackId));
 
     if (trackChanged) {
         clearDisplay();
 
         setTrackInfo(trackInfo);
-        m_webPageSession = looksLikeWebPageSession(mprisTrackId(metadata.value(QStringLiteral("mpris:trackid"))));
+        m_webPageSession = looksLikeWebPageSession(rawTrackId, m_player);
         m_trackArtist = artist;
         m_trackTitle = title;
         m_trackLengthUs = lengthUs;
         m_spotifyTrackId = trackId;
+        m_mprisTrackId = rawTrackId;
 
         requestPosition();
         requestLyrics();
     } else {
         setTrackInfo(trackInfo);
         m_trackLengthUs = lengthUs;
-        if (!m_lyrics.isUsable() && !m_fetchingFromSpicy && !m_fetchingLrc) {
+        if (!m_lyrics.isUsable() && !m_lyricsLookupDone && !m_fetchingFromSpicy && !m_fetchingLrc) {
             requestLyrics();
         }
     }
@@ -802,7 +814,7 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
 
 void LrcApplet::requestLyrics()
 {
-    if (m_watchedService.isEmpty() || m_trackTitle.isEmpty()) {
+    if (m_watchedService.isEmpty() || m_trackTitle.isEmpty() || m_lyricsLookupDone) {
         return;
     }
 
@@ -874,6 +886,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
     }
 
     m_fetchingFromSpicy = false;
+    m_lyricsLookupDone = true;
     m_lyrics = lyrics;
     m_fromSpicy = true;
     m_wordSynced = lyrics.type == LyricsType::Syllable;
@@ -1018,6 +1031,7 @@ void LrcApplet::updateWord()
 
     const int lineIndex = m_lyrics.lineAt(m_positionMs);
     if (lineIndex < 0) {
+        clearWordHighlight();
         // Between lines nobody is singing, and a pause there is normal, so what
         // is shown stays. Past the end of the last line there is nothing to keep:
         // what stays would be the outro of a song that is over, and it looks like
@@ -1025,14 +1039,21 @@ void LrcApplet::updateWord()
         if (!m_lyrics.lines.isEmpty() && m_positionMs > m_lyrics.lines.last().endMs + kTailGraceMs) {
             setText(QString());
             setActive(false);
-            clearWordHighlight();
         }
         return;
     }
 
     const LyricLine &line = m_lyrics.lines.at(lineIndex);
-    if (line.text != m_text) {
-        setText(line.text);
+    QString tsPrefix;
+    if (m_showTimestamp) {
+        const qint64 totalSecs = qMax(0LL, line.startMs) / 1000;
+        const qint64 mins = totalSecs / 60;
+        const qint64 secs = totalSecs % 60;
+        tsPrefix = QStringLiteral("[%1:%2] ").arg(mins, 2, 10, QLatin1Char('0')).arg(secs, 2, 10, QLatin1Char('0'));
+    }
+    const QString displayLine = tsPrefix + line.text;
+    if (displayLine != m_text) {
+        setText(displayLine);
         setActive(true);
     }
 
@@ -1094,8 +1115,9 @@ void LrcApplet::updateWord()
 
     if (active) {
         currentWord = line.text.mid(active->groupStart, active->groupEnd - active->groupStart);
-        currentStart = active->groupStart;
-        currentEnd = active->groupEnd;
+        const int prefixOffset = tsPrefix.length();
+        currentStart = active->groupStart + prefixOffset;
+        currentEnd = active->groupEnd + prefixOffset;
         const qint64 span = active->endMs - active->startMs;
         progress = span > 0 ? static_cast<double>(m_positionMs - active->startMs) / static_cast<double>(span) : 0.0;
         progress = qBound(0.0, progress, 1.0);

@@ -14,7 +14,7 @@ constexpr auto kCaseInsensitive = QRegularExpression::CaseInsensitiveOption;
 
 // "(Official Video)", "[4K]", "(Lyrics)", "(MV)", "(Премьера)", "(текст песни)".
 const QRegularExpression s_bracketedNoise(
-    QStringLiteral(R"((\s*[[(]\s*(?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?(?:\s*video)?|visuali[sz]er|mv|m/v|hd|hq|4k|live|clip(?:\s*officiel)?|videoclip|премьера[^\])]*|клип|текст(?:\s*песни)?|official)\s*[\]\)]))"),
+    QStringLiteral(R"((\s*[[(]\s*(?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?(?:\s*video)?|visuali[sz]er|mv|m/v|hd|hq|4k[^\])]*|1080p[^\])]*|live|clip(?:\s*officiel)?|videoclip|премьера[^\])]*|клип|текст(?:\s*песни)?|official)\s*[\]\)]))"),
     kCaseInsensitive);
 
 // Everything after a pipe is the chapter list or " | Lyrics video".
@@ -51,8 +51,11 @@ QString cleanTrackTitle(QString title)
     title.remove(s_featureTail);
     title = tidy(title);
 
-    // "[Official Video] -" leaves a dangling dash behind.
-    while (title.endsWith(QLatin1Char('-'))) {
+    // "[Official Video] -" or "–" leaves a dangling dash behind.
+    auto isDash = [](QChar c) {
+        return c == QLatin1Char('-') || c.unicode() == 0x2013 || c.unicode() == 0x2014;
+    };
+    while (!title.isEmpty() && isDash(title.back())) {
         title.chop(1);
         title = tidy(title);
     }
@@ -91,7 +94,9 @@ void splitTrackArtistAndTitle(QString *artist, QString *title, bool fromWebPage)
     }
 
     const QString current = tidy(*artist);
-    if (current.isEmpty() || fromWebPage || left.contains(current, Qt::CaseInsensitive)) {
+    const bool currentContainsLeft = !current.isEmpty() && current.contains(left, Qt::CaseInsensitive);
+    const bool leftContainsCurrent = !current.isEmpty() && left.contains(current, Qt::CaseInsensitive);
+    if (current.isEmpty() || fromWebPage || currentContainsLeft || leftContainsCurrent) {
         *artist = left;
         *title = right;
     }

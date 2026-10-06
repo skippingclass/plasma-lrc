@@ -61,4 +61,4 @@ QStringList trackArtists(const QVariant &value);
  * is whatever the page called itself and its uploader, not the credits of a song:
  * enough to tell that the "artist" may be a channel name.
  */
-bool looksLikeWebPageSession(const QString &trackId);
+bool looksLikeWebPageSession(const QString &trackId, const QString &playerName = QString());

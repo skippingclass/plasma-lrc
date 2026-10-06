@@ -76,7 +76,7 @@ PlasmoidItem {
 
     // The credit for the lyrics, in a short form for the panel and a full one for
     // the popup.
-    readonly property bool hasCredit: Plasmoid.fromSpicyLyrics && Plasmoid.attribution.length > 0
+    readonly property bool hasCredit: Plasmoid.attribution.length > 0
     readonly property string shortCredit: {
         const separator = Plasmoid.attribution.indexOf(" · ");
         return "· " + (separator > 0 ? Plasmoid.attribution.substring(0, separator) : Plasmoid.attribution);
@@ -92,7 +92,7 @@ PlasmoidItem {
     // the same otherwise.
     readonly property string sourceName: Plasmoid.fromSpicyLyrics //
         ? i18n("Spicy Lyrics")
-        : i18n("lrc_tty")
+        : (Plasmoid.attribution.length > 0 ? Plasmoid.attribution : i18n("lrc_tty"))
     readonly property string attributionHint: {
         if (Plasmoid.fromSpicyLyrics) {
             return i18n("via %1", sourceName);

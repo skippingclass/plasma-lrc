@@ -61,9 +61,24 @@ QStringList trackArtists(const QVariant &value)
     return artists;
 }
 
-bool looksLikeWebPageSession(const QString &trackId)
+bool looksLikeWebPageSession(const QString &trackId, const QString &playerName)
 {
-    return trackId.startsWith(QLatin1String("/org/chromium/MediaPlayer2/"));
+    if (trackId.startsWith(QLatin1String("/org/chromium/MediaPlayer2/"))
+        || trackId.startsWith(QLatin1String("/org/mozilla/firefox/"))) {
+        return true;
+    }
+    if (!playerName.isEmpty()) {
+        const QString lower = playerName.toLower();
+        if (lower.contains(QLatin1String("firefox"))
+            || lower.contains(QLatin1String("chromium"))
+            || lower.contains(QLatin1String("chrome"))
+            || lower.contains(QLatin1String("brave"))
+            || lower.contains(QLatin1String("vivaldi"))
+            || lower.contains(QLatin1String("edge"))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool playerNameMatches(const QString &configured, const QString &playerName)

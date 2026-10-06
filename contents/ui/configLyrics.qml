@@ -40,9 +40,9 @@ KCM.SimpleKCM {
             id: pollIntervalField
 
             Kirigami.FormData.label: i18n("Update every:")
-            from: 200
+            from: 500
             to: 10000
-            stepSize: 100
+            stepSize: 500
             textFromValue: function (value) {
                 return value + " ms";
             }

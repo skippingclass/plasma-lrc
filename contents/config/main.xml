@@ -18,9 +18,9 @@
         </entry>
 
         <entry name="pollInterval" type="Int">
-            <label>How often to ask for the current line, in milliseconds.</label>
-            <default>200</default>
-            <min>200</min>
+            <label>How often to poll fallback status, in milliseconds.</label>
+            <default>2000</default>
+            <min>500</min>
             <max>10000</max>
         </entry>
 
