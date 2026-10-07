@@ -3,8 +3,13 @@
 # Plasma LRC (KDE Plasma 6)
 
 <p align="center">
-  <strong>Сверхбыстрый виджет караоке и текста песен для панели KDE Plasma 6 с поддержкой пословного синка Spicy Lyrics и стандартных LRC</strong>
+  <strong>Fast, lightweight lyrics &amp; real-time karaoke widget for the KDE Plasma 6 panel with Spicy Lyrics word-by-word sync and universal LRC support</strong>
 </p>
+
+[![English](https://img.shields.io/badge/Language-English-blue?style=for-the-badge)](#)
+[![Русский](https://img.shields.io/badge/Language-Русский-red?style=for-the-badge)](README.ru.md)
+
+<br/>
 
 [![KDE Plasma 6](https://img.shields.io/badge/KDE_Plasma-6.0+-blue?style=flat-square&logo=kde)](https://kde.org/)
 [![Qt 6 / QML](https://img.shields.io/badge/Qt-6.5+-green?style=flat-square&logo=qt)](https://www.qt.io/)
@@ -14,108 +19,90 @@
 
 <br/>
 
-```
-  панель Plasma
-  ┌───────────────────────────────────────────────────────────┐
-  │ ♪  And this lil' ho <u>talk</u> too much                 │
-  └───────────────────────────────────────────────────────────┘
-         спето — приглушено, текущее слово — подчёркнуто
+<img src="assets/screenshot.png" alt="Plasma LRC Screenshot" />
 
-  клик по виджету — окно: трек, строка целиком, автор синхронизации
-```
-
-<sub><i>Пословное караоке Spicy Lyrics · Локальный парсинг LRC через lrclib · 0% CPU на холостом ходу · 1 запрос на трек</i></sub>
+<sub><i>Real-time word sync · Native LRC parser · 0% CPU at idle · 1 fetch per track</i></sub>
 
 </div>
 
 ---
 
-## Особенности
+## Features
 
-- **Пословное караоке в реальном времени**: для Spotify через Spicy Lyrics API подсвечивается каждое слово синхронно с вокалом прямо на панели задач. Слова выделяются целиком без артефактов склейки слогов. На выбор: акцентное подчёркивание или полужирный шрифт.
-- **Разовая загрузка LRC (1 запуск на трек вместо 900)**: виджет считывает полный текст песни (`lrc_tty --dump`) ровно один раз при смене трека. Встроенный C++ парсер LRC рассчитывает интервалы строк и локально ведёт тайминг по монотонным часам. Нагрузка на CPU стремится к 0%, фоновые процессы не спамят систему.
-- **Бесшовный и надёжный синк**:
-  - Мгновенный переход между пословным Spicy Lyrics (Spotify) и строчным LRC (lrclib) без сбоев тайминга.
-  - Корректная обработка треков без синка: виджет не ломается и моментально подхватывает следующий трек, у которого есть слова.
-  - Полноценная поддержка плееров без Spotify ID (браузеры, Strawberry, Elisa, MPV, VLC, Cider).
-  - Защита от гонок D-Bus: отложенные ответы позиции старого трека гарантированно отменяются и не портят таймлайн новой песни.
-- **Локальный отсчёт времени по монотонным часам**: позиция интерполируется нативными часами `QElapsedTimer` и мягко синхронизируется с MPRIS каждые 400 мс — текст идёт плавно и без микрофризов.
-- **Мгновенная реакция на перемотку**: апплет замечает скачки позиции в плеере и сразу перематывает текущую строку и слово без рассинхронизации.
-- **Умный скоринг и выбор плеера**: виджет анализирует метаданные MPRIS (длину, альбом, обложку), фильтруя голосовые сообщения Telegram и системные звуки браузеров. Активно играющий плеер удерживается до конца воспроизведения.
-- **Чистка клиповых названий**: автоматически срезает мусор из заголовков YouTube/клипов (`[Official Video]`, `4K`, `| Lyrics video`, `Topic`) перед поиском в базе лирики.
-- **Кэширование на диске**: ответы Spicy Lyrics сохраняются в `~/.cache/plasma-lrc/spicy/` на 30 дней, а отсутствие слов запоминается на сутки, исключая лишние сетевые запросы.
-- **Стабильная геометрия панели**: апплет фиксирует ширину при старте и не схлопывает панель Plasma в моменты тишины или между треками.
+- **Real-Time Word-by-Word Karaoke**:  
+  Highlights every sung word in real time on your Plasma panel using the Spicy Lyrics API (Spotify). Syllable groups are smoothly merged with zero stutter or text jumping.
+- **Customizable Highlight Palette**:  
+  Customize your lyric highlight color with built-in presets (Spotify Green, Cyan, Purple, Yellow, Coral, White) or any custom `#RRGGBB` hex code. Choose between highlight color, bold, or underline styles.
+- **1 Fetch Per Song Architecture**:  
+  Instead of polling external tools multiple times per second, the widget fetches lyrics once on track change (`lrc_tty --dump` / Spicy API) and runs local time interpolation using C++ `QElapsedTimer`. CPU usage drops to 0% at idle.
+- **Intelligent MPRIS Engine**:  
+  Auto-detects active music players, avoids browser media tab lock-in, strips video noise from titles (`[Official Music Video]`, `4K`, etc.), and prioritizes your favorite player.
+- **Clean Instrumental Breaks**:  
+  During musical solos and song intros, the panel stays clean instead of displaying outdated phantom lines. Configurable pause hide delay gently hides text when playback is paused.
+- **Customizable Mouse Actions**:  
+  Configure Left-click (Popup / Play-Pause) and Middle-click (None / Play-Pause / Next Track) right from your panel.
+- **Smooth Visual Transitions**:  
+  Subtle fade animations between lyric lines without any flickering during word-to-word singing.
 
 ---
 
-## Архитектура и как это работает
+## Architecture
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │               MPRIS2 Media Player (D-Bus)              │
 │       Spotify / Firefox / Chromium / Strawberry        │
 └───────────────────────────▲────────────────────────────┘
-                            │ Смена трека / Metadata / Position (400 мс)
+                            │ Track change / Metadata / Position (400ms)
 ┌───────────────────────────┴────────────────────────────┐
 │                  LrcApplet (C++ Core)                  │
 ├────────────────────────────────────────────────────────┤
-│ 1. Детекция смены трека & Скоринг активного плеера     │
-│ 2. Однократный запрос лирики на трек:                  │
+│ 1. Track detection & active player scoring             │
+│ 2. Single-shot lyrics fetch per track:                 │
 │    ├── Spotify + API Key  ──►  Spicy Lyrics HTTP API   │
-│    └── Прочие плееры      ──►  lrc_tty --dump (1 раз)  │
-│ 3. LrcParser (C++): парсинг [mm:ss.xx] в память        │
-│ 4. QElapsedTimer: локальный тайминг строк и слов       │
+│    └── Other players      ──►  lrc_tty --dump (1 time) │
+│ 3. LrcParser (C++): Fast in-memory [mm:ss.xx] parser   │
+│ 4. QElapsedTimer: Local monotonic line & word timing   │
 └───────────────────────────┬────────────────────────────┘
-                            │ Текст, текущее слово, прогресс
+                            │ Text, active word, progress
 ┌───────────────────────────▼────────────────────────────┐
 │                 QML UI (KDE Plasma 6)                  │
-│     Компактная строка на панели + Всплывающее окно     │
+│       Compact Panel Label + Rich Popup Card View       │
 └────────────────────────────────────────────────────────┘
 ```
 
-1. **Почему 1 запрос на трек вместо постоянного опроса?**  
-   Классический запуск внешней утилиты каждые 200 мс создавал ~5 процессов в секунду (до 900 процессов на трек), нагружая планировщик ОС. Виджет считывает полный LRC в память за один вызов `lrc_tty --dump` и рассчитывает тайминги строк локально — точно так же, как и для пословного Spicy API.
-2. **Как работает синхронизация позиции и перемотка?**  
-   D-Bus MPRIS не рассылает событий перемотки. Виджет опрашивает свойство `Position` каждые 400 мс и вычисляет разницу с локальным `QElapsedTimer`. Если разница превышает порог, апплет мгновенно корректирует базовую позицию и обновляет строку.
-3. **Почему синк больше не ломается при смене треков?**  
-   При переходе между треками виджет принудительно отменяет ожидающие асинхронные D-Bus запросы `Position` и завершает запущенный процесс `lrc_tty`. Старый ответ не может перезаписать базовое время нового трека, а переход между треками без слов (unsynced) и треками со словами происходит абсолютно гладко.
-
 ---
 
-## Требования
+## Requirements
 
-| Компонент | Требование | Назначение |
+| Component | Requirement | Purpose |
 |---|---|---|
-| **KDE Plasma** | 6.x (KDE Frameworks 6) | Окружение рабочего стола |
-| **Qt / C++** | Qt 6.5+, C++17 | Сборка и плагин панели |
-| **`lrc_tty`** | [lrc_tty](https://github.com/larsgrah/lrc_tty) | Поиск текстов в lrclib для всех MPRIS-плееров |
-| **Spicy Lyrics API Key** | Необязательно | Нужен только для пословного караоке на Spotify |
+| **KDE Plasma** | 6.0+ (Frameworks 6) | Desktop environment |
+| **Qt / C++** | Qt 6.5+, C++17 | Applet binary & QML engine |
+| **`lrc_tty`** | [lrc_tty](https://github.com/larsgrah/lrc_tty) | Universal lrclib backend for all MPRIS players |
+| **Spicy Lyrics Key** | Optional | Required for word-by-word karaoke on Spotify |
 
 ---
 
-## Установка
+## Installation
 
 ### Arch Linux (AUR)
-
-Виджет доступен в AUR:
 
 ```bash
 yay -S plasma6-applet-lrc-git
 ```
 
-Пакет компилирует C++ плагин, устанавливает QML-компоненты и автоматически перезапускает `plasmashell`.
-
-### Быстрая установка из репозитория
+### Quick Install (One-Line Script)
 
 ```bash
 git clone https://github.com/skippingclass/plasma-lrc.git
 cd plasma-lrc
-./install.sh                # собрать, установить в систему и перезапустить панель
-./install.sh --no-restart   # собрать и установить без перезапуска plasmashell
-./uninstall.sh              # удалить виджет, плагин и настройки
+./install.sh                # build, install system-wide, and restart plasmashell
+./install.sh --no-restart   # build & install without restarting plasmashell
+./uninstall.sh              # completely remove widget and config
 ```
 
-### Сборка вручную
+### Manual Build with CMake
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -124,127 +111,81 @@ sudo cmake --install build
 systemctl --user restart plasma-plasmashell.service
 ```
 
-> **Примечание:** Виджет регистрирует бинарный плагин в `/usr/lib/qt6/plugins/plasma/applets/org.kde.plasma.lrc.so` и декларативные QML-файлы в `/usr/share/plasma/plasmoids/org.kde.plasma.lrc/`. Установка в `~/.local` для C++ applet-плагинов Plasma не поддерживается поисковыми путями Qt.
-
-### Добавление на панель
-1. Нажмите правой кнопкой мыши по панели Plasma → **«Добавить виджеты...»** (*Add Widgets*).
-2. Найдите **LRC Lyrics** и перетащите на панель.
+### Adding Widget to Panel
+1. Right-click your Plasma panel → **Add Widgets...**
+2. Search for **LRC Lyrics** and drag it to your panel.
 
 ---
 
-## Настройки
+## Settings Reference
 
-Правый клик по виджету на панели → **«Настроить виджет...»**:
+Right-click the widget on your panel → **Configure LRC Lyrics...**:
 
-### Вкладка «Lyrics» (Текст и синхронизация)
+### Appearance Tab
 
-| Параметр | По умолчанию | Описание |
+| Setting | Default | Description |
 |---|---|---|
-| **lrc_tty executable** | `lrc_tty` | Путь к бинарнику `lrc_tty`, если он установлен нестандартно. |
-| **Favourite player** | *(пусто)* | Предпочитаемый плеер (например, `spotify` или `chromium`), если одновременно играют несколько. |
-| **Lock to player** | *(пусто)* | Привязаться исключительно к указанному плееру и игнорировать остальные. |
-| **Never ask** | *(пусто)* | Черный список MPRIS-источников через запятую (например, плееры уведомлений). |
-| **Lyric offset** | `0 ms` | Ручной сдвиг тайминга (−2000…+2000 мс) с шагом 50 мс для спешащих/отстающих треков. |
-| **Timestamps** | `Выключено` | Отображать временную метку `[mm:ss]` перед текстом текущей строки. |
-| **Idle** | `Выключено` | Приостанавливать опрос, пока ничего не играет (`pauseWhenIdle`). Рекомендуется оставить выключенным для мгновенного подхвата новых песен. |
+| **Sung word** | `Underlined` | Karaoke highlight style: `Underlined`, `Bold`, or `Highlight color`. |
+| **Highlight color** | *(System accent)* | Custom color for active word. Presets: Spotify (`#1ed760`), Cyan (`#00d4ff`), Purple (`#b342f5`), Yellow (`#ffd600`), Coral (`#ff4d4d`), White (`#ffffff`). |
+| **Transitions** | `Enabled` | Smooth fade animation when switching lines. |
+| **Alignment** | `Center` | Text alignment on the panel: `Center` or `Left`. |
+| **Panel** | `Standard` | Compact mode leaves the panel to lyrics alone (moving contributor credits to popup). |
+| **Maximum length** | `0 (no limit)` | Truncates text after N characters to preserve panel space. |
+| **No lyrics text** | `(empty)` | Placeholder text when no track or lyrics are active. |
+| **Icon** | `Enabled` | Shows music note icon next to lyrics. |
 
-### Вкладка «Source» (Источники)
+### Lyrics Tab
 
-| Параметр | По умолчанию | Описание |
+| Setting | Default | Description |
 |---|---|---|
-| **Spicy Lyrics** | `Включено` | Запрашивать пословные караоке-тайминги из Spicy Lyrics API для Spotify. |
-| **API key** | *(пусто)* | Персональный ключ доступа к Spicy Lyrics вида `sl_sk_…`. |
+| **Pause delay** | `5 seconds` | Seconds before lyrics fade out while paused (0 = never hide). |
+| **Left click** | `Show popup` | Action on left click: `Show popup` or `Play / Pause`. |
+| **Middle click** | `Play / Pause` | Action on middle click: `None`, `Play / Pause`, or `Next track`. |
+| **Lyric offset** | `0 ms` | Timing adjustment (−2000…+2000 ms) for early or late lyrics. |
+| **Timestamps** | `Disabled` | Shows timestamp prefix `[mm:ss]` before line. |
+| **Favourite player** | *(empty)* | Prefer this player if multiple players are running (e.g. `spotify`). |
+| **Lock to player** | *(empty)* | Exclusively listen to one player and ignore all others. |
+| **Never ask** | *(empty)* | Comma-separated blacklist of MPRIS players to ignore. |
 
-### Вкладка «Appearance» (Внешний вид)
+### Source Tab
 
-| Параметр | По умолчанию | Описание |
+| Setting | Default | Description |
 |---|---|---|
-| **Word highlight** | `Underline` | Стиль подсветки текущего поющегося слова: подчёркивание (`Underline`) или жирный шрифт (`Bold`). |
-| **Max characters** | `0` (авто) | Ограничение максимальной длины отображаемой строки. |
-| **Placeholder text** | `(пусто)` | Текст-заглушка, когда воспроизведение остановлено. |
-| **Icon** | `media-playback-start` | Иконка виджета на панели перед текстом строки. |
+| **Spicy Lyrics** | `Enabled` | Enables community word-level sync for Spotify tracks. |
+| **API key** | *(empty)* | Personal Spicy Lyrics developer token `sl_sk_…`. |
 
 ---
 
-## Spicy Lyrics
+## Spicy Lyrics Setup (Word-by-Word Karaoke)
 
-Сервис [spicylyrics.org](https://spicylyrics.org) предоставляет пословные караоке-тайминги для треков Spotify (синхронизация от сообщества, Apple Music и Spotify).
+[Spicy Lyrics](https://spicylyrics.org) provides synchronized word-level timings for Spotify tracks:
 
-1. Получите бесплатный ключ разработчика на [developers.spicylyrics.org](https://developers.spicylyrics.org).
-2. Укажите ключ в настройках виджета или экспортируйте через переменную окружения:
+1. Get a free developer API key at [developers.spicylyrics.org](https://developers.spicylyrics.org).
+2. Paste your key in **Configure LRC Lyrics → Source**, or export it in your environment:
 
 ```bash
 export SPICY_LYRICS_SECRET_KEY=sl_sk_...
 ```
 
-Переменная окружения имеет приоритет над GUI-настройками и не сохраняет секретный токен в открытом виде в конфигурационных файлах KDE.
-
-Если у трека в Spicy Lyrics нет пословного синка или трек играет не в Spotify, виджет бесшовно переключается на загрузку полного стандартного LRC из lrclib. Автор и источник синка всегда отображаются в подсказке и окне виджета.
+*Note: The environment variable takes precedence over GUI settings and avoids storing secrets in plain text.*
 
 ---
 
-## Если что-то не работает
+## Troubleshooting
 
-- **Панель пустая, хотя музыка играет:**  
-  Убедитесь, что `lrc_tty` установлен и видит плееры в системе:  
+- **Panel is empty while music is playing:**  
+  Verify that `lrc_tty` is installed and can detect your player:  
   ```bash
   lrc_tty --list-players
   ```  
-  Если ваш плеер не определяется автоматически, укажите его имя в поле **Favourite player** или **Lock to player**.
-- **Слова не подсвечиваются пословно:**  
-  Пословная подсветка доступна для Spotify через Spicy Lyrics. Для остальных источников (lrclib) текст синхронизируется построчно.
-- **Слова спешат или отстают от звука:**  
-  Откройте настройки виджета → вкладка **Lyrics** → настройте ползунок **Lyric offset** (вправо — задержка, влево — опережение).
-- **Виджет не появляется в списке «Добавить виджеты»:**  
-  Убедитесь, что установлены обе части плагина:  
-  ```bash
-  ls /usr/lib/qt6/plugins/plasma/applets/org.kde.plasma.lrc.so
-  ls /usr/share/plasma/plasmoids/org.kde.plasma.lrc/
-  ```  
-  После установки перезапустите графическую оболочку: `systemctl --user restart plasma-plasmashell.service`.
-- **Запуск виджета в тестовом окне:**  
-  ```bash
-  plasmawindowed org.kde.plasma.lrc
-  ```
+  If your player is not picked up automatically, enter its name in **Favourite player** (e.g. `spotify` or `chromium`).
+- **Word-by-word highlight is not active:**  
+  Word-by-word highlighting is provided for Spotify tracks via Spicy Lyrics. Other players and tracks without Spicy sync automatically use clean line-by-line synced LRC via lrclib.
+- **Lyrics are slightly ahead or behind audio:**  
+  Open settings → **Lyrics** → adjust **Lyric offset** slider (−2000ms to +2000ms).
 
 ---
 
-## Для разработчиков
+## License
 
-Сборка проекта и запуск тестов встроенного парсера:
-
-```bash
-cmake -S . -B build -G Ninja -DPLASMA_LRC_TESTS=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
-Ручной запуск тестов парсера Spicy Lyrics и LRC на реальных JSON/LRC файлах:
-
-```bash
-./build/spicy-parser-test
-./build/spicy-parser-test path/to/lyrics_response.json
-```
-
-### Структура проекта
-
-```
-├── lrcapplet.h / .cpp       # Ядро апплета: MPRIS2, QProcess, тайминги, логика источников
-├── lrcparser.h / .cpp       # Локальный C++ парсер стандартных LRC файлов ([mm:ss.xx])
-├── spicylyrics.h / .cpp     # Клиент Spicy Lyrics API: HTTP, JSON, дисковый кэш
-├── trackname.h / .cpp       # Очистка клиповых названий треков перед поиском
-├── contents/
-│   ├── config/              # Описание настроек Plasma (main.xml, config.qml)
-│   └── ui/                  # QML интерфейс панели и всплывающего окна
-├── tests/                   # Модульные тесты парсеров LRC и Spicy API
-├── install.sh / uninstall.sh# Скрипты быстрой установки и удаления
-└── docs/how-it-works.md     # Подробное руководство по внутренней архитектуре
-```
-
----
-
-## Лицензия
-
-MIT License © 2026 [skippingclass](https://github.com/skippingclass). Подробнее см. в файле [LICENSE](LICENSE).
-
-`lrc_tty` распространяется под лицензией GPL-3.0. Виджет взаимодействует с `lrc_tty` исключительно как с внешней утилитой через вызов процессов ОС.
+Distributed under the [MIT License](LICENSE).
