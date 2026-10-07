@@ -40,7 +40,7 @@ constexpr int kPlayerListCacheMs = 5000;
 // Probing every player should not block the widget if one of them hangs.
 constexpr int kProbeTimeoutMs = 2000;
 // How often the bus is asked again who is playing, even when a player is found.
-constexpr int kPlayerRerankMs = 30000;
+constexpr int kPlayerRerankMs = 5000;
 // How much better another player has to look before playback is switched over.
 constexpr int kPlayerSwitchMargin = 5;
 // Generous upper bound for a local MPRIS property fetch.
@@ -253,6 +253,15 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
                                           QStringLiteral("NameOwnerChanged"),
                                           this,
                                           SLOT(onServiceOwnerChanged(QString,QString,QString)));
+
+    // Listen to PropertiesChanged across all MPRIS players so that when another
+    // player starts playback, we hear about it immediately rather than waiting for sweeps.
+    QDBusConnection::sessionBus().connect(QString(),
+                                          s_playerPath,
+                                          s_propertiesInterface,
+                                          QStringLiteral("PropertiesChanged"),
+                                          this,
+                                          SLOT(onAnyPlayerPropertiesChanged(QString,QVariantMap,QStringList)));
 
     connect(m_spicy, &SpicyLyrics::loaded, this, &LrcApplet::onSpicyLoaded);
     connect(m_spicy, &SpicyLyrics::missing, this, &LrcApplet::onSpicyMissing);
@@ -477,12 +486,12 @@ void LrcApplet::poll()
         return;
     }
 
+    considerPlayerSwitch();
+
     // If lyrics are already loaded and usable, or lookup has completed for this track, skip polling
     if (m_lyrics.isUsable() || m_lyricsLookupDone) {
         return;
     }
-
-    considerPlayerSwitch();
 
     const QStringList candidates = playerCandidates();
     if (candidates.isEmpty() || !m_probed || m_awaitingState) {
@@ -1370,6 +1379,11 @@ void LrcApplet::probeCandidates()
 
 void LrcApplet::sortCandidatesByScore()
 {
+    if (m_candidates.isEmpty()) {
+        m_candidateIndex = 0;
+        return;
+    }
+
     // Playing first, score second, and a stable sort so that the name-based
     // preference settles what is left. A paused player describes a track better
     // than a web page does and still loses: what is on the panel should be what is
@@ -1392,7 +1406,7 @@ void LrcApplet::sortCandidatesByScore()
     // "chromium" for "chromium.instance18422".
     if (!m_preferredPlayer.isEmpty()) {
         for (int i = 1; i < m_candidates.size(); ++i) {
-            if (m_playerPlaying.value(m_candidates.at(i), false) && playerNameMatches(m_preferredPlayer, m_candidates.at(i))) {
+            if (playing(m_candidates.at(i)) && playerNameMatches(m_preferredPlayer, m_candidates.at(i))) {
                 m_candidates.move(i, 0);
                 break;
             }
@@ -1402,23 +1416,32 @@ void LrcApplet::sortCandidatesByScore()
     // Where in the list to continue, and whether to jump to the top of it.
     //
     // A player that is playing is left alone unless the newcomer looks a lot more
-    // like music, because switching mid-song cuts it off, which is worse than one
-    // switch too many. A player that is not playing has nothing to lose, so the
-    // best candidate takes over at once — and it has to, or a line left over from
-    // a player that stopped holds the panel for good.
-    //
-    // That last case is why this used to be broken at login: Spotify scoring 12
-    // could not pass a paused player scoring 8 by the five points the rule asked
-    // for, so the widget kept whatever it had found first, and only a restart of
-    // plasmashell cleared it.
+    // like music or is a dedicated music player replacing a browser web page.
     const int currentIndex = m_candidates.indexOf(m_player);
     const int currentScore = m_playerScores.value(m_player, 0);
-    const int bestScore = m_playerScores.value(m_candidates.first(), 0);
+    const QString bestCandidate = m_candidates.first();
+    const int bestScore = m_playerScores.value(bestCandidate, 0);
     const bool currentIsPlaying = m_playingKnown && m_playing;
+    const bool bestIsPlaying = playing(bestCandidate);
+
+    const bool bestIsWeb = looksLikeWebPageSession(QString(), bestCandidate);
+    const bool currentIsWeb = looksLikeWebPageSession(QString(), m_player);
+    const bool bestIsPreferred = !m_preferredPlayer.isEmpty() && playerNameMatches(m_preferredPlayer, bestCandidate);
+    const bool currentIsPreferred = !m_preferredPlayer.isEmpty() && playerNameMatches(m_preferredPlayer, m_player);
 
     bool takeBest = currentIndex < 0;
     if (currentIndex >= 0) {
-        takeBest = currentIsPlaying ? bestScore > currentScore + kPlayerSwitchMargin : bestScore > 0 && m_candidates.first() != m_player;
+        if (bestIsPlaying && !currentIsPlaying) {
+            takeBest = true;
+        } else if (bestIsPreferred && bestIsPlaying && !currentIsPreferred) {
+            takeBest = true;
+        } else if (currentIsWeb && !bestIsWeb && bestIsPlaying) {
+            takeBest = true;
+        } else if (currentIsPlaying) {
+            takeBest = bestScore > currentScore + kPlayerSwitchMargin;
+        } else {
+            takeBest = bestScore > 0 && bestCandidate != m_player;
+        }
         m_candidateIndex = takeBest ? 0 : currentIndex;
     } else {
         m_candidateIndex = 0;
@@ -1512,6 +1535,30 @@ void LrcApplet::onPlayerPropertiesChanged(const QString &interfaceName, const QV
     applyPlayerProperties(changed, invalidated);
 }
 
+void LrcApplet::onAnyPlayerPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated)
+{
+    Q_UNUSED(invalidated);
+
+    if (interfaceName != s_playerInterface) {
+        return;
+    }
+
+    const auto it = changed.constFind(QStringLiteral("PlaybackStatus"));
+    if (it != changed.constEnd()) {
+        const QString status = it.value().toString();
+        if (status.compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0) {
+            m_candidatesTimer.invalidate();
+            refreshPlayerCandidates();
+            return;
+        }
+    }
+
+    if (!m_playing && changed.contains(QStringLiteral("Metadata"))) {
+        m_candidatesTimer.invalidate();
+        refreshPlayerCandidates();
+    }
+}
+
 void LrcApplet::onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner)
 {
     Q_UNUSED(oldOwner);
@@ -1593,7 +1640,9 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
     const auto statusIt = properties.constFind(QStringLiteral("PlaybackStatus"));
     if (statusIt != properties.constEnd()) {
         const QString status = statusIt.value().toString();
-        setPlaying(status.compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0, true);
+        const bool wasPlaying = m_playingKnown && m_playing;
+        const bool nowPlaying = status.compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0;
+        setPlaying(nowPlaying, true);
         if (m_playingKnown) {
             // Playback state changed, so the interpolated position is stale and
             // worth asking for without waiting out the retry delay.
@@ -1609,6 +1658,11 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
         // the panel for the rest of the session.
         if (status.compare(QLatin1String("Stopped"), Qt::CaseInsensitive) == 0) {
             clearDisplay();
+        }
+
+        if ((wasPlaying && !nowPlaying) || status.compare(QLatin1String("Stopped"), Qt::CaseInsensitive) == 0) {
+            m_candidatesTimer.invalidate();
+            considerPlayerSwitch();
         }
     }
 

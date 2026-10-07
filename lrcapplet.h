@@ -204,6 +204,7 @@ public Q_SLOTS:
 
 private Q_SLOTS:
     void onPlayerPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);
+    void onAnyPlayerPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);
     void onPlayerPropertiesFetched();
     void onPlayerListFetched();
     void onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
