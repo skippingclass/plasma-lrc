@@ -25,6 +25,7 @@ KCM.SimpleKCM {
     property alias cfg_wordStyle: wordStyleBox.currentIndex
     property alias cfg_fadeTransition: fadeTransitionCheckBox.checked
     property alias cfg_textAlignment: textAlignmentBox.currentIndex
+    property alias cfg_customHighlightColor: customHighlightColorField.text
 
     Kirigami.FormLayout {
 
@@ -87,6 +88,61 @@ KCM.SimpleKCM {
 
             Kirigami.FormData.label: i18n("Sung word:")
             model: [i18n("Underlined"), i18n("Bold"), i18n("Highlight color")]
+        }
+
+        RowLayout {
+            Kirigami.FormData.label: i18n("Highlight color:")
+            spacing: Kirigami.Units.smallSpacing
+
+            Rectangle {
+                id: colorPreview
+                width: Kirigami.Units.gridUnit * 1.5
+                height: Kirigami.Units.gridUnit * 1.5
+                radius: Kirigami.Units.smallSpacing / 2
+                border.width: 1
+                border.color: Kirigami.Theme.separatorColor
+                color: {
+                    const c = customHighlightColorField.text.trim();
+                    return c.length > 0 ? c : Kirigami.Theme.highlightColor;
+                }
+            }
+
+            QQC2.TextField {
+                id: customHighlightColorField
+                placeholderText: i18n("System accent (empty) or #RRGGBB")
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+            }
+
+            QQC2.Button {
+                text: i18n("Reset")
+                icon.name: "edit-clear"
+                enabled: customHighlightColorField.text.length > 0
+                onClicked: {
+                    customHighlightColorField.text = "";
+                }
+            }
+        }
+
+        RowLayout {
+            Kirigami.FormData.label: i18n("Color presets:")
+            spacing: Kirigami.Units.smallSpacing
+
+            Repeater {
+                model: [
+                    { name: "Spotify", color: "#1ed760" },
+                    { name: "Cyan", color: "#00d4ff" },
+                    { name: "Purple", color: "#b342f5" },
+                    { name: "Yellow", color: "#ffd600" },
+                    { name: "Coral", color: "#ff4d4d" },
+                    { name: "White", color: "#ffffff" }
+                ]
+                delegate: QQC2.Button {
+                    text: modelData.name
+                    onClicked: {
+                        customHighlightColorField.text = modelData.color;
+                    }
+                }
+            }
         }
 
         QQC2.ComboBox {

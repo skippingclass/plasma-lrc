@@ -92,6 +92,8 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(int middleClickAction READ middleClickAction NOTIFY settingsChanged)
     /// Text alignment in panel: 0 for center, 1 for left.
     Q_PROPERTY(int textAlignment READ textAlignment NOTIFY settingsChanged)
+    /// Custom color for sung word highlight, empty for system accent.
+    Q_PROPERTY(QString customHighlightColor READ customHighlightColor NOTIFY settingsChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -215,6 +217,10 @@ public:
     int textAlignment() const
     {
         return m_textAlignment;
+    }
+    QString customHighlightColor() const
+    {
+        return m_customHighlightColor;
     }
 
     Q_INVOKABLE void togglePlayPause();
@@ -359,6 +365,7 @@ private:
     int m_clickAction;
     int m_middleClickAction;
     int m_textAlignment;
+    QString m_customHighlightColor;
 
     QString m_spicyKey;
     bool m_useSpicy;

@@ -132,5 +132,10 @@
             <min>0</min>
             <max>1</max>
         </entry>
+
+        <entry name="customHighlightColor" type="String">
+            <label>Custom color for sung word and pause dots highlight. Empty means system accent color.</label>
+            <default></default>
+        </entry>
     </group>
 </kcfg>

@@ -393,6 +393,7 @@ void LrcApplet::readSettings()
     const int clickAction = qBound(0, intSetting(QStringLiteral("clickAction"), 0), 1);
     const int middleClickAction = qBound(0, intSetting(QStringLiteral("middleClickAction"), 1), 2);
     const int textAlignment = qBound(0, intSetting(QStringLiteral("textAlignment"), 0), 1);
+    const QString customHighlightColor = setting(QStringLiteral("customHighlightColor")).trimmed();
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
 
@@ -414,6 +415,7 @@ void LrcApplet::readSettings()
         || clickAction != m_clickAction //
         || middleClickAction != m_middleClickAction //
         || textAlignment != m_textAlignment //
+        || customHighlightColor != m_customHighlightColor //
         || useSpicy != m_useSpicy //
         || spicyKey != m_spicyKey;
 
@@ -435,6 +437,7 @@ void LrcApplet::readSettings()
     m_clickAction = clickAction;
     m_middleClickAction = middleClickAction;
     m_textAlignment = textAlignment;
+    m_customHighlightColor = customHighlightColor;
     m_useSpicy = useSpicy;
     m_spicyKey = spicyKey;
 
@@ -1187,14 +1190,40 @@ void LrcApplet::updateWord()
     const int lineIndex = m_lyrics.lineAt(m_positionMs);
     if (lineIndex < 0) {
         clearWordHighlight();
-        // Between lines nobody is singing, and a pause there is normal, so what
-        // is shown stays. Past the end of the last line there is nothing to keep:
-        // what stays would be the outro of a song that is over, and it looks like
-        // the panel has lost track of what is playing.
-        if (!m_lyrics.lines.isEmpty() && m_positionMs > m_lyrics.lines.last().endMs + kTailGraceMs) {
-            setText(QString());
-            setActive(false);
+
+        // Check if playback is past the last line (outro)
+        if (!m_lyrics.lines.isEmpty() && m_positionMs > m_lyrics.lines.last().endMs) {
+            if (m_positionMs > m_lyrics.lines.last().endMs + kTailGraceMs && !m_text.isEmpty()) {
+                setText(QString());
+                setActive(false);
+            }
+            return;
         }
+
+        // Between lines: during an instrumental break (gap >= 2.5s), clear the display
+        // after a 1.2s grace period so nothing is shown during the musical pause.
+        int nextLineIndex = -1;
+        for (int i = 0; i < m_lyrics.lines.size(); ++i) {
+            if (m_lyrics.lines.at(i).startMs > m_positionMs) {
+                nextLineIndex = i;
+                break;
+            }
+        }
+
+        if (nextLineIndex > 0) {
+            const LyricLine &prevLine = m_lyrics.lines.at(nextLineIndex - 1);
+            const LyricLine &nextLine = m_lyrics.lines.at(nextLineIndex);
+            const qint64 gapDuration = nextLine.startMs - prevLine.endMs;
+
+            if (gapDuration >= 2500) {
+                if (m_positionMs >= prevLine.endMs + 1200 && !m_text.isEmpty()) {
+                    setText(QString());
+                    setActive(false);
+                }
+                return;
+            }
+        }
+
         return;
     }
 

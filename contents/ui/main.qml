@@ -36,7 +36,10 @@ PlasmoidItem {
     }
 
     // The word being sung is marked either with an underline (0), bold (1), or highlight color (2).
-    readonly property color highlightColor: Kirigami.Theme.highlightColor
+    readonly property color highlightColor: {
+        const custom = Plasmoid.customHighlightColor ? Plasmoid.customHighlightColor.trim() : "";
+        return custom.length > 0 ? custom : Kirigami.Theme.highlightColor;
+    }
 
     function formatActiveWord(word) {
         const escaped = escapeHtml(word);
