@@ -23,6 +23,8 @@ KCM.SimpleKCM {
     property alias cfg_maxCharacters: maxCharactersField.value
     property alias cfg_compactPanel: compactModeCheckBox.checked
     property alias cfg_wordStyle: wordStyleBox.currentIndex
+    property alias cfg_fadeTransition: fadeTransitionCheckBox.checked
+    property alias cfg_textAlignment: textAlignmentBox.currentIndex
 
     Kirigami.FormLayout {
 
@@ -84,7 +86,21 @@ KCM.SimpleKCM {
             id: wordStyleBox
 
             Kirigami.FormData.label: i18n("Sung word:")
-            model: [i18n("Underlined"), i18n("Bold")]
+            model: [i18n("Underlined"), i18n("Bold"), i18n("Highlight color")]
+        }
+
+        QQC2.ComboBox {
+            id: textAlignmentBox
+
+            Kirigami.FormData.label: i18n("Alignment:")
+            model: [i18n("Center"), i18n("Left")]
+        }
+
+        QQC2.CheckBox {
+            id: fadeTransitionCheckBox
+
+            Kirigami.FormData.label: i18n("Transitions:")
+            text: i18n("Smooth fade animation between lines")
         }
     }
 }

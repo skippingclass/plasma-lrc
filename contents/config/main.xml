@@ -94,7 +94,40 @@
         </entry>
 
         <entry name="wordStyle" type="Int">
-            <label>How the word being sung is marked: 0 is underline, 1 is bold.</label>
+            <label>How the word being sung is marked: 0 is underline, 1 is bold, 2 is highlight color.</label>
+            <default>0</default>
+            <min>0</min>
+            <max>2</max>
+        </entry>
+
+        <entry name="pauseHideDelay" type="Int">
+            <label>Seconds of pause before hiding lyrics. 0 means keep lyrics visible.</label>
+            <default>5</default>
+            <min>0</min>
+            <max>60</max>
+        </entry>
+
+        <entry name="fadeTransition" type="Bool">
+            <label>Smooth fade transition between lyric lines.</label>
+            <default>true</default>
+        </entry>
+
+        <entry name="clickAction" type="Int">
+            <label>Left click action: 0 for popup, 1 for play/pause.</label>
+            <default>0</default>
+            <min>0</min>
+            <max>1</max>
+        </entry>
+
+        <entry name="middleClickAction" type="Int">
+            <label>Middle click action: 0 for none, 1 for play/pause, 2 for next track.</label>
+            <default>1</default>
+            <min>0</min>
+            <max>2</max>
+        </entry>
+
+        <entry name="textAlignment" type="Int">
+            <label>Text alignment in panel: 0 for center, 1 for left.</label>
             <default>0</default>
             <min>0</min>
             <max>1</max>

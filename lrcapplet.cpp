@@ -197,6 +197,11 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_wordStyle(0)
     , m_lyricOffset(0)
     , m_pauseWhenIdle(true)
+    , m_pauseHideDelay(5)
+    , m_fadeTransition(true)
+    , m_clickAction(0)
+    , m_middleClickAction(1)
+    , m_textAlignment(0)
     , m_useSpicy(true)
     , m_trackLengthUs(0)
     , m_webPageSession(false)
@@ -237,6 +242,9 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     // back after being closed gets noticed.
     m_busTimer.setInterval(kPlayerRerankMs);
     connect(&m_busTimer, &QTimer::timeout, this, &LrcApplet::considerPlayerSwitch);
+
+    m_pauseTimer.setSingleShot(true);
+    connect(&m_pauseTimer, &QTimer::timeout, this, &LrcApplet::onPauseTimeout);
 
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, [this] {
@@ -330,11 +338,7 @@ QString LrcApplet::setting(const QString &key, const QString &defaultValue) cons
 
 int LrcApplet::intSetting(const QString &key, int defaultValue) const
 {
-    int value = config().group(s_configGroup).readEntry(key, defaultValue);
-    if (value <= 0) {
-        value = defaultValue;
-    }
-    return value;
+    return config().group(s_configGroup).readEntry(key, defaultValue);
 }
 
 bool LrcApplet::boolSetting(const QString &key, bool defaultValue) const
@@ -374,9 +378,14 @@ void LrcApplet::readSettings()
     const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
     const bool showTrackInfo = boolSetting(QStringLiteral("showTrackInfo"), true);
     const bool compactPanel = boolSetting(QStringLiteral("compactPanel"), false);
-    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 0), 1);
+    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 0), 2);
     const int lyricOffset = qBound(-2000, intSetting(QStringLiteral("lyricOffset"), 0), 2000);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), false);
+    const int pauseHideDelay = qBound(0, intSetting(QStringLiteral("pauseHideDelay"), 5), 60);
+    const bool fadeTransition = boolSetting(QStringLiteral("fadeTransition"), true);
+    const int clickAction = qBound(0, intSetting(QStringLiteral("clickAction"), 0), 1);
+    const int middleClickAction = qBound(0, intSetting(QStringLiteral("middleClickAction"), 1), 2);
+    const int textAlignment = qBound(0, intSetting(QStringLiteral("textAlignment"), 0), 1);
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
 
@@ -393,6 +402,11 @@ void LrcApplet::readSettings()
         || wordStyle != m_wordStyle //
         || lyricOffset != m_lyricOffset //
         || pauseWhenIdle != m_pauseWhenIdle //
+        || pauseHideDelay != m_pauseHideDelay //
+        || fadeTransition != m_fadeTransition //
+        || clickAction != m_clickAction //
+        || middleClickAction != m_middleClickAction //
+        || textAlignment != m_textAlignment //
         || useSpicy != m_useSpicy //
         || spicyKey != m_spicyKey;
 
@@ -409,6 +423,11 @@ void LrcApplet::readSettings()
     m_wordStyle = wordStyle;
     m_lyricOffset = lyricOffset;
     m_pauseWhenIdle = pauseWhenIdle;
+    m_pauseHideDelay = pauseHideDelay;
+    m_fadeTransition = fadeTransition;
+    m_clickAction = clickAction;
+    m_middleClickAction = middleClickAction;
+    m_textAlignment = textAlignment;
     m_useSpicy = useSpicy;
     m_spicyKey = spicyKey;
 
@@ -671,8 +690,15 @@ void LrcApplet::setPlaying(bool playing, bool known)
     Q_EMIT playingChanged();
 
     if (playing) {
-        // Playback started (or was resumed): go pick up where we left off.
+        m_pauseTimer.stop();
+        if (m_lyrics.isUsable()) {
+            updateWord();
+        }
         poll();
+    } else if (known && !playing) {
+        if (m_pauseHideDelay > 0) {
+            m_pauseTimer.start(m_pauseHideDelay * 1000);
+        }
     }
 
     // The word timer exists to move the highlight. While the music is stopped
@@ -776,7 +802,45 @@ void LrcApplet::clearDisplay()
     m_positionRetries.invalidate();
     m_positionChecks.invalidate();
     m_positionFetchTimer.invalidate();
+    m_pauseTimer.stop();
     ++m_lookupGeneration;
+}
+
+void LrcApplet::onPauseTimeout()
+{
+    if (m_playingKnown && !m_playing) {
+        m_lineIndex = -1;
+        clearWordHighlight();
+        setText(QString());
+        setActive(false);
+    }
+}
+
+void LrcApplet::togglePlayPause()
+{
+    if (m_watchedService.isEmpty()) {
+        return;
+    }
+    QDBusMessage msg = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("PlayPause"));
+    QDBusConnection::sessionBus().send(msg);
+}
+
+void LrcApplet::nextTrack()
+{
+    if (m_watchedService.isEmpty()) {
+        return;
+    }
+    QDBusMessage msg = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("Next"));
+    QDBusConnection::sessionBus().send(msg);
+}
+
+void LrcApplet::previousTrack()
+{
+    if (m_watchedService.isEmpty()) {
+        return;
+    }
+    QDBusMessage msg = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("Previous"));
+    QDBusConnection::sessionBus().send(msg);
 }
 
 void LrcApplet::applyMetadata(const QVariantMap &metadata)

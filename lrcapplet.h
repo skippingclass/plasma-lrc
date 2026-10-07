@@ -82,6 +82,16 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(int wordStyle READ wordStyle NOTIFY settingsChanged)
     /// Milliseconds the lyrics are shifted by, for syncs that run early or late.
     Q_PROPERTY(int lyricOffset READ lyricOffset NOTIFY settingsChanged)
+    /// Seconds to wait before hiding lyrics when paused (0 = never hide).
+    Q_PROPERTY(int pauseHideDelay READ pauseHideDelay NOTIFY settingsChanged)
+    /// Whether to smoothly fade transitions between lyric lines.
+    Q_PROPERTY(bool fadeTransition READ fadeTransition NOTIFY settingsChanged)
+    /// Left click action on the panel: 0 for popup, 1 for play/pause.
+    Q_PROPERTY(int clickAction READ clickAction NOTIFY settingsChanged)
+    /// Middle click action on the panel: 0 for none, 1 for play/pause, 2 for next.
+    Q_PROPERTY(int middleClickAction READ middleClickAction NOTIFY settingsChanged)
+    /// Text alignment in panel: 0 for center, 1 for left.
+    Q_PROPERTY(int textAlignment READ textAlignment NOTIFY settingsChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -186,6 +196,30 @@ public:
     bool compactPanel() const;
     int wordStyle() const;
     int lyricOffset() const;
+    int pauseHideDelay() const
+    {
+        return m_pauseHideDelay;
+    }
+    bool fadeTransition() const
+    {
+        return m_fadeTransition;
+    }
+    int clickAction() const
+    {
+        return m_clickAction;
+    }
+    int middleClickAction() const
+    {
+        return m_middleClickAction;
+    }
+    int textAlignment() const
+    {
+        return m_textAlignment;
+    }
+
+    Q_INVOKABLE void togglePlayPause();
+    Q_INVOKABLE void nextTrack();
+    Q_INVOKABLE void previousTrack();
 
 Q_SIGNALS:
     void textChanged();
@@ -211,6 +245,7 @@ private Q_SLOTS:
     void onSpicyLoaded(const QString &trackId, const Lyrics &lyrics);
     void onSpicyMissing(const QString &trackId, MissingReason reason);
     void onPositionFetched();
+    void onPauseTimeout();
     /// Whether the reported position differs from ours by more than a seek.
     bool positionJumped(qint64 reportedMs) const;
     void updateWord();
@@ -279,6 +314,8 @@ private:
     QTimer m_wordTimer;
     /// Asks the bus who is playing, independently of whether anything plays.
     QTimer m_busTimer;
+    /// Clears displayed lyrics after the player has remained paused for pauseHideDelay seconds.
+    QTimer m_pauseTimer;
     QProcess *m_process;
     SpicyLyrics *m_spicy;
 
@@ -317,6 +354,11 @@ private:
     int m_wordStyle;
     int m_lyricOffset;
     bool m_pauseWhenIdle;
+    int m_pauseHideDelay;
+    bool m_fadeTransition;
+    int m_clickAction;
+    int m_middleClickAction;
+    int m_textAlignment;
 
     QString m_spicyKey;
     bool m_useSpicy;

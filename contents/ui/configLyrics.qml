@@ -25,6 +25,9 @@ KCM.SimpleKCM {
     property alias cfg_pollInterval: pollIntervalField.value
     property alias cfg_showTimestamp: showTimestampCheckBox.checked
     property alias cfg_pauseWhenIdle: pauseWhenIdleCheckBox.checked
+    property alias cfg_pauseHideDelay: pauseHideDelayField.value
+    property alias cfg_clickAction: clickActionBox.currentIndex
+    property alias cfg_middleClickAction: middleClickActionBox.currentIndex
 
     Kirigami.FormLayout {
 
@@ -142,6 +145,45 @@ KCM.SimpleKCM {
 
             Kirigami.FormData.label: i18n("Idle:")
             text: i18n("Stop querying while nothing is playing")
+        }
+
+        QQC2.SpinBox {
+            id: pauseHideDelayField
+
+            Kirigami.FormData.label: i18n("Hide on pause:")
+            from: 0
+            to: 60
+            stepSize: 1
+            textFromValue: function (value) {
+                return value === 0 ? i18n("never hide") : value + " s";
+            }
+            valueFromText: function (text) {
+                const parsed = parseInt(text);
+                return isNaN(parsed) ? 0 : parsed;
+            }
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Clear lyrics after the player has remained paused for this many seconds (0 to keep them visible). Lyrics reappear as soon as playback resumes.")
+        }
+
+        QQC2.ComboBox {
+            id: clickActionBox
+
+            Kirigami.FormData.label: i18n("Left click:")
+            model: [i18n("Open lyrics popup"), i18n("Play / Pause")]
+        }
+
+        QQC2.ComboBox {
+            id: middleClickActionBox
+
+            Kirigami.FormData.label: i18n("Middle click:")
+            model: [i18n("None"), i18n("Play / Pause"), i18n("Next track")]
         }
     }
 }

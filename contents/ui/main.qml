@@ -35,9 +35,19 @@ PlasmoidItem {
         return Qt.rgba(base.r, base.g, base.b, 0.45);
     }
 
-    // The word being sung is marked either with an underline or in bold, whichever
-    // the settings ask for.
-    readonly property string wordMark: Plasmoid.wordStyle === 1 ? "b" : "u"
+    // The word being sung is marked either with an underline (0), bold (1), or highlight color (2).
+    readonly property color highlightColor: Kirigami.Theme.highlightColor
+
+    function formatActiveWord(word) {
+        const escaped = escapeHtml(word);
+        if (Plasmoid.wordStyle === 1) {
+            return "<b>" + escaped + "</b>";
+        }
+        if (Plasmoid.wordStyle === 2) {
+            return "<font color=\"" + highlightColor + "\"><b>" + escaped + "</b></font>";
+        }
+        return "<u>" + escaped + "</u>";
+    }
 
     // The line with the word being sung marked, for the panel.
     readonly property string compactLine: {
@@ -45,7 +55,7 @@ PlasmoidItem {
             return escapeHtml(lyricText);
         }
         return escapeHtml(lyricText.substring(0, Plasmoid.wordStart))
-            + "<" + wordMark + ">" + escapeHtml(Plasmoid.word) + "</" + wordMark + ">"
+            + formatActiveWord(Plasmoid.word)
             + escapeHtml(lyricText.substring(Plasmoid.wordEnd));
     }
 
@@ -56,7 +66,7 @@ PlasmoidItem {
             return escapeHtml(lyricText);
         }
         const sung = "<font color=\"" + dimmedColor + "\">" + escapeHtml(lyricText.substring(0, Plasmoid.wordStart)) + "</font>";
-        const current = "<" + wordMark + ">" + escapeHtml(Plasmoid.word) + "</" + wordMark + ">";
+        const current = formatActiveWord(Plasmoid.word);
         const rest = escapeHtml(lyricText.substring(Plasmoid.wordEnd));
         return sung + current + rest;
     }
@@ -130,7 +140,7 @@ PlasmoidItem {
 
         hoverEnabled: true
         activeFocusOnTab: true
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
 
         Accessible.role: Accessible.StaticText
         Accessible.name: root.displayText
@@ -148,7 +158,21 @@ PlasmoidItem {
         Layout.minimumHeight: implicitHeight
         Layout.maximumWidth: implicitWidth
 
-        onClicked: root.expanded = !root.expanded
+        onClicked: function (mouse) {
+            if (mouse.button === Qt.MiddleButton) {
+                if (Plasmoid.middleClickAction === 1) {
+                    Plasmoid.togglePlayPause();
+                } else if (Plasmoid.middleClickAction === 2) {
+                    Plasmoid.nextTrack();
+                }
+            } else if (mouse.button === Qt.LeftButton) {
+                if (Plasmoid.clickAction === 1) {
+                    Plasmoid.togglePlayPause();
+                } else {
+                    root.expanded = !root.expanded;
+                }
+            }
+        }
 
         GridLayout {
             id: compactLayout
@@ -177,10 +201,35 @@ PlasmoidItem {
                 textFormat: Text.RichText
                 color: root.hasLyrics ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
                 elide: Text.ElideRight
-                Layout.alignment: Qt.AlignCenter
+                horizontalAlignment: Plasmoid.textAlignment === 1 ? Text.AlignLeft : Text.AlignHCenter
+                Layout.alignment: Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) : Qt.AlignCenter
                 Layout.maximumWidth: root.maxCharacters > 0 //
                     ? Math.ceil(characterWidth.advanceWidth) * root.maxCharacters
                     : implicitWidth
+
+                Behavior on text {
+                    enabled: Plasmoid.fadeTransition
+                    SequentialAnimation {
+                        NumberAnimation {
+                            target: lyricLabel
+                            property: "opacity"
+                            to: 0.35
+                            duration: 70
+                            easing.type: Easing.OutQuad
+                        }
+                        PropertyAction {
+                            target: lyricLabel
+                            property: "text"
+                        }
+                        NumberAnimation {
+                            target: lyricLabel
+                            property: "opacity"
+                            to: 1.0
+                            duration: 100
+                            easing.type: Easing.InQuad
+                        }
+                    }
+                }
             }
 
             PlasmaComponents3.Label {
