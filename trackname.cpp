@@ -34,7 +34,7 @@ const QRegularExpression s_officialSuffix(QStringLiteral(R"(\s+(?:official|оф�
 const QRegularExpression s_artistFeatureBracket(QStringLiteral(R"(\s*[,;]?\s*\((?:feat|ft)\.?\s[^)]*\))"), kCaseInsensitive);
 const QRegularExpression s_artistFeatureTail(QStringLiteral(R"(\s*[,;]?\s+(?:feat|ft)\.?\s.*$)"), kCaseInsensitive);
 
-const QRegularExpression s_artistDashTitle(QStringLiteral(R"(^(.+?)\s+[-–—]\s+(.+)$)"));
+const QRegularExpression s_artistDashTitle(QStringLiteral(R"(^(.+?)\s+[-–—−]\s+(.+)$)"));
 
 QString tidy(QString value)
 {
@@ -53,7 +53,7 @@ QString cleanTrackTitle(QString title)
 
     // "[Official Video] -" or "–" leaves a dangling dash behind.
     auto isDash = [](QChar c) {
-        return c == QLatin1Char('-') || c.unicode() == 0x2013 || c.unicode() == 0x2014;
+        return c == QLatin1Char('-') || c.unicode() == 0x2013 || c.unicode() == 0x2014 || c.unicode() == 0x2212;
     };
     while (!title.isEmpty() && isDash(title.back())) {
         title.chop(1);

@@ -240,6 +240,8 @@ private:
     void clearLyrics();
     /// Takes the previous track's line, track name and API lyrics off the panel.
     void clearDisplay();
+    /// Safely terminates and detaches any running lrc_tty process.
+    void cancelProcess();
 
     /// Looks at the bus and at the scores, and moves on if something else is
     /// more likely to be the music. Runs even while nothing is playing.

@@ -74,7 +74,13 @@ bool looksLikeWebPageSession(const QString &trackId, const QString &playerName)
             || lower.contains(QLatin1String("chrome"))
             || lower.contains(QLatin1String("brave"))
             || lower.contains(QLatin1String("vivaldi"))
-            || lower.contains(QLatin1String("edge"))) {
+            || lower.contains(QLatin1String("edge"))
+            || lower.contains(QLatin1String("opera"))
+            || lower.contains(QLatin1String("browser"))
+            || lower.contains(QLatin1String("plasma-browser-integration"))
+            || lower.contains(QLatin1String("zen"))
+            || lower.contains(QLatin1String("librewolf"))
+            || lower.contains(QLatin1String("yandex"))) {
             return true;
         }
     }

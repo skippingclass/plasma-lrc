@@ -183,7 +183,7 @@ QStringList mprisPlayersFromServiceNames(const QStringList &services)
 
 LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args)
     : Plasma::Applet(parent, data, args)
-    , m_process(new QProcess(this))
+    , m_process(nullptr)
     , m_spicy(new SpicyLyrics(this))
     , m_propertyWatcher(nullptr)
     , m_namesWatcher(nullptr)
@@ -227,8 +227,6 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_lineIndex(-1)
     , m_wordCursor(0)
 {
-    m_process->setProcessChannelMode(QProcess::SeparateChannels);
-
     m_timer.setTimerType(Qt::PreciseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
 
@@ -242,22 +240,8 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
 
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, [this] {
-        if (m_process->state() != QProcess::NotRunning) {
+        if (m_process && m_process->state() != QProcess::NotRunning) {
             m_process->kill();
-        }
-    });
-
-    connect(m_process, &QProcess::finished, this, [this] {
-        onProcessFinished();
-    });
-    connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) {
-            onProcessFailedToStart();
-        }
-    });
-    connect(m_process, &QProcess::stateChanged, this, [this] {
-        if (m_process->state() == QProcess::NotRunning) {
-            m_watchdog.stop();
         }
     });
 
@@ -276,10 +260,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
 
 LrcApplet::~LrcApplet()
 {
-    if (m_process->state() != QProcess::NotRunning) {
-        m_process->kill();
-        m_process->waitForFinished(1000);
-    }
+    cancelProcess();
 }
 
 void LrcApplet::constraintsEvent(Constraints constraints)
@@ -519,7 +500,7 @@ void LrcApplet::poll()
         return;
     }
 
-    if (m_fetchingFromSpicy || m_fetchingLrc || m_process->state() != QProcess::NotRunning) {
+    if (m_fetchingFromSpicy || m_fetchingLrc || (m_process && m_process->state() != QProcess::NotRunning)) {
         return;
     }
 
@@ -561,7 +542,7 @@ void LrcApplet::onProcessFinished()
     m_fetchingLrc = false;
 
     // If the track changed while the process was running, discard output from the old track.
-    if (m_processGeneration != m_lookupGeneration) {
+    if (!m_process || m_processGeneration != m_lookupGeneration) {
         return;
     }
 
@@ -575,6 +556,7 @@ void LrcApplet::onProcessFinished()
 
     // A track that the API timed better than lrc_tty does: ignore this answer.
     if (m_fromSpicy && m_lyrics.isUsable()) {
+        cancelProcess();
         return;
     }
 
@@ -594,6 +576,7 @@ void LrcApplet::onProcessFinished()
         m_noLyricsCount = 0;
         m_lyricsLookupDone = true;
         m_lastGoodCandidate = m_candidateIndex;
+        cancelProcess();
         m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
         updateWord();
         Q_EMIT lyricsChanged();
@@ -610,6 +593,7 @@ void LrcApplet::onProcessFinished()
         return;
     }
 
+    cancelProcess();
     m_lyricsLookupDone = true;
     setText(QString());
     setActive(false);
@@ -617,12 +601,10 @@ void LrcApplet::onProcessFinished()
 
 void LrcApplet::onProcessFailedToStart()
 {
-    m_watchdog.stop();
-    m_fetchingLrc = false;
+    const QString err = m_process ? m_process->errorString() : QStringLiteral("Failed to start process");
+    cancelProcess();
     m_lyricsLookupDone = true;
-    // QProcess knows better than we do what went wrong ("No such file or
-    // directory", permission denied, ...), so show that instead of guessing.
-    setError(m_process->errorString());
+    setError(err);
     if (!m_available) {
         return;
     }
@@ -730,6 +712,23 @@ void LrcApplet::clearLyrics()
     Q_EMIT lyricsChanged();
 }
 
+void LrcApplet::cancelProcess()
+{
+    m_watchdog.stop();
+    m_fetchingLrc = false;
+
+    if (m_process) {
+        m_process->disconnect(this);
+        if (m_process->state() != QProcess::NotRunning) {
+            connect(m_process, &QProcess::finished, m_process, &QObject::deleteLater);
+            m_process->kill();
+        } else {
+            m_process->deleteLater();
+        }
+        m_process = nullptr;
+    }
+}
+
 /**
  * Takes everything off the panel that belonged to what was playing.
  *
@@ -744,11 +743,7 @@ void LrcApplet::clearDisplay()
         m_positionWatcher = nullptr;
     }
 
-    if (m_process->state() != QProcess::NotRunning) {
-        m_process->kill();
-        m_process->waitForFinished(50);
-    }
-    m_watchdog.stop();
+    cancelProcess();
 
     clearLyrics();
     m_spotifyTrackId.clear();
@@ -854,10 +849,7 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
         return;
     }
 
-    if (m_process->state() != QProcess::NotRunning) {
-        m_process->kill();
-        m_process->waitForFinished(50);
-    }
+    cancelProcess();
 
     QStringList arguments;
     arguments << QStringLiteral("--dump");
@@ -871,13 +863,23 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
         splitTrackArtistAndTitle(&artist, &title, m_webPageSession);
         const QString cleanedTitle = cleanTrackTitle(title);
         const QString cleanedArtist = cleanTrackArtist(artist);
-        if (!cleanedTitle.isEmpty() && (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist)) {
-            arguments << QStringLiteral("--artist") << cleanedArtist;
+        if (!cleanedTitle.isEmpty()) {
+            if (!cleanedArtist.isEmpty()) {
+                arguments << QStringLiteral("--artist") << cleanedArtist;
+            }
             arguments << QStringLiteral("--title") << cleanedTitle;
-            m_lastLookupWasCleaned = true;
+            m_lastLookupWasCleaned = (cleanedTitle != m_trackTitle || cleanedArtist != m_trackArtist);
         } else {
             m_lastLookupWasCleaned = false;
         }
+    } else if (rawFallback && trackBelongsToPlayer) {
+        if (!m_trackTitle.isEmpty()) {
+            arguments << QStringLiteral("--title") << m_trackTitle;
+        }
+        if (!m_trackArtist.isEmpty()) {
+            arguments << QStringLiteral("--artist") << m_trackArtist;
+        }
+        m_lastLookupWasCleaned = false;
     } else {
         m_lastLookupWasCleaned = false;
     }
@@ -887,8 +889,24 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
     }
 
     m_fetchingLrc = true;
-    m_processGeneration = m_lookupGeneration;
+    m_processGeneration = ++m_lookupGeneration;
     m_watchdog.start(kWatchdogTimeoutMs);
+
+    m_process = new QProcess(this);
+    m_process->setProcessChannelMode(QProcess::SeparateChannels);
+    connect(m_process, &QProcess::finished, this, [this] {
+        onProcessFinished();
+    });
+    connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            onProcessFailedToStart();
+        }
+    });
+    connect(m_process, &QProcess::stateChanged, this, [this] {
+        if (m_process && m_process->state() == QProcess::NotRunning) {
+            m_watchdog.stop();
+        }
+    });
     m_process->start(m_binaryPath, arguments);
 }
 
@@ -1430,11 +1448,7 @@ void LrcApplet::unwatchPlayer()
     delete m_positionWatcher;
     m_positionWatcher = nullptr;
 
-    if (m_process->state() != QProcess::NotRunning) {
-        m_process->kill();
-        m_process->waitForFinished(50);
-    }
-    m_watchdog.stop();
+    cancelProcess();
 
     if (m_watchedService.isEmpty()) {
         return;

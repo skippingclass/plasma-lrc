@@ -670,6 +670,7 @@ int main(int argc, char **argv)
     {
         check("cleanTitle: en-dash удаляется", cleanTrackTitle(QStringLiteral("Bohemian Rhapsody – [Official Video]")) == QStringLiteral("Bohemian Rhapsody"));
         check("cleanTitle: em-dash удаляется", cleanTrackTitle(QStringLiteral("Bohemian Rhapsody — [4K 60FPS]")) == QStringLiteral("Bohemian Rhapsody"));
+        check("cleanTitle: minus-sign удаляется", cleanTrackTitle(QStringLiteral("Bohemian Rhapsody \u2212 [Official Video]")) == QStringLiteral("Bohemian Rhapsody"));
     }
 
     // --- trackname: Разделение для YouTube / браузеров ---
@@ -683,12 +684,42 @@ int main(int argc, char **argv)
         QString fTitle = QStringLiteral("Radiohead - Creep");
         splitTrackArtistAndTitle(&fArtist, &fTitle, true);
         check("splitTitle: fromWebPage=true -> Radiohead", fArtist == QStringLiteral("Radiohead") && fTitle == QStringLiteral("Creep"), fArtist + " / " + fTitle);
+
+        // Voskresenskii - Еду по Москве [Official Music Video]
+        QString vArtist = QStringLiteral("Voskresenskii");
+        QString vTitle = QStringLiteral("Voskresenskii - \u0415\u0434\u0443 \u043f\u043e \u041c\u043e\u0441\u043a\u0432\u0435 [Official Music Video]");
+        splitTrackArtistAndTitle(&vArtist, &vTitle, true);
+        QString vCleanTitle = cleanTrackTitle(vTitle);
+        check("splitTitle: Voskresenskii", vArtist == QStringLiteral("Voskresenskii") && vCleanTitle == QStringLiteral("\u0415\u0434\u0443 \u043f\u043e \u041c\u043e\u0441\u043a\u0432\u0435"), vArtist + " / " + vCleanTitle);
+
+        // Lil Flash$ - Alicante (Official Music Video)
+        QString aArtist = QStringLiteral("Sky FrameRate");
+        QString aTitle = QStringLiteral("Lil Flash$ - Alicante (Official Music Video)");
+        splitTrackArtistAndTitle(&aArtist, &aTitle, true);
+        QString aCleanTitle = cleanTrackTitle(aTitle);
+        check("splitTitle: Lil Flash$ Alicante", aArtist == QStringLiteral("Lil Flash$") && aCleanTitle == QStringLiteral("Alicante"), aArtist + " / " + aCleanTitle);
+
+        // Lil Flash$ - Venom (Official Music Video)
+        QString venArtist = QString();
+        QString venTitle = QStringLiteral("Lil Flash$ - Venom (Official Music Video)");
+        splitTrackArtistAndTitle(&venArtist, &venTitle, true);
+        QString venCleanTitle = cleanTrackTitle(venTitle);
+        check("splitTitle: Lil Flash$ Venom", venArtist == QStringLiteral("Lil Flash$") && venCleanTitle == QStringLiteral("Venom"), venArtist + " / " + venCleanTitle);
+
+        // OG Buda, 163ONMYNECK – SST (en-dash U+2013)
+        QString sstArtist = QStringLiteral("OG BUDA");
+        QString sstTitle = QStringLiteral("OG Buda, 163ONMYNECK \u2013 SST");
+        splitTrackArtistAndTitle(&sstArtist, &sstTitle, true);
+        QString sstCleanTitle = cleanTrackTitle(sstTitle);
+        check("splitTitle: OG Buda SST en-dash", sstArtist == QStringLiteral("OG Buda, 163ONMYNECK") && sstCleanTitle == QStringLiteral("SST"), sstArtist + " / " + sstCleanTitle);
     }
 
     // --- playermeta: Распознавание браузерных сессий ---
     {
         check("webSession: firefox", looksLikeWebPageSession(QStringLiteral("/some/path"), QStringLiteral("firefox.instance123")));
         check("webSession: chromium", looksLikeWebPageSession(QStringLiteral("/org/chromium/MediaPlayer2/123"), QString()));
+        check("webSession: plasma-browser-integration", looksLikeWebPageSession(QStringLiteral("/some/path"), QStringLiteral("plasma-browser-integration")));
+        check("webSession: opera", looksLikeWebPageSession(QStringLiteral("/some/path"), QStringLiteral("opera")));
         check("webSession: spotify не браузер", !looksLikeWebPageSession(QStringLiteral("/com/spotify/track/123"), QStringLiteral("spotify")));
     }
 
