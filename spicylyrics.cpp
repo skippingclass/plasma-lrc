@@ -49,6 +49,9 @@ const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.0 (Plasma 6 panel
 // The terms require stored responses to be refetched or thrown away within this
 // many days, so that a withdrawn sync actually disappears.
 constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
+// Fallback line-level syncs (e.g. Apple Music) are refreshed every 2 days instead
+// of a month so that newly added community syllable syncs are picked up quickly.
+constexpr qint64 kLineSyncCacheTtlMs = 2LL * 24 * 60 * 60 * 1000;
 // A track without lyrics is remembered for a day, not a month: the community
 // adds syncs all the time and we do not want to hide a new one for weeks.
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
@@ -449,6 +452,11 @@ void SpicyLyrics::load(const QString &trackId)
         if (age <= kCacheTtlMs) {
             Lyrics lyrics;
             if (parse(payload, &lyrics, nullptr) && lyrics.isUsable()) {
+                if (lyrics.type != LyricsType::Syllable && age > kLineSyncCacheTtlMs) {
+                    // Line-synced fallback is older than 2 days — re-fetch to see if a community syllable sync was added
+                    fetch(trackId);
+                    return;
+                }
                 m_memoryCache.insert(trackId, lyrics);
                 QTimer::singleShot(0, this, [this, trackId, lyrics] {
                     Q_EMIT loaded(trackId, lyrics);
