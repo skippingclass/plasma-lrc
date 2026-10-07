@@ -22,6 +22,7 @@
 #include <QDBusPendingReply>
 #include <QFileInfo>
 #include <QProcessEnvironment>
+#include <QStandardPaths>
 
 #include <algorithm>
 
@@ -188,6 +189,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_propertyWatcher(nullptr)
     , m_namesWatcher(nullptr)
     , m_positionWatcher(nullptr)
+    , m_binaryPath(QStringLiteral("lrc_tty"))
     , m_pollInterval(kDefaultPollInterval)
     , m_maxCharacters(40)
     , m_showTimestamp(false)
@@ -303,6 +305,11 @@ void LrcApplet::startPolling()
 {
     readSettings();
 
+    if (!m_available && !QStandardPaths::findExecutable(m_binaryPath).isEmpty()) {
+        setAvailable(true);
+        setError(QString());
+    }
+
     if (!m_started) {
         m_started = true;
         // Ask the bus which players are around before doing anything else.
@@ -363,12 +370,12 @@ void LrcApplet::readSettings()
     // An empty setting must never end up as an empty program name, otherwise
     // QProcess fails to start and the widget claims lrc_tty is missing.
     const QString configuredPath = setting(QStringLiteral("binaryPath"), QStringLiteral("lrc_tty")).trimmed();
-    // A path that no longer exists (lrc_tty moved, uninstalled and reinstalled
-    // elsewhere, ...) is not fatal: fall back to whatever is in $PATH.
-    const QString binaryPath = configuredPath.isEmpty() //
-        || (configuredPath.contains(QLatin1Char('/')) && !QFileInfo::exists(configuredPath))
-        ? QStringLiteral("lrc_tty")
-        : configuredPath;
+    QString resolvedBinary = configuredPath.isEmpty() ? QStringLiteral("lrc_tty") : configuredPath;
+    const QString executableFound = QStandardPaths::findExecutable(resolvedBinary);
+    if (!executableFound.isEmpty()) {
+        resolvedBinary = executableFound;
+    }
+    const QString binaryPath = resolvedBinary;
     const QString player = setting(QStringLiteral("player")).trimmed();
     const QString preferredPlayer = setting(QStringLiteral("preferredPlayer")).trimmed();
     const QString placeholder = setting(QStringLiteral("placeholderText"), QStringLiteral("♪"));
@@ -630,18 +637,19 @@ void LrcApplet::onProcessFinished()
 void LrcApplet::onProcessFailedToStart()
 {
     const QString err = m_process ? m_process->errorString() : QStringLiteral("Failed to start process");
+    qWarning() << "lrc_tty process failed to start:" << err << "path:" << m_binaryPath;
     cancelProcess();
     m_lyricsLookupDone = true;
     setError(err);
-    if (!m_available) {
-        return;
+    if (QStandardPaths::findExecutable(m_binaryPath).isEmpty()) {
+        if (!m_available) {
+            return;
+        }
+        setAvailable(false);
+        setText(QString());
+        setActive(false);
+        m_timer.start(kMissingBinaryRetryMs);
     }
-    setAvailable(false);
-    setText(QString());
-    setActive(false);
-    // lrc_tty may simply not be installed (yet), so keep an eye on it without
-    // spawning a process on every tick.
-    m_timer.start(kMissingBinaryRetryMs);
 }
 
 void LrcApplet::setText(const QString &text)
@@ -980,13 +988,26 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
             m_watchdog.stop();
         }
     });
-    m_process->start(m_binaryPath, arguments);
+    QString execPath = m_binaryPath;
+    if (execPath.isEmpty()) {
+        execPath = QStringLiteral("lrc_tty");
+    }
+    const QString resolvedExec = QStandardPaths::findExecutable(execPath);
+    if (!resolvedExec.isEmpty()) {
+        execPath = resolvedExec;
+    }
+    m_process->start(execPath, arguments);
 }
 
 void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
 {
     if (trackId != m_spotifyTrackId) {
         return;
+    }
+
+    if (!m_available) {
+        setAvailable(true);
+        setError(QString());
     }
 
     m_fetchingFromSpicy = false;

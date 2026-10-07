@@ -44,7 +44,7 @@ PlasmoidItem {
             return "<b>" + escaped + "</b>";
         }
         if (Plasmoid.wordStyle === 2) {
-            return "<font color=\"" + highlightColor + "\"><b>" + escaped + "</b></font>";
+            return "<font color=\"" + highlightColor + "\">" + escaped + "</font>";
         }
         return "<u>" + escaped + "</u>";
     }
@@ -206,28 +206,23 @@ PlasmoidItem {
                 Layout.maximumWidth: root.maxCharacters > 0 //
                     ? Math.ceil(characterWidth.advanceWidth) * root.maxCharacters
                     : implicitWidth
+            }
 
-                Behavior on text {
-                    enabled: Plasmoid.fadeTransition
-                    SequentialAnimation {
-                        NumberAnimation {
-                            target: lyricLabel
-                            property: "opacity"
-                            to: 0.35
-                            duration: 70
-                            easing.type: Easing.OutQuad
-                        }
-                        PropertyAction {
-                            target: lyricLabel
-                            property: "text"
-                        }
-                        NumberAnimation {
-                            target: lyricLabel
-                            property: "opacity"
-                            to: 1.0
-                            duration: 100
-                            easing.type: Easing.InQuad
-                        }
+            NumberAnimation {
+                id: lineFadeAnim
+                target: lyricLabel
+                property: "opacity"
+                from: 0.25
+                to: 1.0
+                duration: 160
+                easing.type: Easing.OutQuad
+            }
+
+            Connections {
+                target: root
+                function onLyricTextChanged() {
+                    if (Plasmoid.fadeTransition && root.hasLyrics) {
+                        lineFadeAnim.restart();
                     }
                 }
             }
