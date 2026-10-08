@@ -12,6 +12,7 @@
 
 #include <KLocalizedString>
 #include <KPluginFactory>
+#include <kconfigpropertymap.h>
 
 #include <QAction>
 #include <QDBusArgument>
@@ -458,6 +459,20 @@ void LrcApplet::readSettings()
         Q_EMIT trackBlacklistChanged();
     }
 
+    if (m_playingKnown && !m_playing) {
+        if (m_pauseHideDelay > 0 && !m_pauseHidden) {
+            m_pauseTimer.start(m_pauseHideDelay * 1000);
+        } else if (m_pauseHideDelay == 0 && m_pauseHidden) {
+            m_pauseTimer.stop();
+            m_pauseHidden = false;
+            Q_EMIT pauseHiddenChanged();
+            if (m_lyrics.isUsable()) {
+                m_wordTimer.start(kIdleTickMs);
+                updateWord();
+            }
+        }
+    }
+
     if (changed) {
         Q_EMIT settingsChanged();
         invalidatePlayerCandidates();
@@ -716,12 +731,16 @@ void LrcApplet::setPlaying(bool playing, bool known)
 
     if (playing) {
         m_pauseTimer.stop();
+        if (m_pauseHidden) {
+            m_pauseHidden = false;
+            Q_EMIT pauseHiddenChanged();
+        }
         if (m_lyrics.isUsable()) {
             updateWord();
         }
         poll();
     } else if (known && !playing) {
-        if (m_pauseHideDelay > 0) {
+        if (m_pauseHideDelay > 0 && !m_pauseHidden) {
             m_pauseTimer.start(m_pauseHideDelay * 1000);
         }
     }
@@ -730,7 +749,11 @@ void LrcApplet::setPlaying(bool playing, bool known)
     // nothing moves, but a seek can still happen and MPRIS says nothing about
     // one, so the timer keeps running at a lazy pace instead of standing still.
     if (known && !playing) {
-        m_wordTimer.start(kIdleTickMs);
+        if (!m_pauseHidden) {
+            m_wordTimer.start(kIdleTickMs);
+        } else {
+            m_wordTimer.stop();
+        }
     } else if (playing && m_lyrics.isUsable()) {
         m_wordTimer.start(kWordTickMs);
     }
@@ -831,16 +854,23 @@ void LrcApplet::clearDisplay()
     m_trackJustChanged = true;
     m_trackChangeRetries = 0;
     m_pauseTimer.stop();
+    if (m_pauseHidden) {
+        m_pauseHidden = false;
+        Q_EMIT pauseHiddenChanged();
+    }
     ++m_lookupGeneration;
 }
 
 void LrcApplet::onPauseTimeout()
 {
     if (m_playingKnown && !m_playing) {
+        m_pauseHidden = true;
         m_lineIndex = -1;
+        m_wordTimer.stop();
         clearWordHighlight();
         setText(QString());
         setActive(false);
+        Q_EMIT pauseHiddenChanged();
     }
 }
 
@@ -927,10 +957,7 @@ void LrcApplet::toggleBlacklistCurrentTrack()
         // Unblacklist
         entries.removeAt(foundIndex);
         m_blacklistedTracks = entries.join(QStringLiteral("; "));
-        config().group(s_configGroup).writeEntry(QStringLiteral("blacklistedTracks"), m_blacklistedTracks);
-        config().sync();
-        Q_EMIT trackBlacklistChanged();
-        Q_EMIT settingsChanged();
+        saveBlacklist();
         // Reload lyrics
         m_lyricsLookupDone = false;
         requestLyrics();
@@ -938,15 +965,102 @@ void LrcApplet::toggleBlacklistCurrentTrack()
         // Blacklist
         entries.append(trackKey);
         m_blacklistedTracks = entries.join(QStringLiteral("; "));
-        config().group(s_configGroup).writeEntry(QStringLiteral("blacklistedTracks"), m_blacklistedTracks);
-        config().sync();
-        Q_EMIT trackBlacklistChanged();
-        Q_EMIT settingsChanged();
+        saveBlacklist();
         // Immediately drop lyrics from display
         cancelProcess();
         clearLyrics();
         m_lyricsLookupDone = true;
     }
+}
+
+void LrcApplet::saveBlacklist()
+{
+    config().group(s_configGroup).writeEntry(QStringLiteral("blacklistedTracks"), m_blacklistedTracks);
+    config().sync();
+    if (configuration()) {
+        configuration()->insert(QStringLiteral("blacklistedTracks"), m_blacklistedTracks);
+    }
+    Q_EMIT trackBlacklistChanged();
+    Q_EMIT settingsChanged();
+}
+
+QStringList LrcApplet::blacklistedTrackList() const
+{
+    QStringList result;
+    const QStringList entries = m_blacklistedTracks.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (const QString &entry : entries) {
+        const QString trimmed = entry.trimmed();
+        if (!trimmed.isEmpty() && !result.contains(trimmed, Qt::CaseInsensitive)) {
+            result.append(trimmed);
+        }
+    }
+    return result;
+}
+
+void LrcApplet::addBlacklistTrack(const QString &track)
+{
+    const QString trimmed = track.trimmed();
+    if (trimmed.isEmpty()) {
+        return;
+    }
+
+    QStringList entries = m_blacklistedTracks.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (int i = 0; i < entries.size(); ++i) {
+        entries[i] = entries[i].trimmed();
+        if (entries.at(i).compare(trimmed, Qt::CaseInsensitive) == 0) {
+            return;
+        }
+    }
+
+    entries.append(trimmed);
+    m_blacklistedTracks = entries.join(QStringLiteral("; "));
+    saveBlacklist();
+
+    if (isCurrentTrackBlacklisted()) {
+        cancelProcess();
+        clearLyrics();
+        m_lyricsLookupDone = true;
+    }
+}
+
+void LrcApplet::removeBlacklistTrack(const QString &track)
+{
+    const QString trimmed = track.trimmed();
+    if (trimmed.isEmpty()) {
+        return;
+    }
+
+    QStringList entries = m_blacklistedTracks.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    int removed = 0;
+    for (int i = entries.size() - 1; i >= 0; --i) {
+        if (entries.at(i).trimmed().compare(trimmed, Qt::CaseInsensitive) == 0) {
+            entries.removeAt(i);
+            ++removed;
+        }
+    }
+
+    if (removed > 0) {
+        m_blacklistedTracks = entries.join(QStringLiteral("; "));
+        saveBlacklist();
+
+        if (!isCurrentTrackBlacklisted()) {
+            m_lyricsLookupDone = false;
+            requestLyrics();
+        }
+    }
+}
+
+void LrcApplet::clearBlacklist()
+{
+    if (m_blacklistedTracks.isEmpty()) {
+        return;
+    }
+
+    m_blacklistedTracks.clear();
+    saveBlacklist();
+
+    m_lyricsLookupDone = false;
+    requestLyrics();
 }
 
 void LrcApplet::applyMetadata(const QVariantMap &metadata)
@@ -1234,6 +1348,13 @@ void LrcApplet::onPositionFetched()
     const bool jumped = positionJumped(reportedMs);
     if (jumped) {
         m_gaplessLeadMs = 0;
+        if (m_pauseHidden) {
+            m_pauseHidden = false;
+            Q_EMIT pauseHiddenChanged();
+            if (m_playingKnown && !m_playing && m_pauseHideDelay > 0) {
+                m_pauseTimer.start(m_pauseHideDelay * 1000);
+            }
+        }
     }
 
     m_positionBaseMs = reportedMs;
@@ -1275,6 +1396,10 @@ void LrcApplet::clearWordHighlight()
 
 void LrcApplet::updateWord()
 {
+    if (m_pauseHidden) {
+        return;
+    }
+
     if (!m_lyrics.isUsable()) {
         return;
     }

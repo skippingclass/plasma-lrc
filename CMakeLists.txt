@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.2.0 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,6 +66,7 @@ target_link_libraries(${PLUGIN_ID} PRIVATE
     Qt6::Qml
     KF6::CoreAddons
     KF6::ConfigCore
+    KF6::ConfigQml
     KF6::I18n
     ${LRC_PLASMA_LIBRARY}
 )

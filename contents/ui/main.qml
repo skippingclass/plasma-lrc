@@ -75,6 +75,9 @@ PlasmoidItem {
     }
 
     readonly property string displayText: {
+        if (Plasmoid.pauseHidden) {
+            return "";
+        }
         if (hasLyrics) {
             return lyricText;
         }

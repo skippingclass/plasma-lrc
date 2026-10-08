@@ -98,6 +98,8 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QString blacklistedTracks READ blacklistedTracks NOTIFY settingsChanged)
     /// Whether the current playing track is blacklisted.
     Q_PROPERTY(bool isCurrentTrackBlacklisted READ isCurrentTrackBlacklisted NOTIFY trackBlacklistChanged)
+    /// Whether lyrics are temporarily hidden because playback has been paused for pauseHideDelay seconds.
+    Q_PROPERTY(bool pauseHidden READ isPauseHidden NOTIFY pauseHiddenChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -231,11 +233,19 @@ public:
         return m_blacklistedTracks;
     }
     bool isCurrentTrackBlacklisted() const;
+    bool isPauseHidden() const
+    {
+        return m_pauseHidden;
+    }
 
     Q_INVOKABLE void togglePlayPause();
     Q_INVOKABLE void nextTrack();
     Q_INVOKABLE void previousTrack();
     Q_INVOKABLE void toggleBlacklistCurrentTrack();
+    Q_INVOKABLE QStringList blacklistedTrackList() const;
+    Q_INVOKABLE void addBlacklistTrack(const QString &track);
+    Q_INVOKABLE void removeBlacklistTrack(const QString &track);
+    Q_INVOKABLE void clearBlacklist();
 
 Q_SIGNALS:
     void textChanged();
@@ -248,6 +258,7 @@ Q_SIGNALS:
     void playingChanged();
     void settingsChanged();
     void trackBlacklistChanged();
+    void pauseHiddenChanged();
 
 public Q_SLOTS:
     /// Forget everything we know and ask lrc_tty right away.
@@ -378,6 +389,7 @@ private:
     int m_textAlignment;
     QString m_customHighlightColor;
     QString m_blacklistedTracks;
+    void saveBlacklist();
     bool isTrackBlacklisted(const QString &artist, const QString &title) const;
 
     QString m_spicyKey;
@@ -407,6 +419,7 @@ private:
     bool m_playing;
     bool m_playingKnown;
     bool m_started;
+    bool m_pauseHidden = false;
 
     // Word-level lyrics of the current track
     Lyrics m_lyrics;

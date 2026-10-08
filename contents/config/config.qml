@@ -29,4 +29,10 @@ PlasmaConfiguration.ConfigModel {
         icon: "preferences-desktop-font"
         source: "configAppearance.qml"
     }
+
+    PlasmaConfiguration.ConfigCategory {
+        name: i18n("Blacklist")
+        icon: "list-remove"
+        source: "configBlacklist.qml"
+    }
 }

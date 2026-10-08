@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# Maintainer: pirkov
+# Maintainer: skippingclass
 pkgname=plasma-lrc
 pkgdesc="Plasma 6 panel widget that shows the lyric being sung, word by word when the source has timings"
 arch=('x86_64' 'aarch64')
@@ -20,7 +20,7 @@ install=plasma-lrc.install
 
 # Placeholders: makepkg 7 refuses an empty one, and pkgver() below replaces this
 # with the real thing on every build.
-pkgver=1.2.r0
+pkgver=1.4.0.r0
 pkgrel=1
 
 pkgver() {

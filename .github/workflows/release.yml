@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            cmake \
+            ninja \
+            qt6-base \
+            qt6-declarative \
+            libplasma \
+            kcoreaddons \
+            kconfig \
+            ki18n \
+            tar \
+            gzip
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Safe git directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build and test
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DPLASMA_LRC_TESTS=ON
+          cmake --build build --parallel $(nproc)
+          ./build/spicy-parser-test
+
+      - name: Create release package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DESTDIR="$(pwd)/pkg"
+          DEST="$DESTDIR/plasma-lrc-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "$DEST"
+
+          # Install files into staging directory
+          DESTDIR="$DEST" cmake --install build --prefix ""
+
+          # Copy install script and readme
+          cp install.sh "$DEST/install.sh"
+          cp README.md "$DEST/README.md"
+          chmod +x "$DEST/install.sh"
+
+          # Create tarball
+          tar -czvf "plasma-lrc-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" -C "$DESTDIR" "plasma-lrc-${GITHUB_REF_NAME}-linux-x86_64"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            plasma-lrc-${{ github.ref_name }}-linux-x86_64.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: false

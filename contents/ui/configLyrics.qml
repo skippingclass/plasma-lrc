@@ -21,7 +21,6 @@ KCM.SimpleKCM {
     property alias cfg_player: playerField.text
     property alias cfg_preferredPlayer: preferredField.text
     property alias cfg_ignoredPlayers: ignoredField.text
-    property alias cfg_blacklistedTracks: blacklistedTracksField.text
     property alias cfg_lyricOffset: offsetField.value
     property alias cfg_pollInterval: pollIntervalField.value
     property alias cfg_showTimestamp: showTimestampCheckBox.checked
@@ -122,23 +121,6 @@ KCM.SimpleKCM {
             wrapMode: Text.Wrap
             opacity: 0.75
             text: i18n("Applications that implement MPRIS for things that are not tracks — a chat client reporting a voice message, for example — are recognised by their metadata and skipped on their own. This field is for the rest.")
-        }
-
-        QQC2.TextField {
-            id: blacklistedTracksField
-
-            Kirigami.FormData.label: i18n("Blacklisted songs:")
-            placeholderText: i18n("Artist - Title; Another Artist - Title")
-            Layout.fillWidth: true
-        }
-
-        QQC2.Label {
-            Layout.columnSpan: 2
-            Layout.fillWidth: true
-            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-            wrapMode: Text.Wrap
-            opacity: 0.75
-            text: i18n("Tracks to ignore lyrics for (semicolon-separated). You can also blacklist or unblacklist from the widget context menu or popup.")
         }
 
         QQC2.Label {
