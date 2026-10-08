@@ -100,6 +100,17 @@ PlasmoidItem {
         : PlasmaCore.Types.NoBackground
     preferredRepresentation: compactRepresentation
 
+    Plasmoid.contextualActions: [
+        PlasmaCore.Action {
+            text: Plasmoid.isCurrentTrackBlacklisted
+                ? i18n("Unblacklist current track lyrics")
+                : i18n("Blacklist current track lyrics")
+            icon.name: Plasmoid.isCurrentTrackBlacklisted ? "edit-undo" : "list-remove"
+            enabled: Plasmoid.trackInfo.length > 0
+            onTriggered: Plasmoid.toggleBlacklistCurrentTrack()
+        }
+    ]
+
     // Which source the line actually came from. The tooltip says it, because
     // "no attribution suffix" and "Spicy Lyrics is not answering" look exactly
     // the same otherwise.
@@ -107,6 +118,9 @@ PlasmoidItem {
         ? i18n("Spicy Lyrics")
         : (Plasmoid.attribution.length > 0 ? Plasmoid.attribution : i18n("lrc_tty"))
     readonly property string attributionHint: {
+        if (Plasmoid.isCurrentTrackBlacklisted) {
+            return i18n("lyrics blacklisted for this track");
+        }
         if (Plasmoid.fromSpicyLyrics) {
             return i18n("via %1", sourceName);
         }
@@ -262,7 +276,7 @@ PlasmoidItem {
         showTrackInfo: Plasmoid.showTrackInfo
 
         line: root.fullLine
-        placeholder: root.displayText
+        placeholder: Plasmoid.isCurrentTrackBlacklisted ? i18n("Lyrics are blacklisted for this track") : root.displayText
         hasLyrics: root.hasLyrics
 
         attribution: root.escapeHtml(Plasmoid.attribution)
@@ -270,6 +284,8 @@ PlasmoidItem {
         // The popup is where the credit is spelled out in full, so it does not
         // follow the compact setting from the panel.
         showAttribution: root.hasCredit
+        isBlacklisted: Plasmoid.isCurrentTrackBlacklisted
+        onToggleBlacklist: Plasmoid.toggleBlacklistCurrentTrack()
     }
 
     // Only used to find out how wide a single character is, so that the compact
@@ -277,7 +293,7 @@ PlasmoidItem {
     TextMetrics {
         id: characterWidth
 
-        font: lyricLabel.font
+        font: Kirigami.Theme.defaultFont
         text: "0"
     }
 }

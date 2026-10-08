@@ -137,5 +137,10 @@
             <label>Custom color for sung word and pause dots highlight. Empty means system accent color.</label>
             <default></default>
         </entry>
+
+        <entry name="blacklistedTracks" type="String">
+            <label>List of artist - title pairs whose lyrics should be ignored (semicolon separated).</label>
+            <default></default>
+        </entry>
     </group>
 </kcfg>

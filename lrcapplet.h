@@ -94,6 +94,10 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(int textAlignment READ textAlignment NOTIFY settingsChanged)
     /// Custom color for sung word highlight, empty for system accent.
     Q_PROPERTY(QString customHighlightColor READ customHighlightColor NOTIFY settingsChanged)
+    /// Semicolon-separated list of artist - title pairs to ignore lyrics for.
+    Q_PROPERTY(QString blacklistedTracks READ blacklistedTracks NOTIFY settingsChanged)
+    /// Whether the current playing track is blacklisted.
+    Q_PROPERTY(bool isCurrentTrackBlacklisted READ isCurrentTrackBlacklisted NOTIFY trackBlacklistChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -222,10 +226,16 @@ public:
     {
         return m_customHighlightColor;
     }
+    QString blacklistedTracks() const
+    {
+        return m_blacklistedTracks;
+    }
+    bool isCurrentTrackBlacklisted() const;
 
     Q_INVOKABLE void togglePlayPause();
     Q_INVOKABLE void nextTrack();
     Q_INVOKABLE void previousTrack();
+    Q_INVOKABLE void toggleBlacklistCurrentTrack();
 
 Q_SIGNALS:
     void textChanged();
@@ -237,6 +247,7 @@ Q_SIGNALS:
     void trackInfoChanged();
     void playingChanged();
     void settingsChanged();
+    void trackBlacklistChanged();
 
 public Q_SLOTS:
     /// Forget everything we know and ask lrc_tty right away.
@@ -366,6 +377,8 @@ private:
     int m_middleClickAction;
     int m_textAlignment;
     QString m_customHighlightColor;
+    QString m_blacklistedTracks;
+    bool isTrackBlacklisted(const QString &artist, const QString &title) const;
 
     QString m_spicyKey;
     bool m_useSpicy;
@@ -412,6 +425,7 @@ private:
 
     qint64 m_positionMs;
     qint64 m_positionBaseMs;
+    qint64 m_gaplessLeadMs = 0;
     QElapsedTimer m_positionClock;
     /// Rate limits asking the player for its position again.
     QElapsedTimer m_positionRetries;
@@ -423,6 +437,8 @@ private:
     quint64 m_lookupGeneration = 0;
     quint64 m_processGeneration = 0;
     bool m_positionValid;
+    bool m_trackJustChanged = false;
+    int m_trackChangeRetries = 0;
     int m_lineIndex;
     /// Where the word search starts inside the current line.
     int m_wordCursor;

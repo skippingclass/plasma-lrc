@@ -37,6 +37,9 @@ ColumnLayout {
     property string attributionUrl
     property bool showAttribution: false
 
+    property bool isBlacklisted: false
+    signal toggleBlacklist()
+
     spacing: Kirigami.Units.smallSpacing
 
     // The popup has to hug its content: an explicit maximumWidth or minimumHeight
@@ -45,19 +48,42 @@ ColumnLayout {
     // a long line wraps rather than stretching the window.
     readonly property int maxWidth: Kirigami.Units.gridUnit * 16
 
-    PlasmaComponents3.Label {
+    RowLayout {
         Layout.fillWidth: true
         Layout.maximumWidth: root.maxWidth
+        visible: root.trackInfo.length > 0
+        spacing: Kirigami.Units.smallSpacing
 
-        // The player is named here because the settings take a player name, and
-        // the one on the bus is not always the one a person would guess.
-        text: root.playerName.length > 0 //
-            ? i18n("%1 — %2", root.trackInfo, root.playerName)
-            : root.trackInfo
-        color: Kirigami.Theme.textColor
-        opacity: 0.75
-        elide: Text.ElideRight
-        visible: root.showTrackInfo && text.length > 0
+        PlasmaComponents3.Label {
+            Layout.fillWidth: true
+
+            // The player is named here because the settings take a player name, and
+            // the one on the bus is not always the one a person would guess.
+            text: root.playerName.length > 0 //
+                ? i18n("%1 — %2", root.trackInfo, root.playerName)
+                : root.trackInfo
+            color: Kirigami.Theme.textColor
+            opacity: 0.75
+            elide: Text.ElideRight
+            visible: root.showTrackInfo && text.length > 0
+        }
+
+        Item {
+            Layout.fillWidth: true
+            visible: !root.showTrackInfo
+        }
+
+        PlasmaComponents3.ToolButton {
+            id: blacklistBtn
+            icon.name: root.isBlacklisted ? "edit-undo" : "list-remove"
+            text: root.isBlacklisted ? i18n("Unblacklist") : i18n("Blacklist")
+            display: PlasmaComponents3.AbstractButton.IconOnly
+            PlasmaComponents3.ToolTip.text: root.isBlacklisted
+                ? i18n("Unblacklist lyrics for this track")
+                : i18n("Blacklist lyrics for this track")
+            PlasmaComponents3.ToolTip.visible: hovered
+            onClicked: root.toggleBlacklist()
+        }
     }
 
     PlasmaComponents3.Label {
@@ -80,7 +106,7 @@ ColumnLayout {
         textFormat: Text.StyledText
         color: Kirigami.Theme.textColor
         opacity: 0.6
-        font.pointSize: Math.max(6, font.pointSize - 1)
+        font: Kirigami.Theme.smallFont
         wrapMode: Text.Wrap
         visible: root.showAttribution
         onLinkActivated: function (link) {

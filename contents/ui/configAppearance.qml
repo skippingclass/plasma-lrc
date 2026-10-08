@@ -129,17 +129,35 @@ KCM.SimpleKCM {
 
             Repeater {
                 model: [
-                    { name: "Spotify", color: "#1ed760" },
-                    { name: "Cyan", color: "#00d4ff" },
-                    { name: "Purple", color: "#b342f5" },
-                    { name: "Yellow", color: "#ffd600" },
-                    { name: "Coral", color: "#ff4d4d" },
-                    { name: "White", color: "#ffffff" }
+                    { name: i18n("Spotify Green"), color: "#1ed760" },
+                    { name: i18n("Cyan"), color: "#00d4ff" },
+                    { name: i18n("Purple"), color: "#b342f5" },
+                    { name: i18n("Yellow"), color: "#ffd600" },
+                    { name: i18n("Coral"), color: "#ff4d4d" },
+                    { name: i18n("White"), color: "#ffffff" }
                 ]
                 delegate: QQC2.Button {
-                    text: modelData.name
+                    required property var modelData
+
+                    implicitWidth: Kirigami.Units.gridUnit * 2
+                    implicitHeight: Kirigami.Units.gridUnit * 2
+
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.text: modelData.name + " (" + modelData.color + ")"
+
+                    contentItem: Rectangle {
+                        anchors.centerIn: parent
+                        width: Kirigami.Units.gridUnit * 1.2
+                        height: Kirigami.Units.gridUnit * 1.2
+                        radius: width / 2
+                        color: modelData.color
+                        border.width: 1
+                        border.color: Kirigami.Theme.separatorColor
+                    }
+
                     onClicked: {
                         customHighlightColorField.text = modelData.color;
+                        wordStyleBox.currentIndex = 2;
                     }
                 }
             }
