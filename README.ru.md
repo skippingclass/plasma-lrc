@@ -19,7 +19,7 @@
 
 <br/>
 
-<img src="assets/screenshot.png" alt="Plasma LRC Screenshot" />
+<img src="assets/demo_ru.gif" alt="Plasma LRC Демо караоке в реальном времени" />
 
 <sub><i>Пословное караоке Spicy Lyrics · Нативный парсер LRC · 0% CPU на холостом ходу · 1 запрос на трек</i></sub>
 

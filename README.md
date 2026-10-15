@@ -19,7 +19,7 @@
 
 <br/>
 
-<img src="assets/screenshot.png" alt="Plasma LRC Screenshot" />
+<img src="assets/demo.gif" alt="Plasma LRC Live Karaoke Demo" />
 
 <sub><i>Real-time word sync · Native LRC parser · 0% CPU at idle · 1 fetch per track</i></sub>
 
