@@ -47,7 +47,7 @@ echo "==> Пакет"
 $SUDO kpackagetool6 --remove "$plugin_id" --type Plasma/Applet --global || true
 
 echo "==> Плагин"
-$SUDO rm -f "$prefix/lib/qt6/plugins/plasma/applets/$plugin_id.so"
+$SUDO rm -f "$prefix/lib/qt6/plugins/plasma/applets/$plugin_id.so" "$prefix/lib64/qt6/plugins/plasma/applets/$plugin_id.so"
 
 echo "==> Настройки"
 # Плагин не переживает переустановку на месте: удалённые .so и пакет остаются в
@@ -66,9 +66,22 @@ with open(path, encoding="utf-8") as handle:
     text = handle.read()
 
 blocks = text.split("\n[")
-out = []
+
+# Сначала находим префиксы applet-секций нашего плагина
+applet_prefixes = []
 for block in blocks:
     if block.startswith("Containments]") and re.search(r"^plugin=" + re.escape(plugin) + r"$", block, re.M):
+        header = block.split("\n", 1)[0].rstrip("]")
+        applet_prefixes.append(header)
+
+out = []
+for block in blocks:
+    is_target = False
+    for prefix in applet_prefixes:
+        if block.startswith(prefix + "]") or block.startswith(prefix + "/"):
+            is_target = True
+            break
+    if is_target:
         continue
     out.append(block)
 

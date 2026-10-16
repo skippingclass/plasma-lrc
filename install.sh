@@ -44,14 +44,15 @@ fi
 echo "==> Сборка"
 cmake -S . -B "$builddir" -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_INSTALL_PREFIX="$prefix"
+    -DCMAKE_INSTALL_PREFIX="$prefix" \
+    -DCMAKE_INSTALL_LIBDIR=lib
 cmake --build "$builddir" --parallel "$jobs"
 
 # Старый .so нельзя перезаписывать на месте: у него уже замаплен plasmashell,
 # и truncate+write на том же inode ломает запущенный процесс. Поэтому сначала
 # удаляем, потом кладём новый — и перезапускаем plasmashell.
 echo "==> Удаление предыдущей версии"
-$SUDO rm -f "$prefix/lib/qt6/plugins/plasma/applets/$plugin_id.so"
+$SUDO rm -f "$prefix/lib/qt6/plugins/plasma/applets/$plugin_id.so" "$prefix/lib64/qt6/plugins/plasma/applets/$plugin_id.so"
 $SUDO kpackagetool6 --remove "$plugin_id" --type Plasma/Applet --global >/dev/null 2>&1 || true
 
 echo "==> Установка в $prefix"

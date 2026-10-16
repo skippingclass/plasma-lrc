@@ -34,8 +34,6 @@ namespace
 constexpr int kWatchdogTimeoutMs = 20000;
 // Do not spam the shell when the binary is missing: retry now and then.
 constexpr int kMissingBinaryRetryMs = 5000;
-// How many "no lyrics" answers in a row make us try the next MPRIS player.
-constexpr int kNoLyricsBeforeSwitchingPlayer = 3;
 // Enumerating bus names is a round trip to the bus, so don't do it on every
 // tick: this is also how quickly we notice a player that just started.
 constexpr int kPlayerListCacheMs = 5000;
@@ -107,12 +105,12 @@ const QStringList s_preferredPlayers = {
     QStringLiteral("quodlibet"),
 };
 
-// Everything lrc_tty prints when there is simply nothing to show.
-bool isNoLyricsMarker(const QString &line)
+QString normalizeBlacklistEntry(QString text)
 {
-    const QString normalized = line.simplified().toLower();
-    return normalized.isEmpty() || normalized == QLatin1String("(no lyrics)") || normalized == QLatin1String("no lyrics")
-        || normalized == QLatin1String("(none)");
+    text.replace(QChar(0x2013), QLatin1Char('-'));
+    text.replace(QChar(0x2014), QLatin1Char('-'));
+    text.replace(QChar(0x2212), QLatin1Char('-'));
+    return text.simplified().toLower();
 }
 
 // Qt hands us nested dictionaries as a QDBusArgument, but be lenient and accept
@@ -127,30 +125,6 @@ QVariantMap toVariantMap(const QVariant &variant)
     const QDBusArgument argument = variant.value<QDBusArgument>();
     argument >> map;
     return map;
-}
-
-QStringList toStringList(const QVariant &variant)
-{
-    switch (variant.metaType().id()) {
-    case QMetaType::QStringList:
-        return variant.toStringList();
-    case QMetaType::QVariantList: {
-        QStringList result;
-        const QVariantList list = variant.toList();
-        result.reserve(list.size());
-        for (const QVariant &item : list) {
-            result.append(item.toString());
-        }
-        return result;
-    }
-    default:
-        break;
-    }
-
-    if (!variant.isValid()) {
-        return {};
-    }
-    return {variant.toString()};
 }
 
 void sortByPreference(QStringList &players)
@@ -192,6 +166,10 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     : Plasma::Applet(parent, data, args)
     , m_process(nullptr)
     , m_spicy(new SpicyLyrics(this))
+    , m_trackLengthUs(0)
+    , m_webPageSession(false)
+    , m_useCleanedLookup(true)
+    , m_lastLookupWasCleaned(false)
     , m_propertyWatcher(nullptr)
     , m_namesWatcher(nullptr)
     , m_positionWatcher(nullptr)
@@ -211,20 +189,15 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_middleClickAction(1)
     , m_textAlignment(0)
     , m_useSpicy(true)
-    , m_trackLengthUs(0)
-    , m_webPageSession(false)
-    , m_useCleanedLookup(true)
-    , m_lastLookupWasCleaned(false)
     , m_probed(false)
     , m_awaitingState(false)
     , m_candidateIndex(0)
-    , m_lastGoodCandidate(-1)
-    , m_noLyricsCount(0)
     , m_active(false)
     , m_available(true)
     , m_playing(false)
     , m_playingKnown(false)
     , m_started(false)
+    , m_lyricsLookupDone(false)
     , m_wordStart(0)
     , m_wordEnd(0)
     , m_wordProgress(0.0)
@@ -232,7 +205,6 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_fromSpicy(false)
     , m_fetchingFromSpicy(false)
     , m_fetchingLrc(false)
-    , m_lyricsLookupDone(false)
     , m_missingReason(MissingReason::Unsynced)
     , m_positionMs(0)
     , m_positionBaseMs(0)
@@ -240,7 +212,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_lineIndex(-1)
     , m_wordCursor(0)
 {
-    m_timer.setTimerType(Qt::PreciseTimer);
+    m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
 
     m_wordTimer.setInterval(kWordTickMs);
@@ -295,9 +267,11 @@ void LrcApplet::constraintsEvent(Constraints constraints)
     if (constraints & UiReadyConstraint) {
         startPolling();
 
-        QAction *refreshAction = new QAction(QIcon::fromTheme(QStringLiteral("view-refresh")), i18n("Update lyrics now"), this);
-        connect(refreshAction, &QAction::triggered, this, &LrcApplet::refresh);
-        setInternalAction(QStringLiteral("refresh"), refreshAction);
+        if (!internalAction(QStringLiteral("refresh"))) {
+            QAction *refreshAction = new QAction(QIcon::fromTheme(QStringLiteral("view-refresh")), i18n("Update lyrics now"), this);
+            connect(refreshAction, &QAction::triggered, this, &LrcApplet::refresh);
+            setInternalAction(QStringLiteral("refresh"), refreshAction);
+        }
     }
 }
 
@@ -544,6 +518,10 @@ void LrcApplet::poll()
         return;
     }
 
+    if (m_pauseWhenIdle && m_playingKnown && !m_playing) {
+        return;
+    }
+
     considerPlayerSwitch();
 
     // If lyrics are already loaded and usable, or lookup has completed for this track, skip polling
@@ -587,6 +565,10 @@ void LrcApplet::poll()
 void LrcApplet::considerPlayerSwitch()
 {
     if (!m_started) {
+        return;
+    }
+
+    if (m_pauseWhenIdle && (!m_playingKnown || !m_playing) && !m_watchedService.isEmpty()) {
         return;
     }
 
@@ -640,11 +622,9 @@ void LrcApplet::onProcessFinished()
         m_fromSpicy = false;
         m_wordSynced = false;
         m_lineIndex = -1;
-        m_noLyricsCount = 0;
         m_lyricsLookupDone = true;
-        m_lastGoodCandidate = m_candidateIndex;
         cancelProcess();
-        m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
+        m_wordTimer.start(m_playing ? 100 : kIdleTickMs);
         updateWord();
         Q_EMIT lyricsChanged();
         return;
@@ -755,7 +735,7 @@ void LrcApplet::setPlaying(bool playing, bool known)
             m_wordTimer.stop();
         }
     } else if (playing && m_lyrics.isUsable()) {
-        m_wordTimer.start(kWordTickMs);
+        m_wordTimer.start(m_wordSynced ? kWordTickMs : 100);
     }
 }
 
@@ -844,6 +824,7 @@ void LrcApplet::clearDisplay()
     m_lastLookupWasCleaned = false;
     m_fetchingFromSpicy = false;
     m_fetchingLrc = false;
+    m_spicy->cancel();
     m_positionValid = false;
     m_positionBaseMs = 0;
     m_gaplessLeadMs = 0;
@@ -851,7 +832,7 @@ void LrcApplet::clearDisplay()
     m_positionRetries.invalidate();
     m_positionChecks.invalidate();
     m_positionFetchTimer.invalidate();
-    m_trackJustChanged = true;
+    m_trackJustChanged = false;
     m_trackChangeRetries = 0;
     m_pauseTimer.stop();
     if (m_pauseHidden) {
@@ -908,16 +889,16 @@ bool LrcApplet::isTrackBlacklisted(const QString &artist, const QString &title) 
     if (title.isEmpty()) {
         return false;
     }
-    const QString target = (artist.isEmpty() ? title : artist + QStringLiteral(" - ") + title).trimmed().toLower();
-    const QString targetTitle = title.trimmed().toLower();
+    const QString fullTrack = normalizeBlacklistEntry(artist.isEmpty() ? title : (artist + QStringLiteral(" - ") + title));
+    const QString normTitle = normalizeBlacklistEntry(title);
 
     const QStringList entries = m_blacklistedTracks.split(QLatin1Char(';'), Qt::SkipEmptyParts);
     for (const QString &entry : entries) {
-        const QString item = entry.trimmed().toLower();
+        const QString item = normalizeBlacklistEntry(entry);
         if (item.isEmpty()) {
             continue;
         }
-        if (item == target || item == targetTitle) {
+        if (fullTrack == item || normTitle == item || fullTrack.contains(item) || normTitle.contains(item)) {
             return true;
         }
     }
@@ -944,18 +925,23 @@ void LrcApplet::toggleBlacklistCurrentTrack()
         entries[i] = entries[i].trimmed();
     }
 
-    int foundIndex = -1;
-    for (int i = 0; i < entries.size(); ++i) {
-        if (entries.at(i).compare(trackKey, Qt::CaseInsensitive) == 0
-            || entries.at(i).compare(m_trackTitle.trimmed(), Qt::CaseInsensitive) == 0) {
-            foundIndex = i;
-            break;
+    const QString fullTrackNorm = normalizeBlacklistEntry(trackKey);
+    const QString titleNorm = normalizeBlacklistEntry(m_trackTitle);
+
+    bool removed = false;
+    for (int i = entries.size() - 1; i >= 0; --i) {
+        const QString item = normalizeBlacklistEntry(entries.at(i));
+        if (item.isEmpty()) {
+            continue;
+        }
+        if (fullTrackNorm == item || titleNorm == item || fullTrackNorm.contains(item) || titleNorm.contains(item)) {
+            entries.removeAt(i);
+            removed = true;
         }
     }
 
-    if (foundIndex >= 0) {
+    if (removed) {
         // Unblacklist
-        entries.removeAt(foundIndex);
         m_blacklistedTracks = entries.join(QStringLiteral("; "));
         saveBlacklist();
         // Reload lyrics
@@ -1104,7 +1090,9 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
             }
         }
 
+        const bool hadValidPosition = m_positionValid && m_playing;
         clearDisplay();
+        m_trackJustChanged = hadValidPosition;
         m_gaplessLeadMs = gaplessLead;
 
         setTrackInfo(trackInfo);
@@ -1254,7 +1242,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
     clearWordHighlight();
 
     requestPosition();
-    m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
+    m_wordTimer.start(m_playing ? (m_wordSynced ? kWordTickMs : 100) : kIdleTickMs);
     updateWord();
     Q_EMIT lyricsChanged();
 }
@@ -1348,6 +1336,14 @@ void LrcApplet::onPositionFetched()
     const bool jumped = positionJumped(reportedMs);
     if (jumped) {
         m_gaplessLeadMs = 0;
+        m_wordCursor = 0;
+        const qint64 targetMs = reportedMs - kAudioLeadCompensationMs - m_lyricOffset;
+        if (m_lyrics.isUsable() && m_lyrics.lineAt(targetMs) < 0) {
+            m_lineIndex = -1;
+            clearWordHighlight();
+            setText(QString());
+            setActive(false);
+        }
         if (m_pauseHidden) {
             m_pauseHidden = false;
             Q_EMIT pauseHiddenChanged();
@@ -1425,9 +1421,6 @@ void LrcApplet::updateWord()
     // bringing the decoder playhead into alignment with what comes out of the speakers.
     // m_lyricOffset is subtracted so that positive values delay the lyrics (shift them later).
     m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0) - m_gaplessLeadMs - kAudioLeadCompensationMs - m_lyricOffset;
-    if (m_positionMs < 0) {
-        m_positionMs = 0;
-    }
 
     // Before the first line of the track (intro), clear any stale or phantom text.
     if (!m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs) {
@@ -1535,6 +1528,19 @@ void LrcApplet::updateWord()
         // (which causes karaoke highlights to jump ahead before the vocal begins).
         // If the previous word just ended within a small micro-gap (kWordGapHoldMs),
         // keep it highlighted to prevent jarring flicker between fast syllables.
+        if (from == 0) {
+            // Seeked backward or reset: find the last completed word before m_positionMs
+            int lastPassed = -1;
+            for (int i = 0; i < wordCount; ++i) {
+                if (line.words.at(i).endMs <= m_positionMs) {
+                    lastPassed = i;
+                } else {
+                    break;
+                }
+            }
+            m_wordCursor = lastPassed;
+        }
+
         if (m_wordCursor >= 0 && m_wordCursor < wordCount) {
             const LyricWord &prevWord = line.words.at(m_wordCursor);
             if (m_positionMs >= prevWord.endMs && (m_positionMs - prevWord.endMs) <= kWordGapHoldMs) {
@@ -1583,8 +1589,6 @@ void LrcApplet::invalidatePlayerCandidates()
     m_probed = false;
     m_candidatesTimer.invalidate();
     m_candidateIndex = 0;
-    m_lastGoodCandidate = -1;
-    m_noLyricsCount = 0;
 
     delete m_namesWatcher;
     m_namesWatcher = nullptr;
@@ -1692,10 +1696,20 @@ void LrcApplet::probeCandidates()
     const QStringList ignored = ignoredPlayers();
     if (!ignored.isEmpty()) {
         m_candidates.removeIf([&ignored](const QString &player) {
-            return ignored.contains(player, Qt::CaseInsensitive);
+            for (const QString &pattern : ignored) {
+                if (playerNameMatches(pattern, player)) {
+                    return true;
+                }
+            }
+            return false;
         });
     }
     if (m_candidates.isEmpty()) {
+        if (!m_watchedService.isEmpty() || !m_player.isEmpty()) {
+            clearDisplay();
+            unwatchPlayer();
+            setPlayer(QString());
+        }
         return;
     }
 
@@ -1815,8 +1829,6 @@ void LrcApplet::sortCandidatesByScore()
         m_candidateIndex = 0;
     }
 
-    m_lastGoodCandidate = -1;
-    m_noLyricsCount = 0;
     m_probed = true;
 
     // Switching has to happen here rather than in poll(): that returns early
@@ -1840,6 +1852,7 @@ void LrcApplet::unwatchPlayer()
     m_positionWatcher = nullptr;
 
     cancelProcess();
+    m_spicy->cancel();
 
     if (m_watchedService.isEmpty()) {
         return;

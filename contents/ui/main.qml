@@ -24,7 +24,12 @@ PlasmoidItem {
     // Lyrics come from a third party and end up in rich text, so they have to
     // be escaped before anything is wrapped around them.
     function escapeHtml(text) {
-        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        if (!text) return "";
+        return text.replace(/&/g, "&amp;")
+                   .replace(/</g, "&lt;")
+                   .replace(/>/g, "&gt;")
+                   .replace(/"/g, "&quot;")
+                   .replace(/'/g, "&#39;");
     }
 
     // What has already been sung is dimmed, so the panel popup reads the way a
@@ -38,7 +43,10 @@ PlasmoidItem {
     // The word being sung is marked either with an underline (0), bold (1), or highlight color (2).
     readonly property color highlightColor: {
         const custom = Plasmoid.customHighlightColor ? Plasmoid.customHighlightColor.trim() : "";
-        return custom.length > 0 ? custom : Kirigami.Theme.highlightColor;
+        if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(custom)) {
+            return custom;
+        }
+        return Kirigami.Theme.highlightColor;
     }
 
     function formatActiveWord(word) {
@@ -52,14 +60,31 @@ PlasmoidItem {
         return "<u>" + escaped + "</u>";
     }
 
+    readonly property string truncatedPlainLine: {
+        if (!hasLyrics) {
+            return displayText;
+        }
+        if (maxCharacters > 0 && lyricText.length > maxCharacters) {
+            return lyricText.substring(0, maxCharacters) + "…";
+        }
+        return lyricText;
+    }
+
     // The line with the word being sung marked, for the panel.
     readonly property string compactLine: {
-        if (!Plasmoid.wordSynced || Plasmoid.word.length === 0) {
-            return escapeHtml(lyricText);
+        const limit = (maxCharacters > 0 && lyricText.length > maxCharacters) ? maxCharacters : lyricText.length;
+        const suffix = (maxCharacters > 0 && lyricText.length > maxCharacters) ? "…" : "";
+        const visibleText = lyricText.substring(0, limit);
+
+        if (!Plasmoid.wordSynced || Plasmoid.word.length === 0 || Plasmoid.wordStart >= limit) {
+            return escapeHtml(visibleText + suffix);
         }
-        return escapeHtml(lyricText.substring(0, Plasmoid.wordStart))
-            + formatActiveWord(Plasmoid.word)
-            + escapeHtml(lyricText.substring(Plasmoid.wordEnd));
+        const wStart = Math.max(0, Math.min(Plasmoid.wordStart, limit));
+        const wEnd = Math.max(wStart, Math.min(Plasmoid.wordEnd, limit));
+        const activeSlice = visibleText.substring(wStart, wEnd);
+        return escapeHtml(visibleText.substring(0, wStart))
+            + formatActiveWord(activeSlice)
+            + escapeHtml(visibleText.substring(wEnd) + suffix);
     }
 
     // The line with the word being sung marked, for the popup: what has already
@@ -214,15 +239,22 @@ PlasmoidItem {
                 opacity: root.hasLyrics ? 1.0 : 0.5
             }
 
+            TextMetrics {
+                id: lineMetrics
+                font: lyricLabel.font
+                text: root.truncatedPlainLine
+            }
+
             PlasmaComponents3.Label {
                 id: lyricLabel
 
-                text: root.hasLyrics ? root.compactLine : root.displayText
+                text: root.hasLyrics ? root.compactLine : root.escapeHtml(root.displayText)
                 textFormat: Text.RichText
                 color: root.hasLyrics ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
                 elide: Text.ElideRight
                 horizontalAlignment: Plasmoid.textAlignment === 1 ? Text.AlignLeft : Text.AlignHCenter
                 Layout.alignment: Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) : Qt.AlignCenter
+                Layout.preferredWidth: Math.ceil(lineMetrics.advanceWidth) + 4
                 Layout.maximumWidth: root.maxCharacters > 0 //
                     ? Math.ceil(characterWidth.advanceWidth) * root.maxCharacters
                     : implicitWidth
@@ -252,7 +284,7 @@ PlasmoidItem {
 
                 // Tiny, and it expands to the full credit while the pointer is
                 // on the widget.
-                text: compactArea.containsMouse ? Plasmoid.attribution : root.shortCredit
+                text: root.shortCredit
                 color: Kirigami.Theme.textColor
                 opacity: compactArea.containsMouse ? 0.85 : 0.6
                 elide: Text.ElideRight

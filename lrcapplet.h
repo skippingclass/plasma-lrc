@@ -411,8 +411,6 @@ private:
     /// Whether the properties of the player just picked are still on their way.
     bool m_awaitingState;
     int m_candidateIndex;
-    int m_lastGoodCandidate;
-    int m_noLyricsCount;
 
     bool m_active;
     bool m_available;

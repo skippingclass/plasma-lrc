@@ -130,22 +130,31 @@ Right-click the widget on your panel → **Configure LRC Lyrics...**:
 | **Transitions** | `Enabled` | Smooth fade animation when switching lines. |
 | **Alignment** | `Center` | Text alignment on the panel: `Center` or `Left`. |
 | **Panel** | `Standard` | Compact mode leaves the panel to lyrics alone (moving contributor credits to popup). |
-| **Maximum length** | `0 (no limit)` | Truncates text after N characters to preserve panel space. |
-| **No lyrics text** | `(empty)` | Placeholder text when no track or lyrics are active. |
+| **Maximum length** | `40 characters` | Truncates text after N characters to preserve panel space (0 = no limit). |
+| **No lyrics text** | `♪` | Placeholder text when no track or lyrics are active. |
 | **Icon** | `Enabled` | Shows music note icon next to lyrics. |
+| **Tooltip** | `Enabled` | Shows current track title and artist in the tooltip. |
 
 ### Lyrics Tab
 
 | Setting | Default | Description |
 |---|---|---|
+| **Update every** | `2000 ms` | Polling interval for player detection (500–10000 ms). |
+| **Favourite player** | *(empty)* | Prefer this player if multiple players are running (e.g. `spotify`). |
+| **Lock to player** | *(empty)* | Exclusively listen to one player and ignore all others. |
+| **Lyric offset** | `0 ms` | Timing adjustment (−2000…+2000 ms) for early or late lyrics. |
+| **Never ask** | *(empty)* | Comma-separated blacklist of MPRIS players to ignore. |
+| **Idle** | `Disabled` | Stop polling while nothing is playing to reduce CPU usage to 0%. |
 | **Pause delay** | `5 seconds` | Seconds before lyrics fade out while paused (0 = never hide). |
 | **Left click** | `Show popup` | Action on left click: `Show popup` or `Play / Pause`. |
 | **Middle click** | `Play / Pause` | Action on middle click: `None`, `Play / Pause`, or `Next track`. |
-| **Lyric offset** | `0 ms` | Timing adjustment (−2000…+2000 ms) for early or late lyrics. |
 | **Timestamps** | `Disabled` | Shows timestamp prefix `[mm:ss]` before line. |
-| **Favourite player** | *(empty)* | Prefer this player if multiple players are running (e.g. `spotify`). |
-| **Lock to player** | *(empty)* | Exclusively listen to one player and ignore all others. |
-| **Never ask** | *(empty)* | Comma-separated blacklist of MPRIS players to ignore. |
+
+### Blacklist Tab
+
+| Setting | Default | Description |
+|---|---|---|
+| **Blacklisted tracks** | *(empty)* | Semicolon-separated list of song titles or `Artist - Title` to block from lyric fetching. Can also be toggled via context menu or popup. |
 
 ### Source Tab
 
@@ -153,6 +162,7 @@ Right-click the widget on your panel → **Configure LRC Lyrics...**:
 |---|---|---|
 | **Spicy Lyrics** | `Enabled` | Enables community word-level sync for Spotify tracks. |
 | **API key** | *(empty)* | Personal Spicy Lyrics developer token `sl_sk_…`. |
+| **lrc_tty executable** | `lrc_tty` | Path or command for the `lrc_tty` fallback backend. |
 
 ---
 

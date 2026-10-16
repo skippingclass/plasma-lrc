@@ -122,11 +122,19 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
             continue;
         }
 
-        // Find next line to determine endMs
+        // Find next line with a strictly later timestamp to determine endMs
         qint64 endMs = 0;
-        if (i + 1 < rawLines.size()) {
-            endMs = qMax(0LL, rawLines.at(i + 1).startMs + globalOffsetMs);
-        } else {
+        int nextDiffIdx = -1;
+        for (int j = i + 1; j < rawLines.size(); ++j) {
+            const qint64 candidateMs = qMax(0LL, rawLines.at(j).startMs + globalOffsetMs);
+            if (candidateMs > startMs) {
+                nextDiffIdx = j;
+                endMs = candidateMs;
+                break;
+            }
+        }
+
+        if (nextDiffIdx < 0) {
             // Last line: estimate end
             if (trackDurationMs > startMs) {
                 endMs = qMin(trackDurationMs, startMs + 6000);

@@ -103,7 +103,10 @@ KCM.SimpleKCM {
                 border.color: Kirigami.Theme.separatorColor
                 color: {
                     const c = customHighlightColorField.text.trim();
-                    return c.length > 0 ? c : Kirigami.Theme.highlightColor;
+                    if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c)) {
+                        return c;
+                    }
+                    return Kirigami.Theme.highlightColor;
                 }
             }
 

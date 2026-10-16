@@ -48,6 +48,7 @@ KCM.SimpleKCM {
     }
 
     property bool syncingToRaw: false
+    property bool initializedFromApplet: false
 
     ListModel {
         id: tracksModel
@@ -56,12 +57,14 @@ KCM.SimpleKCM {
     function syncFromRaw() {
         tracksModel.clear();
         let sourceText = rawField.text;
-        if ((!sourceText || sourceText.trim().length === 0) && targetApplet && targetApplet.blacklistedTracks) {
+        if (!initializedFromApplet && (!sourceText || sourceText.trim().length === 0) && targetApplet && targetApplet.blacklistedTracks) {
+            initializedFromApplet = true;
             sourceText = targetApplet.blacklistedTracks;
             syncingToRaw = true;
             rawField.text = sourceText;
             syncingToRaw = false;
         }
+        initializedFromApplet = true;
 
         if (!sourceText) {
             return;

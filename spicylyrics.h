@@ -9,8 +9,10 @@
 #include <QHash>
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QPointer>
 #include <QVector>
 
+class QNetworkReply;
 class QTimer;
 
 /**
@@ -107,6 +109,9 @@ public:
     void setEnabled(bool enabled);
     bool isEnabled() const;
 
+    /// Cancels any active network request.
+    void cancel();
+
     /**
      * Fetches the lyrics for @p trackId, or answers from the cache.
      *
@@ -145,6 +150,7 @@ private:
     void emitMissing(const QString &trackId, MissingReason reason);
 
     QNetworkAccessManager m_network;
+    QPointer<QNetworkReply> m_activeReply;
     QHash<QString, Lyrics> m_memoryCache;
     QTimer *m_watchdog;
     int m_writesSincePrune = 0;

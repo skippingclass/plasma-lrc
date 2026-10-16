@@ -86,11 +86,20 @@ ColumnLayout {
         }
     }
 
+    function escapeHtml(text) {
+        if (!text) return "";
+        return text.replace(/&/g, "&amp;")
+                   .replace(/</g, "&lt;")
+                   .replace(/>/g, "&gt;")
+                   .replace(/"/g, "&quot;")
+                   .replace(/'/g, "&#39;");
+    }
+
     PlasmaComponents3.Label {
         Layout.fillWidth: true
         Layout.maximumWidth: root.maxWidth
 
-        text: root.hasLyrics ? root.line : root.placeholder
+        text: root.hasLyrics ? root.line : root.escapeHtml(root.placeholder)
         textFormat: Text.RichText
         color: root.hasLyrics ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
         wrapMode: Text.Wrap
@@ -100,7 +109,10 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.maximumWidth: root.maxWidth
 
-        text: root.attributionUrl.length > 0 //
+        readonly property bool hasValidUrl: root.attributionUrl.length > 0 &&
+            (root.attributionUrl.indexOf("https://") === 0 || root.attributionUrl.indexOf("http://") === 0)
+
+        text: hasValidUrl //
             ? "<a href=\"" + root.attributionUrl + "\">" + root.attribution + "</a>"
             : root.attribution
         textFormat: Text.StyledText

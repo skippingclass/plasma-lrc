@@ -173,11 +173,18 @@ QString attributionUrl(const QString &source, const QJsonObject &uploadAttributi
     if (source != QLatin1String("spicy_lyrics")) {
         return QString();
     }
+    QString url;
     const QJsonObject maker = uploadAttribution.value(QStringLiteral("Maker")).toObject();
     if (!maker.value(QStringLiteral("url")).toString().isEmpty()) {
-        return maker.value(QStringLiteral("url")).toString();
+        url = maker.value(QStringLiteral("url")).toString().trimmed();
+    } else {
+        url = uploadAttribution.value(QStringLiteral("Uploader")).toObject().value(QStringLiteral("url")).toString().trimmed();
     }
-    return uploadAttribution.value(QStringLiteral("Uploader")).toObject().value(QStringLiteral("url")).toString();
+    if ((url.startsWith(QLatin1String("https://"), Qt::CaseInsensitive) || url.startsWith(QLatin1String("http://"), Qt::CaseInsensitive))
+        && !url.contains(QLatin1Char('"')) && !url.contains(QLatin1Char('<')) && !url.contains(QLatin1Char('>'))) {
+        return url;
+    }
+    return QString();
 }
 
 /**
@@ -204,8 +211,8 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 
         LyricWord word;
         word.text = text;
-        word.startMs = secondsToMs(syllable.value(QStringLiteral("StartTime")));
-        word.endMs = secondsToMs(syllable.value(QStringLiteral("EndTime")));
+        word.startMs = qMax<qint64>(0, secondsToMs(syllable.value(QStringLiteral("StartTime"))));
+        word.endMs = qMax<qint64>(word.startMs, secondsToMs(syllable.value(QStringLiteral("EndTime"))));
 
         const bool space = needsSpace(previousPiece, text, previousStartsSplit);
         if (space) {
@@ -230,8 +237,8 @@ bool readPart(const QJsonObject &part, LyricLine *line)
         }
         LyricWord word;
         word.text = text;
-        word.startMs = secondsToMs(part.value(QStringLiteral("StartTime")));
-        word.endMs = secondsToMs(part.value(QStringLiteral("EndTime")));
+        word.startMs = qMax<qint64>(0, secondsToMs(part.value(QStringLiteral("StartTime"))));
+        word.endMs = qMax<qint64>(word.startMs, secondsToMs(part.value(QStringLiteral("EndTime"))));
         word.textEnd = static_cast<int>(text.size());
         built = text;
         line->words.append(word);
@@ -286,13 +293,12 @@ bool readPart(const QJsonObject &part, LyricLine *line)
     }
 
     line->text = built;
-    line->startMs = secondsToMs(part.value(QStringLiteral("StartTime")));
-    if (line->startMs <= 0 && !line->words.isEmpty()) {
-        line->startMs = line->words.first().startMs;
-    }
-    line->endMs = secondsToMs(part.value(QStringLiteral("EndTime")));
-    if (line->endMs <= 0 && !line->words.isEmpty()) {
-        line->endMs = line->words.last().endMs;
+    const qint64 rawStart = secondsToMs(part.value(QStringLiteral("StartTime")));
+    line->startMs = (rawStart >= 0) ? rawStart : (!line->words.isEmpty() ? line->words.first().startMs : 0);
+    const qint64 rawEnd = secondsToMs(part.value(QStringLiteral("EndTime")));
+    line->endMs = (rawEnd > line->startMs) ? rawEnd : (!line->words.isEmpty() ? line->words.last().endMs : line->startMs);
+    if (line->endMs <= line->startMs) {
+        line->endMs = line->startMs + 3000;
     }
     return true;
 }
@@ -348,11 +354,22 @@ SpicyLyrics::SpicyLyrics(QObject *parent)
     });
 }
 
+void SpicyLyrics::cancel()
+{
+    m_watchdog->stop();
+    if (m_activeReply) {
+        m_activeReply->disconnect(this);
+        if (m_activeReply->isRunning()) {
+            m_activeReply->abort();
+        }
+        m_activeReply->deleteLater();
+        m_activeReply.clear();
+    }
+}
+
 SpicyLyrics::~SpicyLyrics()
 {
-    if (m_watchdog->isActive()) {
-        m_watchdog->stop();
-    }
+    cancel();
 }
 
 void SpicyLyrics::setKey(const QString &key)
@@ -401,6 +418,8 @@ QString SpicyLyrics::trackIdFromMpris(const QString &trackId)
 
 void SpicyLyrics::request(const QString &trackId)
 {
+    cancel();
+
     // Without a key there is nothing to ask with, and nothing entitles us to the
     // cached answers either: the caller falls back to lrc_tty.
     if (trackId.isEmpty() || !isEnabled()) {
@@ -502,6 +521,8 @@ void SpicyLyrics::pruneCache()
 
 void SpicyLyrics::fetch(const QString &trackId)
 {
+    cancel();
+
     QNetworkRequest request(QUrl(QString::fromUtf8(apiRoot()) + trackId));
     request.setRawHeader("Accept", "application/json");
     request.setRawHeader("User-Agent", s_userAgent);
@@ -509,7 +530,11 @@ void SpicyLyrics::fetch(const QString &trackId)
     request.setTransferTimeout(kRequestTimeoutMs);
 
     QNetworkReply *reply = m_network.get(request);
+    m_activeReply = reply;
     connect(reply, &QNetworkReply::finished, this, [this, reply, trackId] {
+        if (m_activeReply == reply) {
+            m_activeReply.clear();
+        }
         reply->deleteLater();
         m_watchdog->stop();
 
@@ -555,6 +580,10 @@ bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
         }
         return false;
     };
+
+    if (!lyrics) {
+        return fail(QStringLiteral("null lyrics output pointer"));
+    }
 
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);

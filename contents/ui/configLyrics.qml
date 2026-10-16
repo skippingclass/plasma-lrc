@@ -50,7 +50,8 @@ KCM.SimpleKCM {
                 return value + " ms";
             }
             valueFromText: function (text) {
-                return parseInt(text);
+                const parsed = parseInt(text);
+                return isNaN(parsed) ? 2000 : parsed;
             }
         }
 
@@ -91,7 +92,8 @@ KCM.SimpleKCM {
                 return value > 0 ? "+" + value + " ms" : value + " ms";
             }
             valueFromText: function (text) {
-                return parseInt(text);
+                const parsed = parseInt(text);
+                return isNaN(parsed) ? 0 : parsed;
             }
         }
 

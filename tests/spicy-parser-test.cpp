@@ -723,6 +723,79 @@ int main(int argc, char **argv)
         check("webSession: spotify не браузер", !looksLikeWebPageSession(QStringLiteral("/com/spotify/track/123"), QStringLiteral("spotify")));
     }
 
+    // --- аудит 1 и 2: обработка граничных условий парсера и API ---
+    {
+        const QString lrc = QStringLiteral(
+            "[00:01.00]Line 1 part A\n"
+            "[00:01.00]Line 1 part B\n"
+            "[00:05.00]Line 2\n"
+        );
+        Lyrics lyrics;
+        check("lrc same ts: парсится", LrcParser::parseLrc(lrc, &lyrics, 10000));
+        check("lrc same ts: 3 строки", lyrics.lines.size() == 3);
+        if (lyrics.lines.size() == 3) {
+            check("lrc same ts: первая строка продолжается до 5000", lyrics.lines[0].endMs == 5000, QString::number(lyrics.lines[0].endMs));
+            check("lrc same ts: вторая строка продолжается до 5000", lyrics.lines[1].endMs == 5000, QString::number(lyrics.lines[1].endMs));
+        }
+
+        QString error;
+        check("spicy null ptr: безопасно отклоняется", !SpicyLyrics::parse(QByteArrayLiteral("{}"), nullptr, &error));
+        check("spicy null ptr: содержит ошибку", error.contains(QStringLiteral("null lyrics")));
+
+        const QByteArray evilAttributionJson = QByteArrayLiteral(
+            "{\"Body\":{\"source\":\"spicy_lyrics\",\"Type\":\"Syllable\",\"Content\":[{\"Lead\":{\"Syllables\":[{\"Text\":\"hello\",\"StartTime\":1.0,\"EndTime\":2.0}]}}],"
+            "\"UploadAttribution\":{\"Maker\":{\"username\":\"hacker\",\"url\":\"javascript:alert(1)\"}}}}"
+        );
+        Lyrics evilLyrics;
+        QString evilErr;
+        check("evil attribution: парсится", SpicyLyrics::parse(evilAttributionJson, &evilLyrics, &evilErr), evilErr);
+        check("evil attribution: url отфильтрован", evilLyrics.attributionUrl.isEmpty(), evilLyrics.attributionUrl);
+
+        const QByteArray validAttributionJson = QByteArrayLiteral(
+            "{\"Body\":{\"source\":\"spicy_lyrics\",\"Type\":\"Syllable\",\"Content\":[{\"Lead\":{\"Syllables\":[{\"Text\":\"hello\",\"StartTime\":1.0,\"EndTime\":2.0}]}}],"
+            "\"UploadAttribution\":{\"Maker\":{\"username\":\"creator\",\"url\":\"https://spicylyrics.org/user/creator\"}}}}"
+        );
+        Lyrics validLyrics;
+        QString validErr;
+        check("valid attribution: парсится", SpicyLyrics::parse(validAttributionJson, &validLyrics, &validErr), validErr);
+        check("valid attribution: url сохранён", validLyrics.attributionUrl == QStringLiteral("https://spicylyrics.org/user/creator"), validLyrics.attributionUrl);
+
+        const QByteArray badTimingsJson = QByteArrayLiteral(
+            "{\"Body\":{\"source\":\"spicy_lyrics\",\"Type\":\"Syllable\",\"Content\":[{\"Type\":\"Vocal\",\"Lead\":{\"StartTime\":-5.0,\"EndTime\":-2.0,"
+            "\"Syllables\":[{\"Text\":\"hi\",\"StartTime\":-5.0,\"EndTime\":-6.0,\"IsPartOfWord\":false}]}}]}}"
+        );
+        Lyrics badLyrics;
+        QString badErr;
+        check("bad timings: парсится", SpicyLyrics::parse(badTimingsJson, &badLyrics, &badErr), badErr);
+        if (!badLyrics.lines.isEmpty()) {
+            check("bad timings: line start >= 0", badLyrics.lines[0].startMs >= 0, QString::number(badLyrics.lines[0].startMs));
+            check("bad timings: line end > line start", badLyrics.lines[0].endMs > badLyrics.lines[0].startMs, QString::number(badLyrics.lines[0].endMs));
+            if (!badLyrics.lines[0].words.isEmpty()) {
+                check("bad timings: word start >= 0", badLyrics.lines[0].words[0].startMs >= 0, QString::number(badLyrics.lines[0].words[0].startMs));
+                check("bad timings: word end >= word start", badLyrics.lines[0].words[0].endMs >= badLyrics.lines[0].words[0].startMs, QString::number(badLyrics.lines[0].words[0].endMs));
+            }
+        }
+    }
+
+    // --- аудит 4 и 5: нормализация тире в блеклисте и сопоставление имен плееров ---
+    {
+        check("playerNameMatches: firefox instance", playerNameMatches(QStringLiteral("firefox"), QStringLiteral("firefox.instance123")));
+        check("playerNameMatches: case insensitive", playerNameMatches(QStringLiteral("Chrome"), QStringLiteral("google-chrome")));
+        check("playerNameMatches: mismatch", !playerNameMatches(QStringLiteral("spotify"), QStringLiteral("vlc")));
+
+        auto normalizeTest = [](QString text) {
+            text.replace(QChar(0x2013), QLatin1Char('-'));
+            text.replace(QChar(0x2014), QLatin1Char('-'));
+            text.replace(QChar(0x2212), QLatin1Char('-'));
+            return text.simplified().toLower();
+        };
+
+        const QString standard = QStringLiteral("artist - title");
+        check("blacklist dash: en-dash", normalizeTest(QStringLiteral("Artist \u2013 Title")) == standard);
+        check("blacklist dash: em-dash", normalizeTest(QStringLiteral("Artist \u2014 Title")) == standard);
+        check("blacklist dash: minus sign", normalizeTest(QStringLiteral("Artist \u2212 Title")) == standard);
+    }
+
     printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");
     return failures == 0 ? 0 : 1;
 }
