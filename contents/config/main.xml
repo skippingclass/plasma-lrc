@@ -12,11 +12,6 @@
         back (see the FIXME in kconfigloader.cpp).
     -->
     <group name="General">
-        <entry name="binaryPath" type="String">
-            <label>Executable to run.</label>
-            <default>lrc_tty</default>
-        </entry>
-
         <entry name="pollInterval" type="Int">
             <label>How often to poll fallback status, in milliseconds.</label>
             <default>2000</default>

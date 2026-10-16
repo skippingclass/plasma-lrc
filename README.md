@@ -34,7 +34,7 @@
 - **Customizable Highlight Palette**:  
   Customize your lyric highlight color with built-in presets (Spotify Green, Cyan, Purple, Yellow, Coral, White) or any custom `#RRGGBB` hex code. Choose between highlight color, bold, or underline styles.
 - **1 Fetch Per Song Architecture**:  
-  Instead of polling external tools multiple times per second, the widget fetches lyrics once on track change (`lrc_tty --dump` / Spicy API) and runs local time interpolation using C++ `QElapsedTimer`. CPU usage drops to 0% at idle.
+  Instead of polling external tools multiple times per second, the widget fetches lyrics once on track change (native LRCLIB client / Spicy API) and runs local time interpolation using C++ `QElapsedTimer`. CPU usage drops to 0% at idle.
 - **Intelligent MPRIS Engine**:  
   Auto-detects active music players, avoids browser media tab lock-in, strips video noise from titles (`[Official Music Video]`, `4K`, etc.), and prioritizes your favorite player.
 - **Clean Instrumental Breaks**:  
@@ -60,7 +60,7 @@
 │ 1. Track detection & active player scoring             │
 │ 2. Single-shot lyrics fetch per track:                 │
 │    ├── Spotify + API Key  ──►  Spicy Lyrics HTTP API   │
-│    └── Other players      ──►  lrc_tty --dump (1 time) │
+│    └── Other players      ──►  Native LRCLIB API       │
 │ 3. LrcParser (C++): Fast in-memory [mm:ss.xx] parser   │
 │ 4. QElapsedTimer: Local monotonic line & word timing   │
 └───────────────────────────┬────────────────────────────┘
@@ -79,7 +79,6 @@
 |---|---|---|
 | **KDE Plasma** | 6.0+ (Frameworks 6) | Desktop environment |
 | **Qt / C++** | Qt 6.5+, C++17 | Applet binary & QML engine |
-| **`lrc_tty`** | [lrc_tty](https://github.com/larsgrah/lrc_tty) | Universal lrclib backend for all MPRIS players |
 | **Spicy Lyrics Key** | Optional | Required for word-by-word karaoke on Spotify |
 
 ---
@@ -162,7 +161,6 @@ Right-click the widget on your panel → **Configure LRC Lyrics...**:
 |---|---|---|
 | **Spicy Lyrics** | `Enabled` | Enables community word-level sync for Spotify tracks. |
 | **API key** | *(empty)* | Personal Spicy Lyrics developer token `sl_sk_…`. |
-| **lrc_tty executable** | `lrc_tty` | Path or command for the `lrc_tty` fallback backend. |
 
 ---
 
@@ -184,13 +182,9 @@ export SPICY_LYRICS_SECRET_KEY=sl_sk_...
 ## Troubleshooting
 
 - **Panel is empty while music is playing:**  
-  Verify that `lrc_tty` is installed and can detect your player:  
-  ```bash
-  lrc_tty --list-players
-  ```  
-  If your player is not picked up automatically, enter its name in **Favourite player** (e.g. `spotify` or `chromium`).
+  Verify that your player supports MPRIS2 and is currently playing audio. If your player is not picked up automatically, enter its name in **Favourite player** (e.g. `spotify` or `chromium`).
 - **Word-by-word highlight is not active:**  
-  Word-by-word highlighting is provided for Spotify tracks via Spicy Lyrics. Other players and tracks without Spicy sync automatically use clean line-by-line synced LRC via lrclib.
+  Word-by-word highlighting is provided for Spotify tracks via Spicy Lyrics. Other players and tracks without Spicy sync automatically use clean line-by-line synced LRC via LRCLIB.
 - **Lyrics are slightly ahead or behind audio:**  
   Open settings → **Lyrics** → adjust **Lyric offset** slider (−2000ms to +2000ms).
 

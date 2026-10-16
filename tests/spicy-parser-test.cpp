@@ -11,6 +11,7 @@
 
 #include "spicylyrics.h"
 #include "lrcparser.h"
+#include "lrclib.h"
 #include "playermeta.h"
 #include "trackname.h"
 
@@ -794,6 +795,46 @@ int main(int argc, char **argv)
         check("blacklist dash: en-dash", normalizeTest(QStringLiteral("Artist \u2013 Title")) == standard);
         check("blacklist dash: em-dash", normalizeTest(QStringLiteral("Artist \u2014 Title")) == standard);
         check("blacklist dash: minus sign", normalizeTest(QStringLiteral("Artist \u2212 Title")) == standard);
+    }
+
+    // --- lrclib / trackname улучшения из self: ведущие номера, расширения, extractPrimaryArtist ---
+    {
+        // 1. Очистка номеров треков
+        check("cleanTrackTitle: leading 01 - ", cleanTrackTitle(QStringLiteral("01 - Bohemian Rhapsody")) == QStringLiteral("Bohemian Rhapsody"));
+        check("cleanTrackTitle: leading 12. ", cleanTrackTitle(QStringLiteral("12. Track Title")) == QStringLiteral("Track Title"));
+        check("cleanTrackTitle: leading 3 ", cleanTrackTitle(QStringLiteral("3  Song Name")) == QStringLiteral("Song Name"));
+
+        // 2. Очистка аудио-расширений
+        check("cleanTrackTitle: audio ext .mp3", cleanTrackTitle(QStringLiteral("Song.mp3")) == QStringLiteral("Song"));
+        check("cleanTrackTitle: audio ext .flac", cleanTrackTitle(QStringLiteral("01 - Song.flac")) == QStringLiteral("Song"));
+        check("cleanTrackTitle: audio ext .m4a", cleanTrackTitle(QStringLiteral("Artist - Song (Official Video).m4a")) == QStringLiteral("Artist - Song"));
+
+        // 3. extractPrimaryArtist
+        check("primaryArtist: запятая", extractPrimaryArtist(QStringLiteral("Drake, 21 Savage")) == QStringLiteral("Drake"));
+        check("primaryArtist: амперсанд", extractPrimaryArtist(QStringLiteral("Queen & David Bowie")) == QStringLiteral("Queen"));
+        check("primaryArtist: слэш", extractPrimaryArtist(QStringLiteral("Voskresenskii / Тейп")) == QStringLiteral("Voskresenskii"));
+        check("primaryArtist: feat", extractPrimaryArtist(QStringLiteral("Ken Carson feat. Playboi Carti")) == QStringLiteral("Ken Carson"));
+        check("primaryArtist: and", extractPrimaryArtist(QStringLiteral("Simon and Garfunkel")) == QStringLiteral("Simon"));
+        check("primaryArtist: чистый", extractPrimaryArtist(QStringLiteral("Drake")) == QStringLiteral("Drake"));
+
+        // 4. LrclibClient::scoreSearchMatch
+        QJsonObject perfectMatch;
+        perfectMatch[QStringLiteral("syncedLyrics")] = QStringLiteral("[00:01.00] test");
+        perfectMatch[QStringLiteral("duration")] = 200.0;
+        // score: synced (+50) + duration diff 0s (+35) = 85
+        check("lrclib score: perfect synced match", LrclibClient::scoreSearchMatch(perfectMatch, 200000) == 85);
+
+        QJsonObject plainMatch;
+        plainMatch[QStringLiteral("plainLyrics")] = QStringLiteral("plain words");
+        plainMatch[QStringLiteral("duration")] = 250.0;
+        // score: plain (+20) + duration diff 50s (-10) = 10
+        check("lrclib score: plain with duration diff", LrclibClient::scoreSearchMatch(plainMatch, 200000) == 10);
+
+        // 5. LrclibClient::parseCandidate
+        Lyrics parsed;
+        check("lrclib parse: valid synced candidate", LrclibClient::parseCandidate(perfectMatch, &parsed, 200000));
+        check("lrclib parse: attribution is lrclib", parsed.attribution == QStringLiteral("lrclib"));
+        check("lrclib parse: attributionUrl is lrclib.net", parsed.attributionUrl == QStringLiteral("https://lrclib.net"));
     }
 
     printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");

@@ -60,23 +60,26 @@ PlasmoidItem {
         return "<u>" + escaped + "</u>";
     }
 
-    readonly property string truncatedPlainLine: {
+    function plainLine(lineText) {
         if (!hasLyrics) {
             return displayText;
         }
-        if (maxCharacters > 0 && lyricText.length > maxCharacters) {
-            return lyricText.substring(0, maxCharacters) + "…";
+        const text = lineText !== undefined ? lineText : lyricText;
+        if (maxCharacters > 0 && text.length > maxCharacters) {
+            return text.substring(0, maxCharacters) + "…";
         }
-        return lyricText;
+        return text;
     }
 
-    // The line with the word being sung marked, for the panel.
-    readonly property string compactLine: {
-        const limit = (maxCharacters > 0 && lyricText.length > maxCharacters) ? maxCharacters : lyricText.length;
-        const suffix = (maxCharacters > 0 && lyricText.length > maxCharacters) ? "…" : "";
-        const visibleText = lyricText.substring(0, limit);
+    readonly property string truncatedPlainLine: plainLine(lyricText)
 
-        if (!Plasmoid.wordSynced || Plasmoid.word.length === 0 || Plasmoid.wordStart >= limit) {
+    function formatCompactLine(lineText) {
+        const text = lineText !== undefined ? lineText : lyricText;
+        const limit = (maxCharacters > 0 && text.length > maxCharacters) ? maxCharacters : text.length;
+        const suffix = (maxCharacters > 0 && text.length > maxCharacters) ? "…" : "";
+        const visibleText = text.substring(0, limit);
+
+        if (!Plasmoid.wordSynced || Plasmoid.word.length === 0 || Plasmoid.wordStart >= limit || text !== lyricText) {
             return escapeHtml(visibleText + suffix);
         }
         const wStart = Math.max(0, Math.min(Plasmoid.wordStart, limit));
@@ -86,6 +89,9 @@ PlasmoidItem {
             + formatActiveWord(activeSlice)
             + escapeHtml(visibleText.substring(wEnd) + suffix);
     }
+
+    // The line with the word being sung marked, for the panel.
+    readonly property string compactLine: formatCompactLine(lyricText)
 
     // The line with the word being sung marked, for the popup: what has already
     // been sung is dimmed.
@@ -106,14 +112,9 @@ PlasmoidItem {
         if (hasLyrics) {
             return lyricText;
         }
-        if (!Plasmoid.available) {
-            return i18n("lrc_tty not found");
-        }
         return Plasmoid.placeholderText;
     }
-    readonly property string hintText: !Plasmoid.available //
-        ? i18n("Could not run %1: %2", Plasmoid.binaryPath, Plasmoid.error)
-        : displayText
+    readonly property string hintText: displayText
 
     // The credit for the lyrics, in a short form for the panel and a full one for
     // the popup.
@@ -142,7 +143,7 @@ PlasmoidItem {
     // Which source the line actually came from.
     readonly property string sourceName: Plasmoid.fromSpicyLyrics //
         ? i18n("Spicy Lyrics")
-        : (Plasmoid.attribution.length > 0 ? Plasmoid.attribution : i18n("lrc_tty"))
+        : (Plasmoid.attribution.length > 0 ? Plasmoid.attribution : i18n("LRCLIB"))
     readonly property string attributionHint: {
         if (Plasmoid.isCurrentTrackBlacklisted) {
             return i18n("Lyrics blacklisted for this track");
@@ -162,18 +163,12 @@ PlasmoidItem {
     }
 
     toolTipMainText: {
-        if (!Plasmoid.available) {
-            return i18n("lrc_tty not found");
-        }
         if (Plasmoid.trackInfo.length > 0) {
             return Plasmoid.trackInfo;
         }
         return i18n("Plasma LRC");
     }
     toolTipSubText: {
-        if (!Plasmoid.available) {
-            return i18n("Could not run %1: %2", Plasmoid.binaryPath, Plasmoid.error);
-        }
         if (Plasmoid.trackInfo.length === 0) {
             return i18n("No player active");
         }
@@ -259,40 +254,95 @@ PlasmoidItem {
 
             TextMetrics {
                 id: lineMetrics
-                font: lyricLabel.font
-                text: root.truncatedPlainLine
+                font: Kirigami.Theme.defaultFont
+                text: root.plainLine(lyricContainer.displayedLyric)
             }
 
-            PlasmaComponents3.Label {
-                id: lyricLabel
+            Item {
+                id: lyricContainer
 
-                text: root.hasLyrics ? root.compactLine : root.escapeHtml(root.displayText)
-                textFormat: Text.RichText
-                color: root.hasLyrics ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
-                elide: Text.ElideRight
-                horizontalAlignment: Plasmoid.textAlignment === 1 ? Text.AlignLeft : Text.AlignHCenter
-                Layout.alignment: Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) : Qt.AlignCenter
-                Layout.preferredWidth: Math.ceil(lineMetrics.advanceWidth) + 4
+                property string displayedLyric: root.lyricText
+
+                readonly property real targetWidth: Math.ceil(lineMetrics.advanceWidth) + 4
+                property real animatedWidth: targetWidth
+
+                Behavior on animatedWidth {
+                    enabled: Plasmoid.fadeTransition && root.hasLyrics
+                    NumberAnimation {
+                        duration: 160
+                        easing.type: Easing.OutQuad
+                    }
+                }
+
+                implicitWidth: animatedWidth
+                implicitHeight: lyricLabel.implicitHeight
+
+                Layout.preferredWidth: animatedWidth
+                Layout.preferredHeight: implicitHeight
                 Layout.maximumWidth: root.maxCharacters > 0 //
                     ? Math.ceil(characterWidth.advanceWidth) * root.maxCharacters
                     : implicitWidth
-            }
+                Layout.alignment: Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) : Qt.AlignCenter
 
-            NumberAnimation {
-                id: lineFadeAnim
-                target: lyricLabel
-                property: "opacity"
-                from: 0.25
-                to: 1.0
-                duration: 160
-                easing.type: Easing.OutQuad
-            }
+                PlasmaComponents3.Label {
+                    id: lyricLabel
+                    anchors.fill: parent
+                    text: root.hasLyrics ? root.formatCompactLine(lyricContainer.displayedLyric) : root.escapeHtml(root.displayText)
+                    textFormat: Text.RichText
+                    color: root.hasLyrics ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+                    elide: Text.ElideRight
+                    horizontalAlignment: Plasmoid.textAlignment === 1 ? Text.AlignLeft : Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    opacity: 1.0
+                }
 
-            Connections {
-                target: root
-                function onLyricTextChanged() {
-                    if (Plasmoid.fadeTransition && root.hasLyrics) {
-                        lineFadeAnim.restart();
+                SequentialAnimation {
+                    id: lineFadeAnim
+
+                    NumberAnimation {
+                        target: lyricLabel
+                        property: "opacity"
+                        to: 0.2
+                        duration: 70
+                        easing.type: Easing.InQuad
+                    }
+                    ScriptAction {
+                        script: {
+                            lyricContainer.displayedLyric = root.lyricText;
+                        }
+                    }
+                    NumberAnimation {
+                        target: lyricLabel
+                        property: "opacity"
+                        to: 1.0
+                        duration: 90
+                        easing.type: Easing.OutQuad
+                    }
+                }
+
+                Connections {
+                    target: root
+
+                    function onLyricTextChanged() {
+                        if (!Plasmoid.fadeTransition || !root.hasLyrics || lyricContainer.displayedLyric.length === 0) {
+                            lineFadeAnim.stop();
+                            lyricContainer.displayedLyric = root.lyricText;
+                            lyricLabel.opacity = 1.0;
+                        } else {
+                            lineFadeAnim.restart();
+                        }
+                    }
+
+                    function onHasLyricsChanged() {
+                        if (!root.hasLyrics) {
+                            lineFadeAnim.stop();
+                            lyricContainer.displayedLyric = "";
+                            lyricLabel.opacity = 1.0;
+                        } else if (lyricContainer.displayedLyric !== root.lyricText) {
+                            lineFadeAnim.stop();
+                            lyricContainer.displayedLyric = root.lyricText;
+                            lyricLabel.opacity = 1.0;
+                        }
                     }
                 }
             }
@@ -341,9 +391,6 @@ PlasmoidItem {
                     return i18n("No synchronized lyrics available");
                 }
                 return i18n("No lyrics available for this track");
-            }
-            if (!Plasmoid.available) {
-                return i18n("lrc_tty not found");
             }
             return i18n("No active player");
         }

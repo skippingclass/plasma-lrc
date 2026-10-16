@@ -36,7 +36,7 @@ KCM.SimpleKCM {
             wrapMode: Text.Wrap
             opacity: 0.75
             visible: useSpicyCheckBox.checked
-            text: i18n("It answers with the best sync it has, including community-made word timings. Tracks it does not know fall back to lrc_tty. Without a key the widget keeps using lrc_tty only.")
+            text: i18n("It answers with the best sync it has, including community-made word timings. Tracks it does not know fall back to LRCLIB. Without a key the widget keeps using LRCLIB only.")
         }
 
         QQC2.TextField {

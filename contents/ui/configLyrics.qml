@@ -17,7 +17,6 @@ import org.kde.kirigami as Kirigami
 KCM.SimpleKCM {
     id: root
 
-    property alias cfg_binaryPath: binaryPathField.text
     property alias cfg_player: playerField.text
     property alias cfg_preferredPlayer: preferredField.text
     property alias cfg_ignoredPlayers: ignoredField.text
@@ -30,14 +29,6 @@ KCM.SimpleKCM {
     property alias cfg_middleClickAction: middleClickActionBox.currentIndex
 
     Kirigami.FormLayout {
-
-        QQC2.TextField {
-            id: binaryPathField
-
-            Kirigami.FormData.label: i18n("lrc_tty executable:")
-            placeholderText: i18n("lrc_tty")
-            Layout.fillWidth: true
-        }
 
         QQC2.SpinBox {
             id: pollIntervalField

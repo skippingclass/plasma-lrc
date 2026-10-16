@@ -27,6 +27,9 @@ QString cleanTrackTitle(QString title);
 /** Strips "- Topic", "VEVO", a trailing "(official)" and a feature list. */
 QString cleanTrackArtist(QString artist);
 
+/** Extracts the primary artist when multiple artists are credited (comma, slash, &, feat, and). */
+QString extractPrimaryArtist(const QString &artist);
+
 /**
  * Splits "Artist - Song" when a player puts something else in the artist field.
  *

@@ -20,6 +20,12 @@ const QRegularExpression s_bracketedNoise(
 // Everything after a pipe is the chapter list or " | Lyrics video".
 const QRegularExpression s_chapterTail(QStringLiteral(R"(\s*[|｜].*$)"));
 
+// Leading track numbers: "01 - ", "01. ", "1 - "
+const QRegularExpression s_leadingTrackNum(QStringLiteral(R"(^\s*\d{1,3}[\s.-]+)"));
+
+// Audio extensions: .mp3, .flac, .m4a, etc.
+const QRegularExpression s_audioExt(QStringLiteral(R"(\.(?:mp3|flac|m4a|wav|ogg|opus|aac|wma)$)"), kCaseInsensitive);
+
 // A dangling "4K" after the brackets have gone.
 const QRegularExpression s_qualityTail(QStringLiteral(R"(\s+(?:4k|hd|hq|mv|m/v)\s*$)"), kCaseInsensitive);
 
@@ -34,6 +40,8 @@ const QRegularExpression s_officialSuffix(QStringLiteral(R"(\s+(?:official|оф�
 const QRegularExpression s_artistFeatureBracket(QStringLiteral(R"(\s*[,;]?\s*\((?:feat|ft)\.?\s[^)]*\))"), kCaseInsensitive);
 const QRegularExpression s_artistFeatureTail(QStringLiteral(R"(\s*[,;]?\s+(?:feat|ft)\.?\s.*$)"), kCaseInsensitive);
 
+const QRegularExpression s_artistSplit(QStringLiteral(R"([;,/]|(?:\s+and\s+)|\s*&\s*|\s+(?:feat|ft)\.?\s+)"), kCaseInsensitive);
+
 const QRegularExpression s_artistDashTitle(QStringLiteral(R"(^(.+?)\s+[-–—−]\s+(.+)$)"));
 
 QString tidy(QString value)
@@ -45,6 +53,8 @@ QString tidy(QString value)
 QString cleanTrackTitle(QString title)
 {
     title = tidy(title);
+    title.remove(s_audioExt);
+    title.remove(s_leadingTrackNum);
     title.remove(s_bracketedNoise);
     title.remove(s_chapterTail);
     title.remove(s_featureBracket);
@@ -74,6 +84,16 @@ QString cleanTrackArtist(QString artist)
     artist = tidy(artist);
     artist.remove(s_officialSuffix);
     return tidy(artist);
+}
+
+QString extractPrimaryArtist(const QString &artist)
+{
+    const QString cleaned = cleanTrackArtist(artist);
+    if (cleaned.isEmpty()) {
+        return QString();
+    }
+    const QStringList parts = cleaned.split(s_artistSplit, Qt::SkipEmptyParts);
+    return tidy(parts.isEmpty() ? cleaned : parts.first());
 }
 
 void splitTrackArtistAndTitle(QString *artist, QString *title, bool fromWebPage)

@@ -18,6 +18,7 @@
 #include "lrcparser.h"
 
 class QDBusPendingCallWatcher;
+class LrclibClient;
 
 /**
  * Panel widget showing the lyric line that is currently being sung.
@@ -74,7 +75,6 @@ class LrcApplet : public Plasma::Applet
     // Configuration, mirrored here so that QML does not need to deal with
     // KConfigPropertyMap at all.
     Q_PROPERTY(QString placeholderText READ placeholderText NOTIFY settingsChanged)
-    Q_PROPERTY(QString binaryPath READ binaryPath NOTIFY settingsChanged)
     Q_PROPERTY(int maxCharacters READ maxCharacters NOTIFY settingsChanged)
     Q_PROPERTY(bool showTimestamp READ showTimestamp NOTIFY settingsChanged)
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
@@ -203,7 +203,6 @@ public:
     }
 
     QString placeholderText() const;
-    QString binaryPath() const;
     int maxCharacters() const;
     bool showIcon() const;
     bool showTrackInfo() const;
@@ -279,6 +278,8 @@ private Q_SLOTS:
     void onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
     void onSpicyLoaded(const QString &trackId, const Lyrics &lyrics);
     void onSpicyMissing(const QString &trackId, MissingReason reason);
+    void onLrclibLoaded(const QString &requestKey, const Lyrics &lyrics);
+    void onLrclibMissing(const QString &requestKey);
     void onPositionFetched();
     void onPauseTimeout();
     /// Whether the reported position differs from ours by more than a seek.
@@ -353,6 +354,7 @@ private:
     QTimer m_pauseTimer;
     QProcess *m_process;
     SpicyLyrics *m_spicy;
+    LrclibClient *m_lrclib;
 
     QString m_text;
     QString m_error;
@@ -373,8 +375,7 @@ private:
     QDBusPendingCallWatcher *m_propertyWatcher;
     QDBusPendingCallWatcher *m_namesWatcher;
     QDBusPendingCallWatcher *m_positionWatcher;
-
-    QString m_binaryPath;
+ 
     /// The player the widget is locked to, empty for automatic choice.
     QString m_configuredPlayer;
     /// The player to prefer while it is playing, empty for none.

@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.4.2 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,6 +47,8 @@ add_library(${PLUGIN_ID} SHARED
     lrcparser.h
     spicylyrics.cpp
     spicylyrics.h
+    lrclib.cpp
+    lrclib.h
     trackname.cpp
     trackname.h
     playermeta.cpp
@@ -97,6 +99,8 @@ if(PLASMA_LRC_TESTS)
         lrcparser.h
         spicylyrics.cpp
         spicylyrics.h
+        lrclib.cpp
+        lrclib.h
         trackname.cpp
         trackname.h
         playermeta.cpp

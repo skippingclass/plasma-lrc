@@ -10,7 +10,6 @@ license=('MIT')
 # engine modules the panel views import.
 depends=('plasma-workspace>=6.0' 'kconfig' 'kcoreaddons' 'ki18n' 'qt6-base' 'qt6-declarative')
 makedepends=('cmake' 'ninja' 'qt6-declarative')
-optdepends=('lrc_tty: the program the widget asks for lyrics; without it only the Spicy Lyrics API works (https://aur.archlinux.org/packages/lrc_tty)')
 source=("git+$url.git")
 sha256sums=('SKIP')
 

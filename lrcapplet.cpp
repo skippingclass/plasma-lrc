@@ -7,6 +7,7 @@
 #include "lrcapplet.h"
 
 #include "lrcparser.h"
+#include "lrclib.h"
 #include "playermeta.h"
 #include "trackname.h"
 
@@ -65,7 +66,7 @@ constexpr qint64 kPositionRetryIntervalMs = 150;
 constexpr qint64 kPositionCheckMs = 400;
 // A difference below this is the clock running slightly off; a bigger one means
 // playback was moved (seeked).
-constexpr qint64 kPositionSnapToleranceMs = 600;
+constexpr qint64 kPositionSnapToleranceMs = 1200;
 // How long a word highlight may linger across a tiny gap between syllables (<= 80ms)
 // to prevent flicker, without ever snapping forward to future words.
 constexpr qint64 kWordGapHoldMs = 80;
@@ -166,6 +167,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     : Plasma::Applet(parent, data, args)
     , m_process(nullptr)
     , m_spicy(new SpicyLyrics(this))
+    , m_lrclib(new LrclibClient(this))
     , m_trackLengthUs(0)
     , m_webPageSession(false)
     , m_useCleanedLookup(true)
@@ -173,7 +175,6 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_propertyWatcher(nullptr)
     , m_namesWatcher(nullptr)
     , m_positionWatcher(nullptr)
-    , m_binaryPath(QStringLiteral("lrc_tty"))
     , m_pollInterval(kDefaultPollInterval)
     , m_maxCharacters(40)
     , m_showTimestamp(false)
@@ -253,6 +254,8 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
 
     connect(m_spicy, &SpicyLyrics::loaded, this, &LrcApplet::onSpicyLoaded);
     connect(m_spicy, &SpicyLyrics::missing, this, &LrcApplet::onSpicyMissing);
+    connect(m_lrclib, &LrclibClient::loaded, this, &LrcApplet::onLrclibLoaded);
+    connect(m_lrclib, &LrclibClient::missing, this, &LrcApplet::onLrclibMissing);
 }
 
 LrcApplet::~LrcApplet()
@@ -284,11 +287,6 @@ void LrcApplet::configChanged()
 void LrcApplet::startPolling()
 {
     readSettings();
-
-    if (!m_available && !QStandardPaths::findExecutable(m_binaryPath).isEmpty()) {
-        setAvailable(true);
-        setError(QString());
-    }
 
     if (!m_started) {
         m_started = true;
@@ -347,15 +345,6 @@ QString LrcApplet::spicyKeySetting() const
 
 void LrcApplet::readSettings()
 {
-    // An empty setting must never end up as an empty program name, otherwise
-    // QProcess fails to start and the widget claims lrc_tty is missing.
-    const QString configuredPath = setting(QStringLiteral("binaryPath"), QStringLiteral("lrc_tty")).trimmed();
-    QString resolvedBinary = configuredPath.isEmpty() ? QStringLiteral("lrc_tty") : configuredPath;
-    const QString executableFound = QStandardPaths::findExecutable(resolvedBinary);
-    if (!executableFound.isEmpty()) {
-        resolvedBinary = executableFound;
-    }
-    const QString binaryPath = resolvedBinary;
     const QString player = setting(QStringLiteral("player")).trimmed();
     const QString preferredPlayer = setting(QStringLiteral("preferredPlayer")).trimmed();
     const QString placeholder = setting(QStringLiteral("placeholderText"), QStringLiteral("♪"));
@@ -378,8 +367,7 @@ void LrcApplet::readSettings()
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
 
-    const bool changed = binaryPath != m_binaryPath //
-        || player != m_configuredPlayer //
+    const bool changed = player != m_configuredPlayer //
         || preferredPlayer != m_preferredPlayer //
         || placeholder != m_placeholderText //
         || pollInterval != m_pollInterval //
@@ -403,7 +391,6 @@ void LrcApplet::readSettings()
 
     const bool blacklistChanged = (blacklistedTracks != m_blacklistedTracks);
 
-    m_binaryPath = binaryPath;
     m_configuredPlayer = player;
     m_preferredPlayer = preferredPlayer;
     m_placeholderText = placeholder;
@@ -465,11 +452,6 @@ void LrcApplet::readSettings()
 QString LrcApplet::placeholderText() const
 {
     return m_placeholderText;
-}
-
-QString LrcApplet::binaryPath() const
-{
-    return m_binaryPath;
 }
 
 int LrcApplet::maxCharacters() const
@@ -659,11 +641,11 @@ void LrcApplet::onProcessFinished()
 void LrcApplet::onProcessFailedToStart()
 {
     const QString err = m_process ? m_process->errorString() : QStringLiteral("Failed to start process");
-    qWarning() << "lrc_tty process failed to start:" << err << "path:" << m_binaryPath;
+    qWarning() << "Process failed to start:" << err;
     cancelProcess();
     m_lyricsLookupDone = true;
     setError(err);
-    if (QStandardPaths::findExecutable(m_binaryPath).isEmpty()) {
+    if (QStandardPaths::findExecutable(QStringLiteral("lrc_tty")).isEmpty()) {
         if (!m_available) {
             return;
         }
@@ -858,6 +840,7 @@ void LrcApplet::clearDisplay()
     m_fetchingFromSpicy = false;
     m_fetchingLrc = false;
     m_spicy->cancel();
+    m_lrclib->cancel();
     m_positionValid = false;
     m_positionBaseMs = 0;
     m_gaplessLeadMs = 0;
@@ -901,6 +884,11 @@ void LrcApplet::togglePlayPause()
 void LrcApplet::nextTrack()
 {
     m_gaplessLeadMs = 0;
+    cancelProcess();
+    m_spicy->cancel();
+    m_lrclib->cancel();
+    clearLyrics();
+    m_trackJustChanged = true;
     if (m_watchedService.isEmpty()) {
         return;
     }
@@ -911,6 +899,11 @@ void LrcApplet::nextTrack()
 void LrcApplet::previousTrack()
 {
     m_gaplessLeadMs = 0;
+    cancelProcess();
+    m_spicy->cancel();
+    m_lrclib->cancel();
+    clearLyrics();
+    m_trackJustChanged = true;
     if (m_watchedService.isEmpty()) {
         return;
     }
@@ -1124,9 +1117,11 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
             }
         }
 
-        const bool hadValidPosition = m_positionValid && m_playing;
-        clearDisplay();
-        m_trackJustChanged = hadValidPosition;
+        cancelProcess();
+        m_spicy->cancel();
+        m_lrclib->cancel();
+        clearLyrics();
+        m_trackJustChanged = true;
         m_gaplessLeadMs = gaplessLead;
 
         setTrackInfo(trackInfo);
@@ -1175,9 +1170,10 @@ void LrcApplet::requestLyrics()
         return;
     }
 
-    // 2. Otherwise, fetch LRC via lrc_tty --dump
+    // 2. Otherwise, fetch LRC via native LRCLIB client
     m_fetchingFromSpicy = false;
-    fetchLrcLyrics();
+    m_fetchingLrc = true;
+    m_lrclib->request(m_trackTitle, m_trackArtist, m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0, m_webPageSession);
 }
 
 void LrcApplet::requestSpicyLyrics()
@@ -1249,10 +1245,7 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
             m_watchdog.stop();
         }
     });
-    QString execPath = m_binaryPath;
-    if (execPath.isEmpty()) {
-        execPath = QStringLiteral("lrc_tty");
-    }
+    QString execPath = QStringLiteral("lrc_tty");
     const QString resolvedExec = QStandardPaths::findExecutable(execPath);
     if (!resolvedExec.isEmpty()) {
         execPath = resolvedExec;
@@ -1298,8 +1291,43 @@ void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
     m_fetchingFromSpicy = false;
     m_missingReason = reason;
 
-    // Fall back to full LRC via lrc_tty --dump
-    fetchLrcLyrics();
+    // Fall back to native LRCLIB client
+    m_fetchingLrc = true;
+    m_lrclib->request(m_trackTitle, m_trackArtist, m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0, m_webPageSession);
+}
+
+void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
+{
+    Q_UNUSED(key);
+    m_fetchingLrc = false;
+    m_lyricsLookupDone = true;
+    m_lyrics = lyrics;
+    m_fromSpicy = false;
+    m_wordSynced = false;
+    m_lineIndex = -1;
+    m_wordCursor = 0;
+    clearWordHighlight();
+
+    if (!m_available) {
+        setAvailable(true);
+        setError(QString());
+    }
+
+    requestPosition();
+    if (m_pauseHidden) {
+        m_wordTimer.stop();
+    } else {
+        m_wordTimer.start(m_playing ? 100 : kIdleTickMs);
+        updateWord();
+    }
+    Q_EMIT lyricsChanged();
+}
+
+void LrcApplet::onLrclibMissing(const QString &key)
+{
+    Q_UNUSED(key);
+    m_fetchingLrc = false;
+    m_lyricsLookupDone = true;
 }
 
 void LrcApplet::requestPosition()
@@ -1380,13 +1408,7 @@ void LrcApplet::onPositionFetched()
     if (jumped) {
         m_gaplessLeadMs = 0;
         m_wordCursor = 0;
-        const qint64 targetMs = reportedMs - kAudioLeadCompensationMs - m_lyricOffset;
-        if (m_lyrics.isUsable() && m_lyrics.lineAt(targetMs) < 0) {
-            m_lineIndex = -1;
-            clearWordHighlight();
-            setText(QString());
-            setActive(false);
-        }
+        clearWordHighlight();
         if (m_pauseHidden) {
             m_pauseHidden = false;
             Q_EMIT pauseHiddenChanged();
@@ -1527,8 +1549,8 @@ void LrcApplet::updateWord()
     }
     const QString displayLine = tsPrefix + line.text;
     if (displayLine != m_text) {
-        setText(displayLine);
         setActive(true);
+        setText(displayLine);
     }
 
     // A new line starts without its first word, so a word from the line before
@@ -2055,6 +2077,14 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
 {
     m_awaitingState = false;
 
+    // Apply Metadata FIRST if present so any track change immediately resets state,
+    // clears old lines, and sets m_trackJustChanged before position is requested.
+    const auto metadataIt = properties.constFind(QStringLiteral("Metadata"));
+    if (metadataIt != properties.constEnd()) {
+        const QVariantMap metadata = toVariantMap(metadataIt.value());
+        applyMetadata(metadata);
+    }
+
     if (invalidated.contains(QStringLiteral("PlaybackStatus"))) {
         // The player no longer knows its own status: poll blindly.
         setPlaying(false, false);
@@ -2070,9 +2100,8 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
             m_gaplessLeadMs = 0;
         }
         setPlaying(nowPlaying, true);
-        if (m_playingKnown) {
-            // Playback state changed, so the interpolated position is stale and
-            // worth asking for without waiting out the retry delay.
+        if (m_playingKnown && metadataIt == properties.constEnd()) {
+            // Playback state changed without metadata change in same packet, so request position.
             m_positionValid = false;
             m_positionRetries.invalidate();
             requestPosition();
@@ -2091,12 +2120,6 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
             m_candidatesTimer.invalidate();
             considerPlayerSwitch();
         }
-    }
-
-    const auto metadataIt = properties.constFind(QStringLiteral("Metadata"));
-    if (metadataIt != properties.constEnd()) {
-        const QVariantMap metadata = toVariantMap(metadataIt.value());
-        applyMetadata(metadata);
     }
 }
 
