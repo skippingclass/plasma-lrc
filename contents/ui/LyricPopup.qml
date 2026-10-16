@@ -120,7 +120,7 @@ ColumnLayout {
         opacity: 0.6
         font: Kirigami.Theme.smallFont
         wrapMode: Text.Wrap
-        visible: root.showAttribution
+        visible: root.showAttribution && root.hasLyrics
         onLinkActivated: function (link) {
             Qt.openUrlExternally(link);
         }

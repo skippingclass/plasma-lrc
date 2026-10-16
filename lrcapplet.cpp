@@ -512,6 +512,12 @@ QString LrcApplet::attributionUrl() const
     return m_lyrics.attributionUrl;
 }
 
+bool LrcApplet::isSpotify() const
+{
+    return m_player.contains(QLatin1String("spotify"), Qt::CaseInsensitive)
+        || m_watchedService.contains(QLatin1String("spotify"), Qt::CaseInsensitive);
+}
+
 void LrcApplet::poll()
 {
     if (!m_started) {
@@ -624,8 +630,12 @@ void LrcApplet::onProcessFinished()
         m_lineIndex = -1;
         m_lyricsLookupDone = true;
         cancelProcess();
-        m_wordTimer.start(m_playing ? 100 : kIdleTickMs);
-        updateWord();
+        if (m_pauseHidden) {
+            m_wordTimer.stop();
+        } else {
+            m_wordTimer.start(m_playing ? 100 : kIdleTickMs);
+            updateWord();
+        }
         Q_EMIT lyricsChanged();
         return;
     }
@@ -702,6 +712,7 @@ void LrcApplet::setError(const QString &error)
 
 void LrcApplet::setPlaying(bool playing, bool known)
 {
+    const bool wasPlaying = m_playingKnown && m_playing;
     if (m_playing == playing && m_playingKnown == known) {
         return;
     }
@@ -720,8 +731,30 @@ void LrcApplet::setPlaying(bool playing, bool known)
         }
         poll();
     } else if (known && !playing) {
-        if (m_pauseHideDelay > 0 && !m_pauseHidden) {
-            m_pauseTimer.start(m_pauseHideDelay * 1000);
+        if (wasPlaying) {
+            // User paused active playback: give pauseHideDelay seconds grace period
+            if (m_pauseHideDelay > 0 && !m_pauseHidden) {
+                m_pauseTimer.start(m_pauseHideDelay * 1000);
+            }
+        } else {
+            // Player started up or connected already paused: hide lyrics immediately if pauseHideDelay > 0
+            if (m_pauseHideDelay > 0) {
+                m_pauseTimer.stop();
+                if (!m_pauseHidden) {
+                    m_pauseHidden = true;
+                    m_lineIndex = -1;
+                    clearWordHighlight();
+                    setText(QString());
+                    setActive(false);
+                    Q_EMIT pauseHiddenChanged();
+                }
+            }
+        }
+    } else if (!known) {
+        m_pauseTimer.stop();
+        if (m_pauseHidden) {
+            m_pauseHidden = false;
+            Q_EMIT pauseHiddenChanged();
         }
     }
 
@@ -835,8 +868,9 @@ void LrcApplet::clearDisplay()
     m_trackJustChanged = false;
     m_trackChangeRetries = 0;
     m_pauseTimer.stop();
-    if (m_pauseHidden) {
-        m_pauseHidden = false;
+    const bool shouldBeHidden = (m_playingKnown && !m_playing && m_pauseHideDelay > 0);
+    if (m_pauseHidden != shouldBeHidden) {
+        m_pauseHidden = shouldBeHidden;
         Q_EMIT pauseHiddenChanged();
     }
     ++m_lookupGeneration;
@@ -1103,6 +1137,11 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         m_spotifyTrackId = trackId;
         m_mprisTrackId = rawTrackId;
 
+        if (m_playingKnown && !m_playing && m_pauseHideDelay > 0) {
+            m_pauseHidden = true;
+            m_pauseTimer.stop();
+        }
+
         Q_EMIT trackBlacklistChanged();
 
         requestPosition();
@@ -1242,8 +1281,12 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
     clearWordHighlight();
 
     requestPosition();
-    m_wordTimer.start(m_playing ? (m_wordSynced ? kWordTickMs : 100) : kIdleTickMs);
-    updateWord();
+    if (m_pauseHidden) {
+        m_wordTimer.stop();
+    } else {
+        m_wordTimer.start(m_playing ? (m_wordSynced ? kWordTickMs : 100) : kIdleTickMs);
+        updateWord();
+    }
     Q_EMIT lyricsChanged();
 }
 
@@ -1360,7 +1403,7 @@ void LrcApplet::onPositionFetched()
     m_positionValid = true;
     m_positionRetries.start();
 
-    if (m_lyrics.isUsable()) {
+    if (m_lyrics.isUsable() && !m_pauseHidden) {
         updateWord();
     }
 }

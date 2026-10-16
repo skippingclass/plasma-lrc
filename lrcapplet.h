@@ -63,6 +63,8 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(bool apiUnreachable READ apiUnreachable NOTIFY lyricsChanged)
     /// True when the track has no Spotify id, so the API was never asked about it.
     Q_PROPERTY(bool apiHasNoTrackId READ apiHasNoTrackId NOTIFY lyricsChanged)
+    Q_PROPERTY(bool hasSpotifyTrackId READ hasSpotifyTrackId NOTIFY lyricsChanged)
+    Q_PROPERTY(bool isSpotify READ isSpotify NOTIFY playerChanged)
 
     // Player information coming from MPRIS
     Q_PROPERTY(QString player READ player NOTIFY playerChanged)
@@ -168,6 +170,11 @@ public:
     {
         return m_spotifyTrackId.isEmpty();
     }
+    bool hasSpotifyTrackId() const
+    {
+        return !m_spotifyTrackId.isEmpty();
+    }
+    bool isSpotify() const;
 
     bool apiUnreachable() const
     {

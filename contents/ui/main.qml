@@ -18,7 +18,7 @@ PlasmoidItem {
 
     readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
     readonly property string lyricText: Plasmoid.text
-    readonly property bool hasLyrics: Plasmoid.active && lyricText.length > 0
+    readonly property bool hasLyrics: !Plasmoid.pauseHidden && Plasmoid.active && lyricText.length > 0
     readonly property int maxCharacters: Plasmoid.maxCharacters
 
     // Lyrics come from a third party and end up in rich text, so they have to
@@ -139,46 +139,64 @@ PlasmoidItem {
         }
     ]
 
-    // Which source the line actually came from. The tooltip says it, because
-    // "no attribution suffix" and "Spicy Lyrics is not answering" look exactly
-    // the same otherwise.
+    // Which source the line actually came from.
     readonly property string sourceName: Plasmoid.fromSpicyLyrics //
         ? i18n("Spicy Lyrics")
         : (Plasmoid.attribution.length > 0 ? Plasmoid.attribution : i18n("lrc_tty"))
     readonly property string attributionHint: {
         if (Plasmoid.isCurrentTrackBlacklisted) {
-            return i18n("lyrics blacklisted for this track");
+            return i18n("Lyrics blacklisted for this track");
         }
-        if (Plasmoid.fromSpicyLyrics) {
+        if (root.hasLyrics) {
             return i18n("via %1", sourceName);
         }
-        if (!Plasmoid.spicyConfigured) {
-            return i18n("via %1 — Spicy Lyrics is off or has no key", sourceName);
+        if (Plasmoid.hasSpotifyTrackId && Plasmoid.spicyConfigured) {
+            if (Plasmoid.apiHasNoTimings) {
+                return i18n("No synchronized lyrics available");
+            }
+            if (Plasmoid.apiUnreachable) {
+                return i18n("Lyrics service unreachable");
+            }
         }
-        if (Plasmoid.apiHasNoTrackId) {
-            return i18n("via %1 — this player gives no Spotify track, so the API was not asked", sourceName);
-        }
-        if (Plasmoid.apiHasNoTimings) {
-            return i18n("via %1 — the API has this track, but not in sync", sourceName);
-        }
-        if (Plasmoid.apiUnreachable) {
-            return i18n("via %1 — the API could not be reached", sourceName);
-        }
-        return i18n("via %1 — the API does not know this track", sourceName);
+        return i18n("No lyrics found for this track");
     }
 
-    toolTipMainText: !Plasmoid.available //
-        ? i18n("lrc_tty not found")
-        : (Plasmoid.showTrackInfo && Plasmoid.trackInfo.length > 0 ? Plasmoid.trackInfo : i18n("Now playing"))
-    toolTipSubText: [!Plasmoid.available ? hintText : hintText + "  " + attributionHint,
-                     // The name the settings need: "chromium" and the full
-                     // "chromium.instance18422" mean the same thing, and nobody
-                     // guesses that without being told.
-                     Plasmoid.player.length > 0 ? i18n("player: %1", Plasmoid.player) : ""]
-                    .filter(function (line) {
-                        return line.length > 0;
-                    })
-                    .join("\n")
+    toolTipMainText: {
+        if (!Plasmoid.available) {
+            return i18n("lrc_tty not found");
+        }
+        if (Plasmoid.trackInfo.length > 0) {
+            return Plasmoid.trackInfo;
+        }
+        return i18n("Plasma LRC");
+    }
+    toolTipSubText: {
+        if (!Plasmoid.available) {
+            return i18n("Could not run %1: %2", Plasmoid.binaryPath, Plasmoid.error);
+        }
+        if (Plasmoid.trackInfo.length === 0) {
+            return i18n("No player active");
+        }
+        if (Plasmoid.pauseHidden) {
+            const pausedLines = [i18n("Playback paused")];
+            if (Plasmoid.player.length > 0) {
+                pausedLines.push(i18n("player: %1", Plasmoid.player));
+            }
+            return pausedLines.join("\n");
+        }
+
+        const lines = [];
+        if (root.hasLyrics) {
+            lines.push(root.lyricText);
+            lines.push(attributionHint);
+        } else {
+            lines.push(attributionHint);
+        }
+        if (Plasmoid.player.length > 0) {
+            lines.push(i18n("player: %1", Plasmoid.player));
+        }
+        return lines.filter(Boolean).join("\n");
+    }
 
     compactRepresentation: MouseArea {
         id: compactArea
@@ -194,9 +212,9 @@ PlasmoidItem {
         // to it, so an empty lyric once meant a widget a few pixels wide, with the
         // text wrapped to one letter per line. The floor keeps a usable width
         // whatever the content happens to be at that moment.
-        readonly property int floorWidth: Kirigami.Units.gridUnit * 8
+        readonly property int floorWidth: Plasmoid.pauseHidden ? 0 : Kirigami.Units.gridUnit * 8
 
-        implicitWidth: Math.max(compactLayout.implicitWidth, floorWidth)
+        implicitWidth: Plasmoid.pauseHidden ? compactLayout.implicitWidth : Math.max(compactLayout.implicitWidth, floorWidth)
         implicitHeight: compactLayout.implicitHeight
 
         Layout.minimumWidth: implicitWidth
@@ -235,7 +253,7 @@ PlasmoidItem {
                 Layout.preferredWidth: Kirigami.Units.iconSizes.small
                 Layout.preferredHeight: Kirigami.Units.iconSizes.small
                 Layout.alignment: Qt.AlignCenter
-                visible: Plasmoid.showIcon
+                visible: Plasmoid.showIcon && !Plasmoid.pauseHidden
                 opacity: root.hasLyrics ? 1.0 : 0.5
             }
 
@@ -311,7 +329,24 @@ PlasmoidItem {
         showTrackInfo: Plasmoid.showTrackInfo
 
         line: root.fullLine
-        placeholder: Plasmoid.isCurrentTrackBlacklisted ? i18n("Lyrics are blacklisted for this track") : root.displayText
+        placeholder: {
+            if (Plasmoid.isCurrentTrackBlacklisted) {
+                return i18n("Lyrics are blacklisted for this track");
+            }
+            if (Plasmoid.pauseHidden) {
+                return i18n("Playback paused");
+            }
+            if (Plasmoid.trackInfo.length > 0) {
+                if (Plasmoid.hasSpotifyTrackId && Plasmoid.spicyConfigured && Plasmoid.apiHasNoTimings) {
+                    return i18n("No synchronized lyrics available");
+                }
+                return i18n("No lyrics available for this track");
+            }
+            if (!Plasmoid.available) {
+                return i18n("lrc_tty not found");
+            }
+            return i18n("No active player");
+        }
         hasLyrics: root.hasLyrics
 
         attribution: root.escapeHtml(Plasmoid.attribution)
