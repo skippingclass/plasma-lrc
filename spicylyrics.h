@@ -155,5 +155,6 @@ private:
     QTimer *m_watchdog;
     int m_writesSincePrune = 0;
     QString m_key;
+    QString m_currentTrackId;
     bool m_enabled = false;
 };

@@ -356,6 +356,7 @@ SpicyLyrics::SpicyLyrics(QObject *parent)
 
 void SpicyLyrics::cancel()
 {
+    m_currentTrackId.clear();
     m_watchdog->stop();
     if (m_activeReply) {
         m_activeReply->disconnect(this);
@@ -402,34 +403,32 @@ QString SpicyLyrics::trackIdFromMpris(const QString &trackId)
     if (trackId.isEmpty()) {
         return QString();
     }
-    const QString &value = trackId;
 
-    // "/com/spotify/track/<id>" or "spotify:track:<id>" or just "<id>".
-    static const QRegularExpression re(QStringLiteral("([A-Za-z0-9]{22})(?:$|[/?#])"));
-    const QRegularExpressionMatch match = re.match(value);
-    if (match.hasMatch()) {
-        return match.captured(1);
-    }
-
-    static const QRegularExpression trailing(QStringLiteral("([A-Za-z0-9]{22})$"));
-    const QRegularExpressionMatch tail = trailing.match(value);
-    return tail.hasMatch() ? tail.captured(1) : QString();
+    // Match "/com/spotify/track/<id>", "spotify:track:<id>",
+    // "https://open.spotify.com/track/<id>", or an exact 22-character "<id>".
+    // Never match browser object paths like "/org/chromium/MediaPlayer2/TrackList/Track<32hex>".
+    static const QRegularExpression re(
+        QStringLiteral("(?:^|/com/spotify/track/|spotify:track:|open\\.spotify\\.com/track/)([A-Za-z0-9]{22})(?:$|[/?#])"));
+    const QRegularExpressionMatch match = re.match(trackId);
+    return match.hasMatch() ? match.captured(1) : QString();
 }
 
 void SpicyLyrics::request(const QString &trackId)
 {
     cancel();
 
-    // Without a key there is nothing to ask with, and nothing entitles us to the
-    // cached answers either: the caller falls back to lrc_tty.
     if (trackId.isEmpty() || !isEnabled()) {
         return;
     }
+    m_currentTrackId = trackId;
     load(trackId);
 }
 
 void SpicyLyrics::emitMissing(const QString &trackId, MissingReason reason)
 {
+    if (trackId != m_currentTrackId) {
+        return;
+    }
     Q_EMIT missing(trackId, reason);
 }
 
@@ -438,7 +437,9 @@ void SpicyLyrics::load(const QString &trackId)
     const auto cached = m_memoryCache.constFind(trackId);
     if (cached != m_memoryCache.constEnd()) {
         QTimer::singleShot(0, this, [this, trackId, lyrics = cached.value()] {
-            Q_EMIT loaded(trackId, lyrics);
+            if (trackId == m_currentTrackId) {
+                Q_EMIT loaded(trackId, lyrics);
+            }
         });
         return;
     }
@@ -463,7 +464,9 @@ void SpicyLyrics::load(const QString &trackId)
             // We already asked about this track today and there was nothing.
             const MissingReason reason = reasonFromMarker(payload);
             QTimer::singleShot(0, this, [this, trackId, reason] {
-                Q_EMIT missing(trackId, reason);
+                if (trackId == m_currentTrackId) {
+                    Q_EMIT missing(trackId, reason);
+                }
             });
             return;
         }
@@ -478,7 +481,9 @@ void SpicyLyrics::load(const QString &trackId)
                 }
                 m_memoryCache.insert(trackId, lyrics);
                 QTimer::singleShot(0, this, [this, trackId, lyrics] {
-                    Q_EMIT loaded(trackId, lyrics);
+                    if (trackId == m_currentTrackId) {
+                        Q_EMIT loaded(trackId, lyrics);
+                    }
                 });
                 return;
             }
@@ -522,6 +527,7 @@ void SpicyLyrics::pruneCache()
 void SpicyLyrics::fetch(const QString &trackId)
 {
     cancel();
+    m_currentTrackId = trackId;
 
     QNetworkRequest request(QUrl(QString::fromUtf8(apiRoot()) + trackId));
     request.setRawHeader("Accept", "application/json");

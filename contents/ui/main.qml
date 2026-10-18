@@ -296,37 +296,23 @@ PlasmoidItem {
                     opacity: 1.0
                 }
 
-                SequentialAnimation {
+                NumberAnimation {
                     id: lineFadeAnim
-
-                    NumberAnimation {
-                        target: lyricLabel
-                        property: "opacity"
-                        to: 0.2
-                        duration: 70
-                        easing.type: Easing.InQuad
-                    }
-                    ScriptAction {
-                        script: {
-                            lyricContainer.displayedLyric = root.lyricText;
-                        }
-                    }
-                    NumberAnimation {
-                        target: lyricLabel
-                        property: "opacity"
-                        to: 1.0
-                        duration: 90
-                        easing.type: Easing.OutQuad
-                    }
+                    target: lyricLabel
+                    property: "opacity"
+                    from: 0.35
+                    to: 1.0
+                    duration: 80
+                    easing.type: Easing.OutQuad
                 }
 
                 Connections {
                     target: root
 
                     function onLyricTextChanged() {
-                        if (!Plasmoid.fadeTransition || !root.hasLyrics || lyricContainer.displayedLyric.length === 0) {
-                            lineFadeAnim.stop();
-                            lyricContainer.displayedLyric = root.lyricText;
+                        lineFadeAnim.stop();
+                        lyricContainer.displayedLyric = root.lyricText;
+                        if (!Plasmoid.fadeTransition || !root.hasLyrics || root.lyricText.length === 0) {
                             lyricLabel.opacity = 1.0;
                         } else {
                             lineFadeAnim.restart();

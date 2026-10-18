@@ -24,9 +24,10 @@
 namespace
 {
 constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
-constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
+constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.4.3 (KDE Plasma 6 panel widget)");
+constexpr int kSearchThrottleDelayMs = 250;
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.4.3 (https://github.com/pirkov/plasma_lrc)");
 const QString s_apiBase = QStringLiteral("https://lrclib.net/api/");
 }
 
@@ -38,6 +39,11 @@ LrclibClient::LrclibClient(QObject *parent)
 LrclibClient::~LrclibClient()
 {
     cancel();
+}
+
+QByteArray LrclibClient::userAgent()
+{
+    return s_userAgent;
 }
 
 QString LrclibClient::cacheDirectory()
@@ -95,7 +101,7 @@ bool LrclibClient::parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint6
     return false;
 }
 
-void LrclibClient::cancel()
+void LrclibClient::cleanupAttemptState()
 {
     if (m_activeReply) {
         m_activeReply->disconnect(this);
@@ -105,20 +111,26 @@ void LrclibClient::cancel()
     }
     m_attempts.clear();
     m_attemptIndex = 0;
-    m_currentKey.clear();
     m_currentDurationMs = 0;
     m_bestCandidate = QJsonObject();
     m_bestScore = -1;
+    m_hadRateLimitOrNetworkError = false;
 }
 
-void LrclibClient::request(const QString &title, const QString &artist, qint64 durationMs, bool fromWebPage)
+void LrclibClient::cancel()
+{
+    cleanupAttemptState();
+    m_currentKey.clear();
+}
+
+QString LrclibClient::request(const QString &title, const QString &artist, qint64 durationMs, bool fromWebPage)
 {
     cancel();
 
     QString baseTitle = title.trimmed();
     QString baseArtist = artist.trimmed();
     if (baseTitle.isEmpty()) {
-        return;
+        return QString();
     }
 
     splitTrackArtistAndTitle(&baseArtist, &baseTitle, fromWebPage);
@@ -134,9 +146,11 @@ void LrclibClient::request(const QString &title, const QString &artist, qint64 d
     const auto memIt = m_memoryCache.constFind(m_currentKey);
     if (memIt != m_memoryCache.constEnd()) {
         QTimer::singleShot(0, this, [this, key = m_currentKey, lyrics = memIt.value()] {
-            Q_EMIT loaded(key, lyrics);
+            if (key == m_currentKey) {
+                Q_EMIT loaded(key, lyrics);
+            }
         });
-        return;
+        return m_currentKey;
     }
 
     // Check disk cache
@@ -153,9 +167,11 @@ void LrclibClient::request(const QString &title, const QString &artist, qint64 d
             if (payload.contains(QByteArrayLiteral("\"missing\""))) {
                 if (age <= kNegativeCacheTtlMs) {
                     QTimer::singleShot(0, this, [this, key = m_currentKey] {
-                        Q_EMIT missing(key);
+                        if (key == m_currentKey) {
+                            Q_EMIT missing(key);
+                        }
                     });
-                    return;
+                    return m_currentKey;
                 }
             } else if (age <= kCacheTtlMs) {
                 const QJsonObject cand = QJsonDocument::fromJson(payload).object();
@@ -163,9 +179,11 @@ void LrclibClient::request(const QString &title, const QString &artist, qint64 d
                 if (parseCandidate(cand, &lyrics, durationMs)) {
                     m_memoryCache.insert(m_currentKey, lyrics);
                     QTimer::singleShot(0, this, [this, key = m_currentKey, lyrics] {
-                        Q_EMIT loaded(key, lyrics);
+                        if (key == m_currentKey) {
+                            Q_EMIT loaded(key, lyrics);
+                        }
                     });
-                    return;
+                    return m_currentKey;
                 }
             }
         }
@@ -254,6 +272,7 @@ void LrclibClient::request(const QString &title, const QString &artist, qint64 d
     m_bestScore = -1;
 
     startNextAttempt();
+    return m_currentKey;
 }
 
 void LrclibClient::startNextAttempt()
@@ -262,12 +281,27 @@ void LrclibClient::startNextAttempt()
         if (!m_bestCandidate.isEmpty() && m_bestScore > 0) {
             finishWithCandidate(m_bestCandidate);
         } else {
-            finishWithMissing();
+            finishWithMissing(!m_hadRateLimitOrNetworkError);
         }
         return;
     }
 
     const SearchAttempt attempt = m_attempts.at(m_attemptIndex++);
+    if (m_attemptIndex == 1) {
+        // First attempt (exact match or primary search): send immediately
+        executeAttempt(attempt);
+    } else {
+        // Subsequent attempts: throttle with 250ms delay to respect LRCLIB rate limits
+        QTimer::singleShot(kSearchThrottleDelayMs, this, [this, attempt, key = m_currentKey] {
+            if (key == m_currentKey && !m_currentKey.isEmpty()) {
+                executeAttempt(attempt);
+            }
+        });
+    }
+}
+
+void LrclibClient::executeAttempt(const SearchAttempt &attempt)
+{
     QNetworkRequest request(attempt.url);
     request.setRawHeader("Accept", "application/json");
     request.setRawHeader("User-Agent", s_userAgent);
@@ -287,8 +321,20 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
 {
     reply->deleteLater();
 
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode == 429 || statusCode == 503) {
+        // Rate limited or server busy: mark error and do NOT record negative cache
+        m_hadRateLimitOrNetworkError = true;
+        finishWithMissing(/*writeNegativeCache=*/false);
+        return;
+    }
+
     if (reply->error() != QNetworkReply::NoError) {
-        // 404 or network error: continue to next attempt
+        if (reply->error() != QNetworkReply::ContentNotFoundError) {
+            // Network failure, timeout, or connection reset
+            m_hadRateLimitOrNetworkError = true;
+        }
+        // Continue to next attempt
         startNextAttempt();
         return;
     }
@@ -354,24 +400,28 @@ void LrclibClient::finishWithCandidate(const QJsonObject &cand)
             file.write(QJsonDocument(cand).toJson(QJsonDocument::Compact));
         }
 
-        cancel();
+        cleanupAttemptState();
         Q_EMIT loaded(key, lyrics);
+        m_currentKey.clear();
     } else {
-        finishWithMissing();
+        finishWithMissing(!m_hadRateLimitOrNetworkError);
     }
 }
 
-void LrclibClient::finishWithMissing()
+void LrclibClient::finishWithMissing(bool writeNegativeCache)
 {
     const QString key = m_currentKey;
 
-    // Write negative cache
-    QDir().mkpath(cacheDirectory());
-    QFile file(cacheDirectory() + QLatin1Char('/') + key + QStringLiteral(".json"));
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write("{\"missing\":true}");
+    if (writeNegativeCache && !key.isEmpty()) {
+        // Write negative cache only on clean non-matches
+        QDir().mkpath(cacheDirectory());
+        QFile file(cacheDirectory() + QLatin1Char('/') + key + QStringLiteral(".json"));
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            file.write("{\"missing\":true}");
+        }
     }
 
-    cancel();
+    cleanupAttemptState();
     Q_EMIT missing(key);
+    m_currentKey.clear();
 }

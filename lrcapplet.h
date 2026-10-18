@@ -273,6 +273,7 @@ public Q_SLOTS:
 private Q_SLOTS:
     void onPlayerPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);
     void onAnyPlayerPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);
+    void onPlayerSeeked(qint64 positionUs);
     void onPlayerPropertiesFetched();
     void onPlayerListFetched();
     void onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
@@ -310,6 +311,9 @@ private:
     void requestSpicyLyrics();
     void fetchLrcLyrics(bool rawFallback = false);
     void clearLyrics();
+    void resetTrackPosition(bool isTrackTransition);
+    void saveSyncState() const;
+    bool restoreSyncState(const QString &rawTrackId, const QString &title, const QString &artist, qint64 *outGaplessLeadMs) const;
     /// Takes the previous track's line, track name and API lyrics off the panel.
     void clearDisplay();
     /// Safely terminates and detaches any running lrc_tty process.
@@ -431,6 +435,7 @@ private:
     Lyrics m_lyrics;
     QString m_spotifyTrackId;
     QString m_mprisTrackId;
+    QString m_lrclibKey;
     bool m_lyricsLookupDone;
     QString m_word;
     int m_wordStart;
@@ -452,12 +457,18 @@ private:
     QElapsedTimer m_positionChecks;
     /// Measures D-Bus IPC round-trip latency to compensate transit delay.
     QElapsedTimer m_positionFetchTimer;
+    /// Tracks when an explicit MPRIS Seeked signal was last received.
+    QElapsedTimer m_recentSeekTimer;
+    /// Tracks when the previous track's playhead naturally reached the end right before Metadata changed.
+    QElapsedTimer m_prevTrackNaturalEndTimer;
     /// Monotonic generation counter to invalidate asynchronous fetches across track changes.
     quint64 m_lookupGeneration = 0;
     quint64 m_processGeneration = 0;
     bool m_positionValid;
     bool m_trackJustChanged = false;
+    bool m_manualSkipPending = false;
     int m_trackChangeRetries = 0;
+    int m_zeroPositionPolls = 0;
     int m_lineIndex;
     /// Where the word search starts inside the current line.
     int m_wordCursor;

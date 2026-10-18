@@ -16,13 +16,18 @@
 #include <kconfigpropertymap.h>
 
 #include <QAction>
+#include <QDateTime>
 #include <QDBusArgument>
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
 
@@ -65,8 +70,8 @@ constexpr qint64 kPositionRetryIntervalMs = 150;
 // property read on the session bus is a fraction of a millisecond.
 constexpr qint64 kPositionCheckMs = 400;
 // A difference below this is the clock running slightly off; a bigger one means
-// playback was moved (seeked).
-constexpr qint64 kPositionSnapToleranceMs = 1200;
+// playback was moved (seeked) or the player flushed its internal pre-buffer.
+constexpr qint64 kPositionSnapToleranceMs = 800;
 // How long a word highlight may linger across a tiny gap between syllables (<= 80ms)
 // to prevent flicker, without ever snapping forward to future words.
 constexpr qint64 kWordGapHoldMs = 80;
@@ -216,6 +221,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
 
+    m_wordTimer.setTimerType(Qt::PreciseTimer);
     m_wordTimer.setInterval(kWordTickMs);
     connect(&m_wordTimer, &QTimer::timeout, this, &LrcApplet::updateWord);
 
@@ -496,8 +502,12 @@ QString LrcApplet::attributionUrl() const
 
 bool LrcApplet::isSpotify() const
 {
+    if (m_webPageSession) {
+        return false;
+    }
     return m_player.contains(QLatin1String("spotify"), Qt::CaseInsensitive)
-        || m_watchedService.contains(QLatin1String("spotify"), Qt::CaseInsensitive);
+        || m_watchedService.contains(QLatin1String("spotify"), Qt::CaseInsensitive)
+        || !m_spotifyTrackId.isEmpty();
 }
 
 void LrcApplet::poll()
@@ -615,7 +625,7 @@ void LrcApplet::onProcessFinished()
         if (m_pauseHidden) {
             m_wordTimer.stop();
         } else {
-            m_wordTimer.start(m_playing ? 100 : kIdleTickMs);
+            m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
             updateWord();
         }
         Q_EMIT lyricsChanged();
@@ -698,6 +708,14 @@ void LrcApplet::setPlaying(bool playing, bool known)
     if (m_playing == playing && m_playingKnown == known) {
         return;
     }
+
+    if (wasPlaying && !playing && m_positionValid && m_positionClock.isValid()) {
+        m_positionBaseMs += m_positionClock.elapsed();
+        m_positionClock.invalidate();
+    } else if (!wasPlaying && playing && m_positionValid) {
+        m_positionClock.start();
+    }
+
     m_playing = playing;
     m_playingKnown = known;
     Q_EMIT playingChanged();
@@ -708,7 +726,7 @@ void LrcApplet::setPlaying(bool playing, bool known)
             m_pauseHidden = false;
             Q_EMIT pauseHiddenChanged();
         }
-        if (m_lyrics.isUsable()) {
+        if (m_lyrics.isUsable() && m_positionValid) {
             updateWord();
         }
         poll();
@@ -740,18 +758,19 @@ void LrcApplet::setPlaying(bool playing, bool known)
         }
     }
 
-    // The word timer exists to move the highlight. While the music is stopped
-    // nothing moves, but a seek can still happen and MPRIS says nothing about
-    // one, so the timer keeps running at a lazy pace instead of standing still.
+    // Keep the timer running even when lyrics are not loaded yet so playhead
+    // position is always tracked for accurate gapless transition detection.
     if (known && !playing) {
         if (!m_pauseHidden) {
             m_wordTimer.start(kIdleTickMs);
         } else {
             m_wordTimer.stop();
         }
-    } else if (playing && m_lyrics.isUsable()) {
-        m_wordTimer.start(m_wordSynced ? kWordTickMs : 100);
+    } else if (playing) {
+        m_wordTimer.start(m_lyrics.isUsable() ? kWordTickMs : kIdleTickMs);
     }
+
+    saveSyncState();
 }
 
 void LrcApplet::setTrackInfo(const QString &trackInfo)
@@ -774,20 +793,138 @@ void LrcApplet::clearLyrics()
     m_fromSpicy = false;
     m_fetchingFromSpicy = false;
     m_fetchingLrc = false;
+    m_lrclibKey.clear();
     m_lyricsLookupDone = false;
     m_missingReason = MissingReason::Unsynced;
+    m_lineIndex = -1;
+    m_wordCursor = 0;
+    if (m_playing && !m_pauseHidden) {
+        m_wordTimer.start(kIdleTickMs);
+    } else {
+        m_wordTimer.stop();
+    }
+    setText(QString());
+    setActive(false);
+    Q_EMIT wordChanged();
+    Q_EMIT lyricsChanged();
+}
+
+void LrcApplet::resetTrackPosition(bool isTrackTransition)
+{
+    if (m_positionWatcher) {
+        delete m_positionWatcher;
+        m_positionWatcher = nullptr;
+    }
     m_positionMs = 0;
     m_positionBaseMs = 0;
     m_positionValid = false;
     m_positionClock.invalidate();
     m_positionRetries.invalidate();
-    m_lineIndex = -1;
-    m_wordCursor = 0;
-    m_wordTimer.stop();
-    setText(QString());
-    setActive(false);
-    Q_EMIT wordChanged();
-    Q_EMIT lyricsChanged();
+    m_positionChecks.invalidate();
+    m_positionFetchTimer.invalidate();
+    m_prevTrackNaturalEndTimer.invalidate();
+    m_trackJustChanged = isTrackTransition;
+    m_trackChangeRetries = 0;
+    m_zeroPositionPolls = 0;
+    ++m_lookupGeneration;
+}
+
+namespace
+{
+QString syncStateFilePath()
+{
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (dir.isEmpty()) {
+        dir = QDir::tempPath();
+    }
+    return dir + QStringLiteral("/plasma-lrc-sync-state.json");
+}
+} // namespace
+
+void LrcApplet::saveSyncState() const
+{
+    if (m_watchedService.isEmpty() || (m_trackTitle.isEmpty() && m_mprisTrackId.isEmpty())) {
+        return;
+    }
+    const qint64 currentPos = m_positionValid
+        ? (m_positionBaseMs + (m_playing && m_positionClock.isValid() ? m_positionClock.elapsed() : 0))
+        : -1;
+
+    QJsonObject obj;
+    obj.insert(QStringLiteral("service"), m_watchedService);
+    obj.insert(QStringLiteral("trackId"), m_mprisTrackId);
+    obj.insert(QStringLiteral("title"), m_trackTitle);
+    obj.insert(QStringLiteral("artist"), m_trackArtist);
+    obj.insert(QStringLiteral("lengthMs"), m_trackLengthUs > 0 ? (m_trackLengthUs / 1000) : 0);
+    obj.insert(QStringLiteral("positionMs"), currentPos);
+    obj.insert(QStringLiteral("gaplessLeadMs"), m_gaplessLeadMs);
+    obj.insert(QStringLiteral("playing"), m_playing);
+    obj.insert(QStringLiteral("timestampMs"), QDateTime::currentMSecsSinceEpoch());
+
+    QFile file(syncStateFilePath());
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    }
+}
+
+bool LrcApplet::restoreSyncState(const QString &rawTrackId, const QString &title, const QString &artist, qint64 *outGaplessLeadMs) const
+{
+    if (outGaplessLeadMs) {
+        *outGaplessLeadMs = 0;
+    }
+    QFile file(syncStateFilePath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    if (obj.isEmpty()) {
+        return false;
+    }
+
+    const QString savedService = obj.value(QStringLiteral("service")).toString();
+    if (savedService != m_watchedService) {
+        return false;
+    }
+
+    const qint64 savedTime = obj.value(QStringLiteral("timestampMs")).toVariant().toLongLong();
+    const qint64 wallElapsedMs = QDateTime::currentMSecsSinceEpoch() - savedTime;
+    if (wallElapsedMs < 0 || wallElapsedMs > 20000) {
+        return false;
+    }
+
+    const bool savedPlaying = obj.value(QStringLiteral("playing")).toBool();
+    if (!savedPlaying || !m_playing) {
+        return false;
+    }
+
+    const QString savedTrackId = obj.value(QStringLiteral("trackId")).toString();
+    const QString savedTitle = obj.value(QStringLiteral("title")).toString();
+    const QString savedArtist = obj.value(QStringLiteral("artist")).toString();
+    const bool sameTrack = (!rawTrackId.isEmpty() && rawTrackId == savedTrackId)
+        || (!title.isEmpty() && title == savedTitle && artist == savedArtist);
+
+    if (sameTrack) {
+        if (outGaplessLeadMs) {
+            *outGaplessLeadMs = obj.value(QStringLiteral("gaplessLeadMs")).toVariant().toLongLong();
+        }
+        return true;
+    }
+
+    // Different track: check if the previous track naturally finished while plasmashell was restarting!
+    const qint64 savedLengthMs = obj.value(QStringLiteral("lengthMs")).toVariant().toLongLong();
+    const qint64 savedPosMs = obj.value(QStringLiteral("positionMs")).toVariant().toLongLong();
+    if (savedLengthMs > 0 && savedPosMs >= 0) {
+        const qint64 estimatedOldPosMs = savedPosMs + wallElapsedMs;
+        const qint64 oldRemainingMs = savedLengthMs - estimatedOldPosMs;
+        if (oldRemainingMs >= -10000 && oldRemainingMs <= 3500) {
+            if (outGaplessLeadMs) {
+                *outGaplessLeadMs = kSpotifyGaplessLeadMs;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 void LrcApplet::cancelProcess()
@@ -816,16 +953,17 @@ void LrcApplet::cancelProcess()
  */
 void LrcApplet::clearDisplay()
 {
-    if (m_positionWatcher) {
-        delete m_positionWatcher;
-        m_positionWatcher = nullptr;
-    }
-
     cancelProcess();
+    m_spicy->cancel();
+    m_lrclib->cancel();
 
+    resetTrackPosition(false);
     clearLyrics();
+    m_wordTimer.stop();
+
     m_spotifyTrackId.clear();
     m_mprisTrackId.clear();
+    m_lrclibKey.clear();
     m_lyricsLookupDone = false;
     m_lineIndex = -1;
     setText(QString());
@@ -839,24 +977,14 @@ void LrcApplet::clearDisplay()
     m_lastLookupWasCleaned = false;
     m_fetchingFromSpicy = false;
     m_fetchingLrc = false;
-    m_spicy->cancel();
-    m_lrclib->cancel();
-    m_positionValid = false;
-    m_positionBaseMs = 0;
     m_gaplessLeadMs = 0;
-    m_positionClock.invalidate();
-    m_positionRetries.invalidate();
-    m_positionChecks.invalidate();
-    m_positionFetchTimer.invalidate();
-    m_trackJustChanged = false;
-    m_trackChangeRetries = 0;
+    m_manualSkipPending = false;
     m_pauseTimer.stop();
     const bool shouldBeHidden = (m_playingKnown && !m_playing && m_pauseHideDelay > 0);
     if (m_pauseHidden != shouldBeHidden) {
         m_pauseHidden = shouldBeHidden;
         Q_EMIT pauseHiddenChanged();
     }
-    ++m_lookupGeneration;
 }
 
 void LrcApplet::onPauseTimeout()
@@ -883,12 +1011,13 @@ void LrcApplet::togglePlayPause()
 
 void LrcApplet::nextTrack()
 {
+    m_manualSkipPending = true;
     m_gaplessLeadMs = 0;
     cancelProcess();
     m_spicy->cancel();
     m_lrclib->cancel();
+    resetTrackPosition(true);
     clearLyrics();
-    m_trackJustChanged = true;
     if (m_watchedService.isEmpty()) {
         return;
     }
@@ -898,12 +1027,13 @@ void LrcApplet::nextTrack()
 
 void LrcApplet::previousTrack()
 {
+    m_manualSkipPending = true;
     m_gaplessLeadMs = 0;
     cancelProcess();
     m_spicy->cancel();
     m_lrclib->cancel();
+    resetTrackPosition(true);
     clearLyrics();
-    m_trackJustChanged = true;
     if (m_watchedService.isEmpty()) {
         return;
     }
@@ -1099,33 +1229,47 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         return;
     }
 
+    const bool hadPreviousTrack = !m_trackTitle.isEmpty() || !m_mprisTrackId.isEmpty();
     const bool trackChanged = (title != m_trackTitle || artist != m_trackArtist
         || (!trackId.isEmpty() && trackId != m_spotifyTrackId)
         || (!rawTrackId.isEmpty() && rawTrackId != m_mprisTrackId));
 
     if (trackChanged) {
         qint64 gaplessLead = 0;
-        const bool isSpotify = m_player.contains(QLatin1String("spotify"), Qt::CaseInsensitive)
-            || m_watchedService.contains(QLatin1String("spotify"), Qt::CaseInsensitive);
-        if (isSpotify && m_playing && m_trackLengthUs > 0) {
-            const qint64 currentPos = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
-            const qint64 remainingMs = (m_trackLengthUs / 1000) - currentPos;
-            // A natural gapless transition occurs when the previous track played to completion.
-            // If the user skipped or clicked next in the middle of a song, remainingMs is large.
-            if (remainingMs >= -5000 && remainingMs <= 3000) {
-                gaplessLead = kSpotifyGaplessLeadMs;
+        const bool isWebSession = looksLikeWebPageSession(rawTrackId, m_player);
+        const bool isSpotifyPlayer = !isWebSession && (isSpotify() || !trackId.isEmpty());
+
+        if (!hadPreviousTrack) {
+            if (isSpotifyPlayer) {
+                restoreSyncState(rawTrackId, title, artist, &gaplessLead);
+            }
+        } else if (isSpotifyPlayer && m_playing && !m_manualSkipPending) {
+            const bool recentManualSeek = m_recentSeekTimer.isValid() && m_recentSeekTimer.elapsed() < 500;
+            if (!recentManualSeek) {
+                const bool naturalEndJustDetected = m_prevTrackNaturalEndTimer.isValid()
+                    && m_prevTrackNaturalEndTimer.elapsed() <= 2000;
+                bool nearEnd = false;
+                if (m_positionValid && m_trackLengthUs > 0) {
+                    const qint64 currentPos = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+                    const qint64 remainingMs = (m_trackLengthUs / 1000) - currentPos;
+                    nearEnd = (remainingMs >= -5000 && remainingMs <= 3500);
+                }
+                if (naturalEndJustDetected || nearEnd) {
+                    gaplessLead = kSpotifyGaplessLeadMs;
+                }
             }
         }
+        m_manualSkipPending = false;
 
         cancelProcess();
         m_spicy->cancel();
         m_lrclib->cancel();
+        resetTrackPosition(hadPreviousTrack);
         clearLyrics();
-        m_trackJustChanged = true;
         m_gaplessLeadMs = gaplessLead;
 
         setTrackInfo(trackInfo);
-        m_webPageSession = looksLikeWebPageSession(rawTrackId, m_player);
+        m_webPageSession = isWebSession;
         m_trackArtist = artist;
         m_trackTitle = title;
         m_trackLengthUs = lengthUs;
@@ -1137,6 +1281,7 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
             m_pauseTimer.stop();
         }
 
+        saveSyncState();
         Q_EMIT trackBlacklistChanged();
 
         requestPosition();
@@ -1173,7 +1318,7 @@ void LrcApplet::requestLyrics()
     // 2. Otherwise, fetch LRC via native LRCLIB client
     m_fetchingFromSpicy = false;
     m_fetchingLrc = true;
-    m_lrclib->request(m_trackTitle, m_trackArtist, m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0, m_webPageSession);
+    m_lrclibKey = m_lrclib->request(m_trackTitle, m_trackArtist, m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0, m_webPageSession);
 }
 
 void LrcApplet::requestSpicyLyrics()
@@ -1255,7 +1400,7 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
 
 void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
 {
-    if (trackId != m_spotifyTrackId) {
+    if (!m_fetchingFromSpicy || trackId != m_spotifyTrackId) {
         return;
     }
 
@@ -1277,7 +1422,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
     if (m_pauseHidden) {
         m_wordTimer.stop();
     } else {
-        m_wordTimer.start(m_playing ? (m_wordSynced ? kWordTickMs : 100) : kIdleTickMs);
+        m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
         updateWord();
     }
     Q_EMIT lyricsChanged();
@@ -1285,7 +1430,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
 
 void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
 {
-    if (trackId != m_spotifyTrackId) {
+    if (!m_fetchingFromSpicy || trackId != m_spotifyTrackId) {
         return;
     }
     m_fetchingFromSpicy = false;
@@ -1293,12 +1438,14 @@ void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
 
     // Fall back to native LRCLIB client
     m_fetchingLrc = true;
-    m_lrclib->request(m_trackTitle, m_trackArtist, m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0, m_webPageSession);
+    m_lrclibKey = m_lrclib->request(m_trackTitle, m_trackArtist, m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0, m_webPageSession);
 }
 
 void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
 {
-    Q_UNUSED(key);
+    if (!m_fetchingLrc || key != m_lrclibKey) {
+        return;
+    }
     m_fetchingLrc = false;
     m_lyricsLookupDone = true;
     m_lyrics = lyrics;
@@ -1317,7 +1464,7 @@ void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
     if (m_pauseHidden) {
         m_wordTimer.stop();
     } else {
-        m_wordTimer.start(m_playing ? 100 : kIdleTickMs);
+        m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
         updateWord();
     }
     Q_EMIT lyricsChanged();
@@ -1325,9 +1472,14 @@ void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
 
 void LrcApplet::onLrclibMissing(const QString &key)
 {
-    Q_UNUSED(key);
+    if (!m_fetchingLrc || key != m_lrclibKey) {
+        return;
+    }
     m_fetchingLrc = false;
     m_lyricsLookupDone = true;
+    if (m_playing && !m_pauseHidden) {
+        m_wordTimer.start(kIdleTickMs);
+    }
 }
 
 void LrcApplet::requestPosition()
@@ -1385,24 +1537,101 @@ void LrcApplet::onPositionFetched()
     const qint64 rttMs = m_positionFetchTimer.isValid() ? m_positionFetchTimer.elapsed() : 0;
     const qint64 reportedMs = (positionUs / 1000) + (rttMs / 2);
 
-    // If the reported position exceeds the track duration by more than 1s, it is
-    // stale data from a previous track before the player playhead reset.
-    if (m_trackLengthUs > 0 && reportedMs > (m_trackLengthUs / 1000) + 1000) {
-        if (++m_trackChangeRetries < 5) {
-            QTimer::singleShot(50, this, &LrcApplet::requestPosition);
+    // Single unified stale-position guard after track change:
+    // 1) reportedMs exceeds the new track's length by > 1s, OR
+    // 2) track just transitioned and player playhead hasn't reset to the start (< 2.5s) yet.
+    const bool exceedsDuration = (m_trackLengthUs > 0 && reportedMs > (m_trackLengthUs / 1000) + 1000);
+    const bool staleAfterTrackChange = (m_trackJustChanged && reportedMs > 2500);
+    if (exceedsDuration || staleAfterTrackChange) {
+        if (++m_trackChangeRetries <= 16) {
+            QTimer::singleShot(50, this, [this] {
+                if (!m_positionValid) {
+                    m_positionRetries.invalidate();
+                    requestPosition();
+                }
+            });
+            return;
+        }
+        // Retries exhausted (e.g. user genuinely started or seeked mid-track):
+        // clear gapless lead since we are not at the gapless transition boundary.
+        m_gaplessLeadMs = 0;
+    }
+
+    // Guard against the race where Spotify's audio thread resets Position to ~0ms
+    // at the end of a finishing track a few milliseconds BEFORE PropertiesChanged(Metadata)
+    // for the next track arrives on D-Bus.
+    if (!m_trackJustChanged && m_playing && m_positionValid && m_trackLengthUs > 0) {
+        const qint64 expected = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+        const qint64 remainingMs = (m_trackLengthUs / 1000) - expected;
+        const bool recentSeek = m_recentSeekTimer.isValid() && m_recentSeekTimer.elapsed() < 500;
+        if (!recentSeek && remainingMs >= -5000 && remainingMs <= 3500 && reportedMs < 2000 && expected > 5000) {
+            if (!m_prevTrackNaturalEndTimer.isValid()) {
+                m_prevTrackNaturalEndTimer.start();
+            }
+            // Wait up to 250ms for PropertiesChanged(Metadata) of the next track to arrive
+            // before accepting the wrapped 0ms playhead (in case of Repeat-One).
+            if (m_prevTrackNaturalEndTimer.elapsed() < 250) {
+                QTimer::singleShot(50, this, [this] {
+                    m_positionChecks.invalidate();
+                    requestPosition();
+                });
+                return;
+            }
+            // Repeat-One natural wrap: the same track wrapped from its end back to 0ms!
+            m_prevTrackNaturalEndTimer.invalidate();
+            m_gaplessLeadMs = isSpotify() ? kSpotifyGaplessLeadMs : 0;
+            m_positionBaseMs = reportedMs;
+            m_positionClock.start();
+            m_positionValid = true;
+            m_zeroPositionPolls = 0;
+            m_lineIndex = -1;
+            m_wordCursor = 0;
+            clearWordHighlight();
+            m_positionRetries.start();
+            m_positionChecks.start();
+            saveSyncState();
+            if (m_lyrics.isUsable() && !m_pauseHidden) {
+                updateWord();
+            }
             return;
         }
     }
 
-    // Right after a track change, a position significantly into the song (> 3s)
-    // may be stale data from the previous track before the player playhead reset to 0.
-    // Give the player a brief window (up to 5 retries / 250ms max) to report the start of the song.
-    if (m_trackJustChanged && reportedMs > 3000) {
-        if (++m_trackChangeRetries < 5) {
-            QTimer::singleShot(50, this, &LrcApplet::requestPosition);
+    // Spotify buffering / loading detection:
+    // In Spotify's MPRIS implementation, Position is extrapolated as:
+    //   pos_ms = state->position_as_of_timestamp_ms + (now - state->timestamp_ms) * state->playback_speed
+    // While a newly started, skipped, or Autoplay track is buffering, PlaybackStatus is "Playing",
+    // position_as_of_timestamp_ms == 0, and playback_speed == 0.0f, so Get("Position") returns
+    // exact 0 (positionUs == 0) for 150-2500ms without emitting Seeked when playback_speed becomes 1.0f.
+    // By contrast, a true gapless transition already pre-buffered the track in RAM and has positionUs > 0.
+    if (m_playing && isSpotify() && positionUs == 0 && m_positionBaseMs == 0) {
+        ++m_zeroPositionPolls;
+        if (m_zeroPositionPolls >= 3) {
+            // Stationary at 0 for >= 120ms: track is buffering from 0, NOT playing from gapless pre-buffer.
+            m_gaplessLeadMs = 0;
+        }
+        if (m_zeroPositionPolls <= 45) {
+            m_positionBaseMs = 0;
+            m_positionClock.invalidate();
+            m_trackJustChanged = false;
+            m_trackChangeRetries = 0;
+            m_positionValid = true;
+            m_positionRetries.start();
+            m_positionChecks.start();
+            saveSyncState();
+            if (m_lyrics.isUsable() && !m_pauseHidden) {
+                updateWord();
+            }
+            QTimer::singleShot(60, this, [this] {
+                if (m_playing && m_positionBaseMs == 0) {
+                    m_positionRetries.invalidate();
+                    requestPosition();
+                }
+            });
             return;
         }
     }
+    m_zeroPositionPolls = 0;
 
     const bool jumped = positionJumped(reportedMs);
     if (jumped) {
@@ -1419,12 +1648,95 @@ void LrcApplet::onPositionFetched()
     }
 
     m_positionBaseMs = reportedMs;
-    m_positionClock.start();
+    if (m_playing) {
+        m_positionClock.start();
+    } else {
+        m_positionClock.invalidate();
+    }
     m_trackJustChanged = false;
     m_trackChangeRetries = 0;
     m_positionValid = true;
     m_positionRetries.start();
+    m_positionChecks.start();
+    saveSyncState();
 
+    if (m_lyrics.isUsable() && !m_pauseHidden) {
+        updateWord();
+    }
+}
+
+void LrcApplet::onPlayerSeeked(qint64 positionUs)
+{
+    if (m_watchedService.isEmpty() || positionUs < 0) {
+        return;
+    }
+
+    if (m_positionWatcher) {
+        delete m_positionWatcher;
+        m_positionWatcher = nullptr;
+    }
+
+    m_zeroPositionPolls = 0;
+    const qint64 seekMs = positionUs / 1000;
+
+    // Check if this is a Repeat-One natural wrap at the end of a track
+    if (!m_trackJustChanged && m_playing && m_positionValid && m_trackLengthUs > 0) {
+        const qint64 expected = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+        const qint64 remainingMs = (m_trackLengthUs / 1000) - expected;
+        if (remainingMs >= -5000 && remainingMs <= 3500 && seekMs < 2000 && expected > 5000) {
+            m_prevTrackNaturalEndTimer.start();
+            m_gaplessLeadMs = isSpotify() ? kSpotifyGaplessLeadMs : 0;
+            m_positionBaseMs = seekMs;
+            m_positionClock.start();
+            m_positionValid = true;
+            m_lineIndex = -1;
+            m_wordCursor = 0;
+            clearWordHighlight();
+            m_positionRetries.start();
+            m_positionChecks.start();
+            saveSyncState();
+            if (m_lyrics.isUsable() && !m_pauseHidden) {
+                updateWord();
+            }
+            return;
+        }
+    }
+
+    // Spotify emits Seeked whenever an internal PlayerState update differs from its
+    // extrapolated position by even 1ms. Only treat Seeked as a real manual seek
+    // (wiping m_gaplessLeadMs) when the position actually jumped!
+    const bool isRealJump = (!m_positionValid || positionJumped(seekMs))
+        && !(m_trackJustChanged && seekMs < 2500);
+
+    if (isRealJump) {
+        m_recentSeekTimer.start();
+        m_prevTrackNaturalEndTimer.invalidate();
+        m_gaplessLeadMs = 0;
+        m_wordCursor = 0;
+        clearWordHighlight();
+    }
+
+    m_positionBaseMs = seekMs;
+    if (m_playing) {
+        m_positionClock.start();
+    } else {
+        m_positionClock.invalidate();
+    }
+    m_trackJustChanged = false;
+    m_trackChangeRetries = 0;
+    m_positionValid = true;
+    m_positionRetries.start();
+    m_positionChecks.start();
+
+    if (m_pauseHidden) {
+        m_pauseHidden = false;
+        Q_EMIT pauseHiddenChanged();
+        if (m_playingKnown && !m_playing && m_pauseHideDelay > 0) {
+            m_pauseTimer.start(m_pauseHideDelay * 1000);
+        }
+    }
+
+    saveSyncState();
     if (m_lyrics.isUsable() && !m_pauseHidden) {
         updateWord();
     }
@@ -1435,11 +1747,11 @@ void LrcApplet::onPositionFetched()
 bool LrcApplet::positionJumped(qint64 reportedMs) const
 {
     // Nothing to compare against yet: the first reading of a track is not a jump.
-    if (!m_positionValid || !m_positionClock.isValid()) {
+    if (!m_positionValid) {
         return false;
     }
 
-    const qint64 expected = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0);
+    const qint64 expected = m_positionBaseMs + (m_playing && m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
     return qAbs(reportedMs - expected) > kPositionSnapToleranceMs;
 }
 
@@ -1457,26 +1769,20 @@ void LrcApplet::clearWordHighlight()
 
 void LrcApplet::updateWord()
 {
-    if (m_pauseHidden) {
-        return;
-    }
-
-    if (!m_lyrics.isUsable()) {
-        return;
-    }
-
     if (!m_positionValid) {
         requestPosition();
         return;
     }
 
-    // MPRIS has no signal for either position or seeking, so the position is
-    // advanced with the monotonic clock and checked against the player now and
-    // then. Without the check a seek is not noticed until the track changes,
-    // which is what used to happen.
+    // Keep polling Position every kPositionCheckMs even if lyrics are missing or
+    // hidden on pause so that playhead state is always accurate when the track ends.
     if (!m_positionChecks.isValid() || m_positionChecks.elapsed() > kPositionCheckMs) {
         m_positionChecks.start();
         requestPosition();
+    }
+
+    if (m_pauseHidden || !m_lyrics.isUsable()) {
+        return;
     }
 
     // Some syncs simply run early or late, and no amount of clever reading will
@@ -1485,7 +1791,7 @@ void LrcApplet::updateWord()
     // kAudioLeadCompensationMs compensates for the PipeWire/ALSA DAC audio buffer depth,
     // bringing the decoder playhead into alignment with what comes out of the speakers.
     // m_lyricOffset is subtracted so that positive values delay the lyrics (shift them later).
-    m_positionMs = m_positionBaseMs + (m_playing ? m_positionClock.elapsed() : 0) - m_gaplessLeadMs - kAudioLeadCompensationMs - m_lyricOffset;
+    m_positionMs = m_positionBaseMs + (m_playing && m_positionClock.isValid() ? m_positionClock.elapsed() : 0) - m_gaplessLeadMs - kAudioLeadCompensationMs - m_lyricOffset;
 
     // Before the first line of the track (intro), clear any stale or phantom text.
     if (!m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs) {
@@ -1932,6 +2238,12 @@ void LrcApplet::unwatchPlayer()
                    QStringLiteral("PropertiesChanged"),
                    this,
                    SLOT(onPlayerPropertiesChanged(QString,QVariantMap,QStringList)));
+    bus.disconnect(m_watchedService,
+                   s_playerPath,
+                   s_playerInterface,
+                   QStringLiteral("Seeked"),
+                   this,
+                   SLOT(onPlayerSeeked(qint64)));
     m_watchedService.clear();
 
     // Nobody is around to tell us about playback any more: fall back to plain
@@ -1968,6 +2280,12 @@ void LrcApplet::watchPlayer()
                 QStringLiteral("PropertiesChanged"),
                 this,
                 SLOT(onPlayerPropertiesChanged(QString,QVariantMap,QStringList)));
+    bus.connect(m_watchedService,
+                s_playerPath,
+                s_playerInterface,
+                QStringLiteral("Seeked"),
+                this,
+                SLOT(onPlayerSeeked(qint64)));
 
     requestPlayerProperties();
 }
@@ -2077,46 +2395,61 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
 {
     m_awaitingState = false;
 
-    // Apply Metadata FIRST if present so any track change immediately resets state,
-    // clears old lines, and sets m_trackJustChanged before position is requested.
+    if (invalidated.contains(QStringLiteral("PlaybackStatus"))) {
+        setPlaying(false, false);
+        return;
+    }
+
+    const bool wasPlayingKnown = m_playingKnown;
+    const bool wasPlaying = m_playingKnown && m_playing;
+
+    const auto statusIt = properties.constFind(QStringLiteral("PlaybackStatus"));
+    bool hasStatus = (statusIt != properties.constEnd());
+    bool nowPlaying = m_playing;
+    QString statusStr;
+
+    if (hasStatus) {
+        statusStr = statusIt.value().toString();
+        nowPlaying = statusStr.compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0;
+        if (!nowPlaying) {
+            m_gaplessLeadMs = 0;
+        }
+        // On initial GetAll attach (!wasPlayingKnown), set m_playing before applyMetadata
+        // so applyMetadata knows the player is actively playing and can restore sync state.
+        if (!wasPlayingKnown) {
+            setPlaying(nowPlaying, true);
+        }
+    }
+
     const auto metadataIt = properties.constFind(QStringLiteral("Metadata"));
     if (metadataIt != properties.constEnd()) {
         const QVariantMap metadata = toVariantMap(metadataIt.value());
         applyMetadata(metadata);
     }
 
-    if (invalidated.contains(QStringLiteral("PlaybackStatus"))) {
-        // The player no longer knows its own status: poll blindly.
-        setPlaying(false, false);
-        return;
-    }
-
-    const auto statusIt = properties.constFind(QStringLiteral("PlaybackStatus"));
-    if (statusIt != properties.constEnd()) {
-        const QString status = statusIt.value().toString();
-        const bool wasPlaying = m_playingKnown && m_playing;
-        const bool nowPlaying = status.compare(QLatin1String("Playing"), Qt::CaseInsensitive) == 0;
-        if (!nowPlaying) {
-            m_gaplessLeadMs = 0;
-        }
-        setPlaying(nowPlaying, true);
-        if (m_playingKnown && metadataIt == properties.constEnd()) {
-            // Playback state changed without metadata change in same packet, so request position.
+    if (hasStatus) {
+        const bool statusChanged = (!wasPlayingKnown || wasPlaying != nowPlaying);
+        if (statusChanged && !m_positionWatcher) {
             m_positionValid = false;
             m_positionRetries.invalidate();
+        } else if (wasPlayingKnown && wasPlaying != nowPlaying) {
+            if (m_positionWatcher) {
+                delete m_positionWatcher;
+                m_positionWatcher = nullptr;
+            }
+            m_positionValid = false;
+            m_positionRetries.invalidate();
+        }
+        setPlaying(nowPlaying, true);
+        if (statusChanged) {
             requestPosition();
         }
 
-        // Stopped is not paused. A paused track keeps its line, because it is
-        // still the track being listened to; a stopped player has nothing left to
-        // say, and polling has already stopped by then, so nothing else would ever
-        // take the line down. That is how a closed YouTube tab left its text on
-        // the panel for the rest of the session.
-        if (status.compare(QLatin1String("Stopped"), Qt::CaseInsensitive) == 0) {
+        if (statusStr.compare(QLatin1String("Stopped"), Qt::CaseInsensitive) == 0) {
             clearDisplay();
         }
 
-        if ((wasPlaying && !nowPlaying) || status.compare(QLatin1String("Stopped"), Qt::CaseInsensitive) == 0) {
+        if ((wasPlaying && !nowPlaying) || statusStr.compare(QLatin1String("Stopped"), Qt::CaseInsensitive) == 0) {
             m_candidatesTimer.invalidate();
             considerPlayerSwitch();
         }

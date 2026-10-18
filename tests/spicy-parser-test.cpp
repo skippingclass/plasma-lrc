@@ -458,6 +458,11 @@ int main(int argc, char **argv)
         check("object path: Spotify id из object path",
               SpicyLyrics::trackIdFromMpris(mprisTrackId(pathValue)).isEmpty());
 
+        QVariant chromiumLongPath = QVariant::fromValue(QDBusObjectPath(QStringLiteral("/org/chromium/MediaPlayer2/TrackList/Track638BA2CB97D3363BAA7730EB6FEB33F7")));
+        check("object path: Chromium 32-hex TrackID не ловится как Spotify id",
+              SpicyLyrics::trackIdFromMpris(mprisTrackId(chromiumLongPath)).isEmpty(),
+              SpicyLyrics::trackIdFromMpris(mprisTrackId(chromiumLongPath)));
+
         QVariant spotifyPath = QVariant::fromValue(QDBusObjectPath(QStringLiteral("/com/spotify/track/3lCG3tM6k7DtPr2Pjg99C6")));
         check("object path: Spotify id извлекается",
               SpicyLyrics::trackIdFromMpris(mprisTrackId(spotifyPath)) == QStringLiteral("3lCG3tM6k7DtPr2Pjg99C6"),
@@ -835,6 +840,18 @@ int main(int argc, char **argv)
         check("lrclib parse: valid synced candidate", LrclibClient::parseCandidate(perfectMatch, &parsed, 200000));
         check("lrclib parse: attribution is lrclib", parsed.attribution == QStringLiteral("lrclib"));
         check("lrclib parse: attributionUrl is lrclib.net", parsed.attributionUrl == QStringLiteral("https://lrclib.net"));
+
+        // 6. LrclibClient::userAgent & makeCacheKey
+        check("lrclib userAgent: содержит url", LrclibClient::userAgent().contains("https://"));
+        const QString key1 = LrclibClient::makeCacheKey(QStringLiteral("Выстрелы"), QStringLiteral("OG Buda"), 175000);
+        const QString key2 = LrclibClient::makeCacheKey(QStringLiteral("выстрелы"), QStringLiteral("og buda"), 175000);
+        check("lrclib makeCacheKey: не пустой", !key1.isEmpty());
+        check("lrclib makeCacheKey: case-insensitive", key1 == key2);
+
+        LrclibClient client;
+        const QString reqKey = client.request(QStringLiteral("Выстрелы"), QStringLiteral("OG Buda"), 175000);
+        check("lrclib request: возвращает валидный ключ", reqKey == key1);
+        client.cancel();
     }
 
     printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");
