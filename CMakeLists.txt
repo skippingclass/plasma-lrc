@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.5.1 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.5.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,7 +16,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # Qt6::Widgets is pulled in by Plasma::Applet, which needs QAction.
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core DBus Gui Widgets Qml)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core DBus Gui Widgets Qml Network)
 find_package(KF6CoreAddons REQUIRED)
 find_package(KF6Config REQUIRED)
 find_package(KF6I18n REQUIRED)
@@ -109,4 +109,20 @@ if(PLASMA_LRC_TESTS)
     target_link_libraries(spicy-parser-test PRIVATE Qt6::Core Qt6::Network Qt6::DBus)
     enable_testing()
     add_test(NAME spicy-parser COMMAND spicy-parser-test)
+
+    foreach(client IN ITEMS spicy lrclib)
+        add_executable(${client}-client-test
+            tests/${client}-client-test.cpp
+            lrcparser.cpp spicylyrics.cpp lrclib.cpp trackname.cpp
+        )
+        target_link_libraries(${client}-client-test PRIVATE Qt6::Core Qt6::Network)
+        add_test(NAME ${client}-client COMMAND ${client}-client-test)
+    endforeach()
+
+    add_executable(applet-sync-test tests/applet-sync-test.cpp)
+    target_include_directories(applet-sync-test PRIVATE ${LRC_PLASMA_INCLUDE_DIR})
+    target_link_libraries(applet-sync-test PRIVATE ${PLUGIN_ID}
+        Qt6::Widgets Qt6::Qml Qt6::DBus Qt6::Network KF6::CoreAddons KF6::ConfigCore ${LRC_PLASMA_LIBRARY})
+    add_test(NAME applet-sync COMMAND applet-sync-test)
+    set_tests_properties(applet-sync PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

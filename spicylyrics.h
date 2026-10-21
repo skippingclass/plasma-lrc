@@ -7,6 +7,7 @@
 #pragma once
 
 #include <QHash>
+#include <QElapsedTimer>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QPointer>
@@ -111,6 +112,10 @@ public:
 
     /// Cancels any active network request.
     void cancel();
+    /// Explicit refresh of one track, including a cached negative result.
+    void invalidate(const QString &trackId);
+    int lastHttpStatus() const { return m_lastHttpStatus; }
+    QString lastErrorCode() const { return m_lastErrorCode; }
 
     /**
      * Fetches the lyrics for @p trackId, or answers from the cache.
@@ -151,9 +156,18 @@ private:
 
     QNetworkAccessManager m_network;
     QPointer<QNetworkReply> m_activeReply;
-    QHash<QString, Lyrics> m_memoryCache;
+    struct CachedLyrics {
+        Lyrics lyrics;
+        qint64 expiresAtMs;
+    };
+    QHash<QString, CachedLyrics> m_memoryCache;
     QTimer *m_watchdog;
     int m_writesSincePrune = 0;
+    quint64 m_generation = 0;
+    int m_lastHttpStatus = 0;
+    QString m_lastErrorCode;
+    QElapsedTimer m_retryClock;
+    qint64 m_retryDelayMs = 0;
     QString m_key;
     QString m_currentTrackId;
     bool m_enabled = false;

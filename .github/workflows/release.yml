@@ -43,23 +43,24 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_INSTALL_LIBDIR=lib \
             -DPLASMA_LRC_TESTS=ON
           cmake --build build --parallel $(nproc)
-          ./build/spicy-parser-test
+          ctest --test-dir build --output-on-failure
 
       - name: Create release package
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           DESTDIR="$(pwd)/pkg"
           DEST="$DESTDIR/plasma-lrc-${GITHUB_REF_NAME}-linux-x86_64"
           mkdir -p "$DEST"
 
           # Install files into staging directory
-          DESTDIR="$DEST" cmake --install build --prefix ""
+          DESTDIR="$DEST" cmake --install build --prefix /usr
 
           # Copy install script and readme
-          cp install.sh "$DEST/install.sh"
+          cp scripts/install-release.sh "$DEST/install.sh"
           cp README.md "$DEST/README.md"
+          cp LICENSE "$DEST/LICENSE"
           chmod +x "$DEST/install.sh"
 
           # Create tarball

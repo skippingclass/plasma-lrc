@@ -356,6 +356,7 @@ SpicyLyrics::SpicyLyrics(QObject *parent)
 
 void SpicyLyrics::cancel()
 {
+    ++m_generation;
     m_currentTrackId.clear();
     m_watchdog->stop();
     if (m_activeReply) {
@@ -375,7 +376,24 @@ SpicyLyrics::~SpicyLyrics()
 
 void SpicyLyrics::setKey(const QString &key)
 {
-    m_key = key.trimmed();
+    const QString trimmed = key.trimmed();
+    if (m_key != trimmed) {
+        cancel();
+        m_retryClock.invalidate();
+        m_lastHttpStatus = 0;
+        m_lastErrorCode.clear();
+        m_key = trimmed;
+    }
+}
+
+void SpicyLyrics::invalidate(const QString &trackId)
+{
+    cancel();
+    m_memoryCache.remove(trackId);
+    if (QRegularExpression(QStringLiteral("^[A-Za-z0-9]{22}$")).match(trackId).hasMatch()) {
+        QFile::remove(cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json"));
+    }
+    m_retryClock.invalidate();
 }
 
 QString SpicyLyrics::key() const
@@ -435,9 +453,9 @@ void SpicyLyrics::emitMissing(const QString &trackId, MissingReason reason)
 void SpicyLyrics::load(const QString &trackId)
 {
     const auto cached = m_memoryCache.constFind(trackId);
-    if (cached != m_memoryCache.constEnd()) {
-        QTimer::singleShot(0, this, [this, trackId, lyrics = cached.value()] {
-            if (trackId == m_currentTrackId) {
+    if (cached != m_memoryCache.constEnd() && QDateTime::currentMSecsSinceEpoch() < cached->expiresAtMs) {
+        QTimer::singleShot(0, this, [this, trackId, lyrics = cached->lyrics, generation = m_generation] {
+            if (generation == m_generation && trackId == m_currentTrackId) {
                 Q_EMIT loaded(trackId, lyrics);
             }
         });
@@ -460,11 +478,11 @@ void SpicyLyrics::load(const QString &trackId)
         const QDateTime modified = QFileInfo(path).lastModified();
         const qint64 age = modified.isValid() ? modified.msecsTo(QDateTime::currentDateTime()) : kCacheTtlMs + 1;
 
-        if (age <= kNegativeCacheTtlMs && payload.contains(QByteArrayLiteral("\"missing\""))) {
+        if (age <= kNegativeCacheTtlMs && QJsonDocument::fromJson(payload).object().value(QStringLiteral("missing")).toBool()) {
             // We already asked about this track today and there was nothing.
             const MissingReason reason = reasonFromMarker(payload);
-            QTimer::singleShot(0, this, [this, trackId, reason] {
-                if (trackId == m_currentTrackId) {
+            QTimer::singleShot(0, this, [this, trackId, reason, generation = m_generation] {
+                if (generation == m_generation && trackId == m_currentTrackId) {
                     Q_EMIT missing(trackId, reason);
                 }
             });
@@ -479,9 +497,10 @@ void SpicyLyrics::load(const QString &trackId)
                     fetch(trackId);
                     return;
                 }
-                m_memoryCache.insert(trackId, lyrics);
-                QTimer::singleShot(0, this, [this, trackId, lyrics] {
-                    if (trackId == m_currentTrackId) {
+                const qint64 ttl = lyrics.type == LyricsType::Syllable ? kCacheTtlMs : kLineSyncCacheTtlMs;
+                m_memoryCache.insert(trackId, {lyrics, modified.toMSecsSinceEpoch() + ttl});
+                QTimer::singleShot(0, this, [this, trackId, lyrics, generation = m_generation] {
+                    if (generation == m_generation && trackId == m_currentTrackId) {
                         Q_EMIT loaded(trackId, lyrics);
                     }
                 });
@@ -529,6 +548,19 @@ void SpicyLyrics::fetch(const QString &trackId)
     cancel();
     m_currentTrackId = trackId;
 
+    // A suspended app or a rate-limited key will not recover on the next song.
+    // Keep using valid cached lyrics, but avoid hammering the API for new ones.
+    if (m_retryClock.isValid() && m_retryClock.elapsed() < m_retryDelayMs) {
+        QTimer::singleShot(0, this, [this, trackId, generation = m_generation] {
+            if (generation == m_generation) {
+                emitMissing(trackId, MissingReason::Unreachable);
+            }
+        });
+        return;
+    }
+    m_lastHttpStatus = 0;
+    m_lastErrorCode.clear();
+
     QNetworkRequest request(QUrl(QString::fromUtf8(apiRoot()) + trackId));
     request.setRawHeader("Accept", "application/json");
     request.setRawHeader("User-Agent", s_userAgent);
@@ -537,19 +569,38 @@ void SpicyLyrics::fetch(const QString &trackId)
 
     QNetworkReply *reply = m_network.get(request);
     m_activeReply = reply;
-    connect(reply, &QNetworkReply::finished, this, [this, reply, trackId] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, trackId, generation = m_generation] {
+        if (generation != m_generation || trackId != m_currentTrackId) {
+            reply->deleteLater();
+            return;
+        }
         if (m_activeReply == reply) {
             m_activeReply.clear();
         }
         reply->deleteLater();
         m_watchdog->stop();
+        m_lastHttpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray payload = reply->readAll();
 
         if (reply->error() != QNetworkReply::NoError) {
             // 404 means the API does not know the track, which is worth
             // remembering for a day. Anything else is a problem on our side or
             // theirs (no key, rate limit, no network), and retrying on the next
             // track is the right thing to do.
-            const bool notFound = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 404;
+            const QString code = QJsonDocument::fromJson(payload).object()
+                .value(QStringLiteral("Body")).toObject().value(QStringLiteral("error")).toString();
+            // Only retain the machine-readable code, never response text or credentials.
+            if (QRegularExpression(QStringLiteral("^[a-z0-9_]{1,64}$")).match(code).hasMatch()) {
+                m_lastErrorCode = code;
+            }
+            if (m_lastHttpStatus == 401 || m_lastHttpStatus == 403 || m_lastHttpStatus == 429) {
+                const qint64 retrySeconds = reply->rawHeader("Retry-After").toLongLong();
+                m_retryDelayMs = m_lastHttpStatus == 429
+                    ? qBound(1LL, retrySeconds > 0 ? retrySeconds : 60LL, 600LL) * 1000
+                    : 600000;
+                m_retryClock.start();
+            }
+            const bool notFound = m_lastHttpStatus == 404;
             if (notFound) {
                 write(trackId, missingMarker(MissingReason::NotFound));
             }
@@ -557,7 +608,6 @@ void SpicyLyrics::fetch(const QString &trackId)
             return;
         }
 
-        const QByteArray payload = reply->readAll();
         Lyrics lyrics;
         QString parseError;
         if (!parse(payload, &lyrics, &parseError) || !lyrics.isUsable()) {
@@ -565,13 +615,21 @@ void SpicyLyrics::fetch(const QString &trackId)
             // timings, which is what Apple Music and Spotify answer for a track
             // nobody has made a sync for. Remembering it keeps us from asking
             // again on every repeat.
-            write(trackId, missingMarker(MissingReason::Unsynced));
-            emitMissing(trackId, MissingReason::Unsynced);
+            const bool untimed = QJsonDocument::fromJson(payload).object()
+                .value(QStringLiteral("Body")).toObject().value(QStringLiteral("Type")).toString() == QLatin1String("Static");
+            if (untimed) {
+                write(trackId, missingMarker(MissingReason::Unsynced));
+            } else {
+                m_lastErrorCode = QStringLiteral("invalid_response");
+            }
+            emitMissing(trackId, untimed ? MissingReason::Unsynced : MissingReason::Unreachable);
             return;
         }
 
         write(trackId, payload);
-        m_memoryCache.insert(trackId, lyrics);
+        m_retryClock.invalidate();
+        const qint64 ttl = lyrics.type == LyricsType::Syllable ? kCacheTtlMs : kLineSyncCacheTtlMs;
+        m_memoryCache.insert(trackId, {lyrics, QDateTime::currentMSecsSinceEpoch() + ttl});
         Q_EMIT loaded(trackId, lyrics);
     });
 

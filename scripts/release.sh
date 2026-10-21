@@ -28,13 +28,9 @@ fi
 
 # 2. Run unit tests
 echo "==> Running unit tests..."
-if [[ -x "./build/spicy-parser-test" ]]; then
-    ./build/spicy-parser-test
-else
-    echo "Warning: ./build/spicy-parser-test not found. Building first..."
-    cmake --build build
-    ./build/spicy-parser-test
-fi
+cmake -S . -B build -DPLASMA_LRC_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
 
 # 3. Read current version from CMakeLists.txt
 CURRENT_VER=$(grep -Po 'project\(plasma-lrc VERSION \K[0-9.]+' CMakeLists.txt)

@@ -19,7 +19,7 @@ install=plasma-lrc.install
 
 # Placeholders: makepkg 7 refuses an empty one, and pkgver() below replaces this
 # with the real thing on every build.
-pkgver=1.5.1.r0
+pkgver=1.5.2.r0
 pkgrel=1
 
 pkgver() {
@@ -44,10 +44,7 @@ build() {
 }
 
 check() {
-    # The parser tests are the only thing in here that fails quietly: an answer
-    # that does not parse turns into "this track has no lyrics" instead of an
-    # error, and nobody notices until the panel stays empty.
-    ./build/spicy-parser-test
+    ctest --test-dir build --output-on-failure
 }
 
 package() {

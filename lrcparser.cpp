@@ -115,7 +115,8 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
     // Apply offset and build final LyricLine entries with startMs and endMs
     for (int i = 0; i < rawLines.size(); ++i) {
         const RawLine &cur = rawLines.at(i);
-        const qint64 startMs = qMax(0LL, cur.startMs + globalOffsetMs);
+        // LRC offsets advance lyrics when positive (unlike the widget's delay setting).
+        const qint64 startMs = qMax(0LL, cur.startMs - globalOffsetMs);
 
         // An empty line marks an intentional gap or end of verse/track
         if (cur.text.isEmpty()) {
@@ -126,7 +127,7 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
         qint64 endMs = 0;
         int nextDiffIdx = -1;
         for (int j = i + 1; j < rawLines.size(); ++j) {
-            const qint64 candidateMs = qMax(0LL, rawLines.at(j).startMs + globalOffsetMs);
+            const qint64 candidateMs = qMax(0LL, rawLines.at(j).startMs - globalOffsetMs);
             if (candidateMs > startMs) {
                 nextDiffIdx = j;
                 endMs = candidateMs;

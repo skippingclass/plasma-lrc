@@ -46,7 +46,7 @@ _restart_plasmashell() {
 post_install() {
     _restart_plasmashell
     echo
-    echo "Add the widget: right-click the panel -> Add Widgets -> LRC Lyrics"
+    echo "Add the widget: right-click the panel -> Add Widgets -> Plasma LRC"
 }
 
 post_upgrade() {

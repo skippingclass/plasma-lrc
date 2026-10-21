@@ -62,6 +62,7 @@ class LrcApplet : public Plasma::Applet
     // instead of blaming the API for a track it simply does not have.
     Q_PROPERTY(bool apiHasNoTimings READ apiHasNoTimings NOTIFY lyricsChanged)
     Q_PROPERTY(bool apiUnreachable READ apiUnreachable NOTIFY lyricsChanged)
+    Q_PROPERTY(QString apiError READ apiError NOTIFY lyricsChanged)
     /// True when the track has no Spotify id, so the API was never asked about it.
     Q_PROPERTY(bool apiHasNoTrackId READ apiHasNoTrackId NOTIFY lyricsChanged)
     Q_PROPERTY(bool hasSpotifyTrackId READ hasSpotifyTrackId NOTIFY lyricsChanged)
@@ -180,6 +181,7 @@ public:
     {
         return m_missingReason == MissingReason::Unreachable;
     }
+    QString apiError() const;
 
     bool isActive() const
     {
@@ -290,6 +292,8 @@ private Q_SLOTS:
     void clearWordHighlight();
 
 private:
+    friend class LrcAppletSyncTest;
+
     void startPolling();
     void poll();
     void onProcessFinished();
@@ -467,6 +471,7 @@ private:
     bool m_positionValid;
     bool m_trackJustChanged = false;
     bool m_manualSkipPending = false;
+    bool m_repeatTrack = false;
     int m_trackChangeRetries = 0;
     int m_zeroPositionPolls = 0;
     int m_lineIndex;

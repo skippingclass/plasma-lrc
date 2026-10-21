@@ -44,7 +44,7 @@ KCM.SimpleKCM {
 
             Kirigami.FormData.label: i18n("API key:")
             echoMode: TextInput.PasswordEchoOnEdit
-            placeholderText: i18n("sl_sk_… or SPICY_LYRICS_SECRET_KEY")
+            placeholderText: i18n("Client key: sl_pk_…")
             enabled: useSpicyCheckBox.checked
             Layout.fillWidth: true
         }
@@ -56,7 +56,7 @@ KCM.SimpleKCM {
             wrapMode: Text.Wrap
             opacity: 0.75
             visible: useSpicyCheckBox.checked
-            text: i18n("Get an application and a key at developers.spicylyrics.org. Each user needs their own key; the environment variable is used when the field is left empty.")
+            text: i18n("Get your client key through the approved Plasma LRC app template in the Spicy Lyrics catalog. The template link will be published after approval. Do not create a standalone developer application. SPICY_LYRICS_SECRET_KEY, if set, overrides this field.")
         }
     }
 }

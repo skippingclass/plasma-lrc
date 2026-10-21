@@ -11,8 +11,8 @@
         "Icon": "media-optical-music",
         "Id": "org.kde.plasma.lrc",
         "License": "MIT",
-        "Name": "LRC Lyrics",
-        "Version": "1.5.1",
+        "Name": "Plasma LRC",
+        "Version": "1.5.2",
         "Website": "https://github.com/skippingclass/plasma-lrc"
     },
     "X-Plasma-API": "declarativeapplet",

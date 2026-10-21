@@ -19,14 +19,15 @@ class QNetworkReply;
 
 /**
  * Native LRCLIB client with multi-tier search, candidate duration scoring,
- * and local caching ported from /home/pirkov/self/server/src/lyrics.js.
+ * monotonic generation tracking, and local caching ported from /home/pirkov/self/server/src/lyrics.js.
  */
 class LrclibClient : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit LrclibClient(QObject *parent = nullptr);
+    explicit LrclibClient(QObject *parent = nullptr,
+                          const QUrl &apiBase = QUrl(QStringLiteral("https://lrclib.net/api/")));
     ~LrclibClient() override;
 
     QString request(const QString &title, const QString &artist, qint64 durationMs = 0, bool fromWebPage = false);
@@ -35,6 +36,9 @@ public:
 
     static int scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs);
     static bool parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs = 0);
+    static bool isDurationCompatible(double candDurationSec, qint64 targetDurationMs);
+    static double maxAllowedDurationDiffSec(qint64 targetDurationMs);
+
     static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs);
     static QString cacheDirectory();
     static QByteArray userAgent();
@@ -57,14 +61,20 @@ private:
     void cleanupAttemptState();
 
     QNetworkAccessManager m_network;
+    const QUrl m_apiBase;
     QPointer<QNetworkReply> m_activeReply;
-    QHash<QString, Lyrics> m_memoryCache;
+    struct CachedLyrics {
+        Lyrics lyrics;
+        qint64 expiresAtMs;
+    };
+    QHash<QString, CachedLyrics> m_memoryCache;
 
     QString m_currentKey;
     qint64 m_currentDurationMs = 0;
     QVector<SearchAttempt> m_attempts;
     int m_attemptIndex = 0;
     bool m_hadRateLimitOrNetworkError = false;
+    quint64 m_generation = 0;
 
     QJsonObject m_bestCandidate;
     int m_bestScore = -1;

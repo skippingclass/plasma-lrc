@@ -635,9 +635,15 @@ int main(int argc, char **argv)
         );
         Lyrics lyrics;
         check("lrc offset: парсится", LrcParser::parseLrc(lrc, &lyrics));
-        check("lrc offset: время сдвинуто на +500мс",
-              lyrics.lines.value(0).startMs == 62845,
+        check("lrc offset: положительный сдвигает раньше",
+              lyrics.lines.value(0).startMs == 61845,
               QString::number(lyrics.lines.value(0).startMs));
+        LrcParser::parseLrc(QStringLiteral("[offset:-500]\n[00:10.00] First\n[00:20.00] Second\n"), &lyrics);
+        check("lrc offset: отрицательный задерживает обе границы",
+              lyrics.lines.value(0).startMs == 10500 && lyrics.lines.value(0).endMs == 20500);
+        LrcParser::parseLrc(QStringLiteral("[offset:500]\n[00:00.20] Intro\n[00:10.00] Verse\n"), &lyrics);
+        check("lrc offset: начало не становится отрицательным",
+              lyrics.lines.value(0).startMs == 0 && lyrics.lines.value(0).endMs == 9500);
     }
 
     // --- LrcParser: Несколько таймкодов на одной строке ---
@@ -832,8 +838,7 @@ int main(int argc, char **argv)
         QJsonObject plainMatch;
         plainMatch[QStringLiteral("plainLyrics")] = QStringLiteral("plain words");
         plainMatch[QStringLiteral("duration")] = 250.0;
-        // score: plain (+20) + duration diff 50s (-10) = 10
-        check("lrclib score: plain with duration diff", LrclibClient::scoreSearchMatch(plainMatch, 200000) == 10);
+        check("lrclib score: reject incompatible duration", LrclibClient::scoreSearchMatch(plainMatch, 200000) < 0);
 
         // 5. LrclibClient::parseCandidate
         Lyrics parsed;

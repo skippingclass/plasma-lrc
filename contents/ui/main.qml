@@ -156,7 +156,7 @@ PlasmoidItem {
                 return i18n("No synchronized lyrics available");
             }
             if (Plasmoid.apiUnreachable) {
-                return i18n("Lyrics service unreachable");
+                return Plasmoid.apiError;
             }
         }
         return i18n("No lyrics found for this track");
@@ -342,7 +342,7 @@ PlasmoidItem {
                 color: Kirigami.Theme.textColor
                 opacity: compactArea.containsMouse ? 0.85 : 0.6
                 elide: Text.ElideRight
-                visible: root.hasCredit && !Plasmoid.compactPanel
+                visible: root.hasLyrics && root.hasCredit && !Plasmoid.compactPanel
                 Layout.alignment: Qt.AlignVCenter
                 // The lyric gives up width first: without a minimum the panel
                 // squeezes this one down to nothing, and then there is no credit
@@ -373,6 +373,9 @@ PlasmoidItem {
                 return i18n("Playback paused");
             }
             if (Plasmoid.trackInfo.length > 0) {
+                if (Plasmoid.hasSpotifyTrackId && Plasmoid.spicyConfigured && Plasmoid.apiUnreachable) {
+                    return Plasmoid.apiError;
+                }
                 if (Plasmoid.hasSpotifyTrackId && Plasmoid.spicyConfigured && Plasmoid.apiHasNoTimings) {
                     return i18n("No synchronized lyrics available");
                 }

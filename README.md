@@ -112,13 +112,13 @@ systemctl --user restart plasma-plasmashell.service
 
 ### Adding Widget to Panel
 1. Right-click your Plasma panel → **Add Widgets...**
-2. Search for **LRC Lyrics** and drag it to your panel.
+2. Search for **Plasma LRC** and drag it to your panel.
 
 ---
 
 ## Settings Reference
 
-Right-click the widget on your panel → **Configure LRC Lyrics...**:
+Right-click the widget on your panel → **Configure Plasma LRC...**:
 
 ### Appearance Tab
 
@@ -160,7 +160,7 @@ Right-click the widget on your panel → **Configure LRC Lyrics...**:
 | Setting | Default | Description |
 |---|---|---|
 | **Spicy Lyrics** | `Enabled` | Enables community word-level sync for Spotify tracks. |
-| **API key** | *(empty)* | Personal Spicy Lyrics developer token `sl_sk_…`. |
+| **API key** | *(empty)* | Your personal client key `sl_pk_…` from the app template. |
 
 ---
 
@@ -168,14 +168,16 @@ Right-click the widget on your panel → **Configure LRC Lyrics...**:
 
 [Spicy Lyrics](https://spicylyrics.org) provides synchronized word-level timings for Spotify tracks:
 
-1. Get a free developer API key at [developers.spicylyrics.org](https://developers.spicylyrics.org).
-2. Paste your key in **Configure LRC Lyrics → Source**, or export it in your environment:
+1. Add Plasma LRC through its approved app template in the [Spicy Lyrics catalog](https://developers.spicylyrics.org/catalog), then copy the issued **client key** (`sl_pk_…`). A direct template link will be published here after approval. Do not create a standalone developer application for the widget.
+2. Paste your key in **Configure Plasma LRC → Source**, or export it in your environment:
 
 ```bash
-export SPICY_LYRICS_SECRET_KEY=sl_sk_...
+export SPICY_LYRICS_SECRET_KEY=sl_pk_...
 ```
 
-*Note: The environment variable takes precedence over GUI settings and avoids storing secrets in plain text.*
+*The environment variable keeps its legacy name and accepts client keys too. It takes precedence over GUI settings. For a native desktop client, the template must allow requests without an Origin header.*
+
+If the API reports that the application is suspended, check the developer dashboard. Changing the token does not lift the suspension. Previously cached lyrics and the LRCLIB fallback may still work.
 
 ---
 

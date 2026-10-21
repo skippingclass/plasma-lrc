@@ -307,6 +307,7 @@ void LrcApplet::startPolling()
 
 void LrcApplet::refresh()
 {
+    m_spicy->invalidate(m_spotifyTrackId);
     // The API lyrics have to go as well: poll() returns early while they are
     // usable, so the button would do nothing at all on a track that has them.
     clearDisplay();
@@ -498,6 +499,29 @@ QString LrcApplet::attribution() const
 QString LrcApplet::attributionUrl() const
 {
     return m_lyrics.attributionUrl;
+}
+
+QString LrcApplet::apiError() const
+{
+    if (!apiUnreachable()) {
+        return QString();
+    }
+    if (m_spicy->lastErrorCode() == QLatin1String("application_suspended")) {
+        return i18n("Spicy Lyrics application suspended; check the developer dashboard");
+    }
+    if (m_spicy->lastHttpStatus() == 401) {
+        return i18n("Spicy Lyrics API key rejected");
+    }
+    if (m_spicy->lastHttpStatus() == 403) {
+        return i18n("Spicy Lyrics access denied (HTTP 403)");
+    }
+    if (m_spicy->lastHttpStatus() == 429) {
+        return i18n("Spicy Lyrics rate limit reached; try again later");
+    }
+    if (m_spicy->lastErrorCode() == QLatin1String("invalid_response")) {
+        return i18n("Spicy Lyrics returned an invalid response");
+    }
+    return i18n("Lyrics service unreachable");
 }
 
 bool LrcApplet::isSpotify() const
@@ -1435,6 +1459,7 @@ void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
     }
     m_fetchingFromSpicy = false;
     m_missingReason = reason;
+    Q_EMIT lyricsChanged();
 
     // Fall back to native LRCLIB client
     m_fetchingLrc = true;
@@ -1577,23 +1602,26 @@ void LrcApplet::onPositionFetched()
                 });
                 return;
             }
-            // Repeat-One natural wrap: the same track wrapped from its end back to 0ms!
+            // If Metadata never followed, only an enabled repeat at the actual
+            // end boundary can justify a same-track gapless compensation.
             m_prevTrackNaturalEndTimer.invalidate();
-            m_gaplessLeadMs = isSpotify() ? kSpotifyGaplessLeadMs : 0;
-            m_positionBaseMs = reportedMs;
-            m_positionClock.start();
-            m_positionValid = true;
-            m_zeroPositionPolls = 0;
-            m_lineIndex = -1;
-            m_wordCursor = 0;
-            clearWordHighlight();
-            m_positionRetries.start();
-            m_positionChecks.start();
-            saveSyncState();
-            if (m_lyrics.isUsable() && !m_pauseHidden) {
-                updateWord();
+            if (m_repeatTrack && remainingMs <= 250) {
+                m_gaplessLeadMs = isSpotify() ? kSpotifyGaplessLeadMs : 0;
+                m_positionBaseMs = reportedMs;
+                m_positionClock.start();
+                m_positionValid = true;
+                m_zeroPositionPolls = 0;
+                m_lineIndex = -1;
+                m_wordCursor = 0;
+                clearWordHighlight();
+                m_positionRetries.start();
+                m_positionChecks.start();
+                saveSyncState();
+                if (m_lyrics.isUsable() && !m_pauseHidden) {
+                    updateWord();
+                }
+                return;
             }
-            return;
         }
     }
 
@@ -1680,10 +1708,12 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
     const qint64 seekMs = positionUs / 1000;
 
     // Check if this is a Repeat-One natural wrap at the end of a track
-    if (!m_trackJustChanged && m_playing && m_positionValid && m_trackLengthUs > 0) {
+    if (m_repeatTrack && !m_trackJustChanged && m_playing && m_positionValid && m_trackLengthUs > 0) {
         const qint64 expected = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
         const qint64 remainingMs = (m_trackLengthUs / 1000) - expected;
-        if (remainingMs >= -5000 && remainingMs <= 3500 && seekMs < 2000 && expected > 5000) {
+        // A seek near the end alone is not evidence of repeat-one. Require the
+        // player's loop setting and an actual end boundary before compensating.
+        if (remainingMs >= -5000 && remainingMs <= 250 && seekMs < 2000 && expected > 5000) {
             m_prevTrackNaturalEndTimer.start();
             m_gaplessLeadMs = isSpotify() ? kSpotifyGaplessLeadMs : 0;
             m_positionBaseMs = seekMs;
@@ -2216,6 +2246,7 @@ void LrcApplet::sortCandidatesByScore()
 
 void LrcApplet::unwatchPlayer()
 {
+    m_repeatTrack = false;
     delete m_propertyWatcher;
     m_propertyWatcher = nullptr;
 
@@ -2394,6 +2425,14 @@ void LrcApplet::onPlayerPropertiesFetched()
 void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStringList &invalidated)
 {
     m_awaitingState = false;
+
+    if (invalidated.contains(QStringLiteral("LoopStatus"))) {
+        m_repeatTrack = false;
+    }
+    const auto loopIt = properties.constFind(QStringLiteral("LoopStatus"));
+    if (loopIt != properties.constEnd()) {
+        m_repeatTrack = loopIt.value().toString() == QLatin1String("Track");
+    }
 
     if (invalidated.contains(QStringLiteral("PlaybackStatus"))) {
         setPlaying(false, false);
