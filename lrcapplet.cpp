@@ -174,10 +174,16 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     : Plasma::Applet(parent, data, args)
     , m_process(nullptr)
     , m_pipeline(new LyricsPipelineManager(this))
+    , m_localProvider(new LocalProvider(this))
+    , m_unisonProvider(new UnisonProvider(this))
+    , m_lrcredProvider(new LrcRedProvider(this))
+    , m_neteaseProvider(new NeteaseProvider(this))
+    , m_kugouProvider(new KugouProvider(this))
+    , m_qqmusicProvider(new QqMusicProvider(this))
+    , m_amllProvider(new AmllProvider(this))
     , m_spicyProvider(new SpicyLyricsProvider(this))
     , m_lrclibProvider(new LrclibProvider(this))
-    , m_amllProvider(new AmllProvider(this))
-    , m_lrcredProvider(new LrcRedProvider(this))
+    , m_customProvider(new CustomProvider(this))
     , m_spicy(m_spicyProvider->client())
     , m_lrclib(m_lrclibProvider->client())
     , m_trackLengthUs(0)
@@ -225,10 +231,16 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_lineIndex(-1)
     , m_wordCursor(0)
 {
+    m_pipeline->registerProvider(m_localProvider);
+    m_pipeline->registerProvider(m_unisonProvider);
     m_pipeline->registerProvider(m_lrcredProvider);
+    m_pipeline->registerProvider(m_neteaseProvider);
+    m_pipeline->registerProvider(m_kugouProvider);
+    m_pipeline->registerProvider(m_qqmusicProvider);
     m_pipeline->registerProvider(m_amllProvider);
     m_pipeline->registerProvider(m_spicyProvider);
     m_pipeline->registerProvider(m_lrclibProvider);
+    m_pipeline->registerProvider(m_customProvider);
 
     connect(m_pipeline, &LyricsPipelineManager::lyricsResolved, this, &LrcApplet::onPipelineResolved);
     connect(m_pipeline, &LyricsPipelineManager::allFailed, this, &LrcApplet::onPipelineAllFailed);
@@ -445,8 +457,21 @@ void LrcApplet::readSettings()
     m_spicy->setKey(m_spicyKey);
     m_spicy->setEnabled(m_useSpicy);
 
-    const QString providerOrderRaw = setting(QStringLiteral("providerOrder"), QStringLiteral("lrcred,amll,spicy,lrclib")).trimmed();
+    const QString defaultOrder = QStringLiteral("local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom");
+    const QString providerOrderRaw = setting(QStringLiteral("providerOrder"), defaultOrder).trimmed();
     const QString disabledProvidersRaw = setting(QStringLiteral("disabledProviders")).trimmed();
+
+    const QString localFolder = setting(QStringLiteral("localLyricsFolder")).trimmed();
+    if (m_localProvider) {
+        m_localProvider->setCustomDirectory(localFolder);
+    }
+
+    const QString customUrl = setting(QStringLiteral("customLyricsUrl")).trimmed();
+    const QString customHeaders = setting(QStringLiteral("customLyricsHeaders")).trimmed();
+    if (m_customProvider) {
+        m_customProvider->setUrlTemplate(customUrl);
+        m_customProvider->setHeaders(customHeaders);
+    }
 
     const bool providerConfigChanged = (providerOrderRaw != m_providerOrderConfig || disabledProvidersRaw != m_disabledProvidersConfig);
 
@@ -1557,6 +1582,8 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         m_webPageSession = isWebSession;
         m_trackArtist = artist;
         m_trackTitle = title;
+        m_trackAlbum = metadata.value(QStringLiteral("xesam:album")).toString();
+        m_trackUrl = metadata.value(QStringLiteral("xesam:url")).toString();
         m_trackLengthUs = lengthUs;
         m_spotifyTrackId = trackId;
         m_mprisTrackId = rawTrackId;
@@ -1573,6 +1600,8 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         requestLyrics();
     } else {
         setTrackInfo(trackInfo);
+        m_trackAlbum = metadata.value(QStringLiteral("xesam:album")).toString();
+        m_trackUrl = metadata.value(QStringLiteral("xesam:url")).toString();
         m_trackLengthUs = lengthUs;
         if (!m_lyrics.isUsable() && !m_lyricsLookupDone && !m_fetchingFromSpicy && !m_fetchingLrc) {
             requestLyrics();
@@ -1599,9 +1628,11 @@ void LrcApplet::requestLyrics()
     TrackMetadata meta;
     meta.title = m_trackTitle;
     meta.artist = m_trackArtist;
+    meta.album = m_trackAlbum;
     meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
     meta.spotifyTrackId = m_spotifyTrackId;
     meta.mprisTrackId = m_mprisTrackId;
+    meta.url = m_trackUrl;
     meta.isWebSession = m_webPageSession;
 
     m_fetchingFromSpicy = false;

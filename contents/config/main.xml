@@ -68,7 +68,22 @@
 
         <entry name="providerOrder" type="String">
             <label>Order of lyrics providers to query, separated by commas.</label>
-            <default>lrcred,amll,spicy,lrclib</default>
+            <default>local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom</default>
+        </entry>
+
+        <entry name="localLyricsFolder" type="String">
+            <label>Custom folder to search for local .lrc or .ttml files.</label>
+            <default></default>
+        </entry>
+
+        <entry name="customLyricsUrl" type="String">
+            <label>Custom lyrics HTTP URL template with {title}, {artist}, {duration} placeholders.</label>
+            <default></default>
+        </entry>
+
+        <entry name="customLyricsHeaders" type="String">
+            <label>Custom HTTP request headers (Name: value, newline separated).</label>
+            <default></default>
         </entry>
 
         <entry name="disabledProviders" type="String">

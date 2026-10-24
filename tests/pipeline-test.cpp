@@ -6,9 +6,12 @@
 
 #include "lyricspipelinemanager.h"
 #include "lyricsprovider.h"
+#include "localprovider.h"
 
 #include <iostream>
 #include <QCoreApplication>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QTimer>
 
 namespace
@@ -182,6 +185,46 @@ int main(int argc, char *argv[])
         check("all-fail: p1 called", p1->callCount() == 1);
         check("all-fail: p2 called", p2->callCount() == 1);
         check("all-fail: allFailed emitted", failed);
+    }
+
+    // Test 4: LocalProvider
+    {
+        QTemporaryDir tempDir;
+        check("local: temp dir valid", tempDir.isValid());
+
+        const QString lrcPath = tempDir.filePath(QStringLiteral("The Artist - The Song.lrc"));
+        QFile file(lrcPath);
+        check("local: create lrc file", file.open(QIODevice::WriteOnly | QIODevice::Text));
+        file.write("[00:01.00]Line one\n[00:04.00]Line two\n");
+        file.close();
+
+        LocalProvider local;
+        local.setCustomDirectory(tempDir.path());
+
+        TrackMetadata meta;
+        meta.artist = QStringLiteral("The Artist");
+        meta.title = QStringLiteral("The Song");
+        check("local: can handle", local.canHandle(meta));
+
+        Lyrics loadedLyrics;
+        QString loadedProviderId;
+        QObject::connect(&local, &LyricsProvider::lyricsLoaded,
+                         [&](quint64, const Lyrics &lyrics, const QString &pId) {
+            loadedLyrics = lyrics;
+            loadedProviderId = pId;
+        });
+
+        local.requestLyrics(meta, 4);
+
+        check("local: loaded provider id", loadedProviderId == QStringLiteral("local"), loadedProviderId);
+        check("local: lyrics is usable", loadedLyrics.isUsable());
+        check("local: lines count", loadedLyrics.lines.size() == 2, QString::number(loadedLyrics.lines.size()));
+        if (loadedLyrics.lines.size() == 2) {
+            check("local: line 0 text", loadedLyrics.lines[0].text == QStringLiteral("Line one"));
+            check("local: line 0 startMs", loadedLyrics.lines[0].startMs == 1000);
+            check("local: line 1 text", loadedLyrics.lines[1].text == QStringLiteral("Line two"));
+            check("local: line 1 startMs", loadedLyrics.lines[1].startMs == 4000);
+        }
     }
 
     if (s_failed == 0) {

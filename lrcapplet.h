@@ -22,6 +22,12 @@
 #include "lrclibprovider.h"
 #include "amllprovider.h"
 #include "lrcredprovider.h"
+#include "kugouprovider.h"
+#include "neteaseprovider.h"
+#include "unisonprovider.h"
+#include "qqmusicprovider.h"
+#include "localprovider.h"
+#include "customprovider.h"
 
 class QDBusPendingCallWatcher;
 class LrclibClient;
@@ -439,10 +445,16 @@ private:
     QTimer m_expiryTimer;
     QProcess *m_process;
     LyricsPipelineManager *m_pipeline;
+    LocalProvider *m_localProvider;
+    UnisonProvider *m_unisonProvider;
+    LrcRedProvider *m_lrcredProvider;
+    NeteaseProvider *m_neteaseProvider;
+    KugouProvider *m_kugouProvider;
+    QqMusicProvider *m_qqmusicProvider;
+    AmllProvider *m_amllProvider;
     SpicyLyricsProvider *m_spicyProvider;
     LrclibProvider *m_lrclibProvider;
-    AmllProvider *m_amllProvider;
-    LrcRedProvider *m_lrcredProvider;
+    CustomProvider *m_customProvider;
     SpicyLyrics *m_spicy;
     LrclibClient *m_lrclib;
     QString m_activeProviderId;
@@ -457,6 +469,8 @@ private:
     // Raw artist and title as the player reports them, used to build the lookup.
     QString m_trackArtist;
     QString m_trackTitle;
+    QString m_trackAlbum;
+    QString m_trackUrl;
     /// Track length as MPRIS reports it: microseconds.
     qint64 m_trackLengthUs;
     /// The id was made up by a browser for a media session of a web page.

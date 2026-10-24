@@ -132,4 +132,5 @@ struct TrackMetadata
     QString mprisTrackId;     ///< Raw D-Bus track ID / object path
     QString isrc;             ///< International Standard Recording Code if known
     bool isWebSession = false;///< Browser/web page media session
+    QString url;              ///< xesam:url from MPRIS (e.g. file:///path/to/song.flac)
 };

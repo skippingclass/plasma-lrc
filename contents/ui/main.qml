@@ -260,8 +260,8 @@ PlasmoidItem {
         // The panel gives an applet the width it asks for and does not come back
         // to it, so an empty lyric once meant a widget a few pixels wide, with the
         // text wrapped to one letter per line. The floor keeps a usable width
-        // whatever the content happens to be at that moment.
-        readonly property int floorWidth: Plasmoid.pauseHidden ? 0 : Kirigami.Units.gridUnit * 8
+        // (at least 200px) whatever the content happens to be at that moment.
+        readonly property int floorWidth: Plasmoid.pauseHidden ? 0 : 200
 
         readonly property bool showIconItem: Plasmoid.showIcon && !Plasmoid.pauseHidden
         readonly property real iconReservedWidth: showIconItem ? Kirigami.Units.iconSizes.small : 0
@@ -269,7 +269,7 @@ PlasmoidItem {
         readonly property real creditFullWidth: creditItemVisible ? Math.ceil(creditLabel.implicitWidth) : 0
 
         readonly property real lyricDesiredWidth: Plasmoid.pauseHidden ? 0 : lyricContainer.animatedWidth
-        readonly property real usefulLyricWidth: Plasmoid.pauseHidden ? 0 : Math.min(floorWidth, lyricDesiredWidth)
+        readonly property real usefulLyricWidth: Plasmoid.pauseHidden ? 0 : Math.max(floorWidth, lyricDesiredWidth)
 
         readonly property real spacing: compactLayout.columnSpacing
 
@@ -298,7 +298,7 @@ PlasmoidItem {
             if (root.vertical) {
                 return compactLayout.implicitWidth;
             }
-            return root.isLayoutBelow ? belowDesiredWidth : rightDesiredWidth;
+            return Math.max(200, root.isLayoutBelow ? belowDesiredWidth : rightDesiredWidth);
         }
 
         readonly property real minTotalWidth: {
@@ -308,7 +308,7 @@ PlasmoidItem {
             if (root.vertical) {
                 return 0;
             }
-            return root.isLayoutBelow ? belowMinWidth : rightMinWidth;
+            return Math.max(200, root.isLayoutBelow ? belowMinWidth : rightMinWidth);
         }
 
         implicitWidth: desiredTotalWidth

@@ -22,6 +22,9 @@ KCM.SimpleKCM {
     property alias cfg_disabledProviders: rawDisabledField.text
     property alias cfg_useSpicyLyrics: useSpicyHiddenBox.checked
     property alias cfg_spicyKey: keyField.text
+    property alias cfg_localLyricsFolder: localFolderField.text
+    property alias cfg_customLyricsUrl: customUrlField.text
+    property alias cfg_customLyricsHeaders: customHeadersField.text
 
     readonly property var targetApplet: {
         if (typeof Plasmoid !== "undefined" && Plasmoid) {
@@ -72,16 +75,22 @@ KCM.SimpleKCM {
 
     function getProviderDefaultName(id) {
         switch (id) {
+        case "local": return i18n("Local Files");
+        case "unison": return "Unison (boidu.dev)";
         case "lrcred": return "lrc.red";
+        case "netease": return "NetEase (网易云音乐)";
+        case "kugou": return "KuGou (酷狗音乐)";
+        case "qqmusic": return "QQ Music (QQ音乐)";
         case "amll": return "AMLL TTML DB";
         case "spicy": return "Spicy Lyrics";
         case "lrclib": return "LRCLIB";
+        case "custom": return i18n("Custom URL");
         default: return id;
         }
     }
 
     function getProviderDefaultWordSync(id) {
-        return id === "lrcred" || id === "amll" || id === "spicy";
+        return id === "local" || id === "unison" || id === "lrcred" || id === "netease" || id === "kugou" || id === "qqmusic" || id === "amll" || id === "spicy" || id === "custom";
     }
 
     function getProviderDefaultLineSync(id) {
@@ -98,14 +107,26 @@ KCM.SimpleKCM {
 
     function getProviderDesc(id) {
         switch (id) {
+        case "local":
+            return i18n("Loads .ttml or .lrc files next to the local audio track, or from ~/.lyrics.");
+        case "unison":
+            return i18n("Community synced lyrics database (boidu.dev) with word-level TTML timing. Free.");
         case "lrcred":
             return i18n("Free Apple Music TTML database with syllable sync. No token required.");
+        case "netease":
+            return i18n("Massive Asian & international music catalog (网易云音乐) with YRC syllable sync.");
+        case "kugou":
+            return i18n("KuGou (酷狗音乐) database with KRC word-level timing.");
+        case "qqmusic":
+            return i18n("Tencent QQ Music (QQ音乐) with QRC syllable sync.");
         case "amll":
             return i18n("Community Apple Music TTML repository for Spotify tracks via CDN. Free.");
         case "spicy":
             return i18n("Community lyrics database with word sync for Spotify tracks. Requires API key.");
         case "lrclib":
             return i18n("Free open-source community lyrics database (line-by-line sync). Reliable fallback.");
+        case "custom":
+            return i18n("Self-hosted or custom lyrics HTTP endpoint using {title}, {artist}, {duration} template.");
         default:
             return "";
         }
@@ -129,7 +150,7 @@ KCM.SimpleKCM {
         }
 
         if (orderStr.length === 0) {
-            orderStr = "lrcred,amll,spicy,lrclib";
+            orderStr = "local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom";
             rawOrderField.text = orderStr;
         }
 
@@ -144,7 +165,7 @@ KCM.SimpleKCM {
         }
 
         let orderList = orderStr.split(",").map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
-        const allKnown = ["lrcred", "amll", "spicy", "lrclib"];
+        const allKnown = ["local", "unison", "lrcred", "netease", "kugou", "qqmusic", "amll", "spicy", "lrclib", "custom"];
         for (let i = 0; i < allKnown.length; ++i) {
             if (orderList.indexOf(allKnown[i]) === -1) {
                 orderList.push(allKnown[i]);
@@ -460,6 +481,69 @@ KCM.SimpleKCM {
             wrapMode: Text.Wrap
             opacity: 0.75
             text: i18n("Get your client key through the approved Plasma LRC app template in the Spicy Lyrics catalog. The template link will be published after approval. Do not create a standalone developer application. SPICY_LYRICS_SECRET_KEY, if set, overrides this field.")
+        }
+
+        Kirigami.Separator {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+        }
+
+        Kirigami.Heading {
+            level: 3
+            text: i18n("Local Files Settings")
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+        }
+
+        QQC2.TextField {
+            id: localFolderField
+            Kirigami.FormData.label: i18n("Lyrics folder:")
+            placeholderText: i18n("~/.lyrics or ~/Music/lyrics")
+            Layout.fillWidth: true
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 25
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Optional extra folder to look for {Artist} - {Title}.lrc or .ttml files. Files located next to the playing audio file are always searched first.")
+        }
+
+        Kirigami.Separator {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+        }
+
+        Kirigami.Heading {
+            level: 3
+            text: i18n("Custom URL Provider Settings")
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+        }
+
+        QQC2.TextField {
+            id: customUrlField
+            Kirigami.FormData.label: i18n("URL template:")
+            placeholderText: i18n("https://example.com/lyrics?artist={artist}&title={title}")
+            Layout.fillWidth: true
+        }
+
+        QQC2.TextField {
+            id: customHeadersField
+            Kirigami.FormData.label: i18n("Headers:")
+            placeholderText: i18n("Authorization: Bearer my-token")
+            Layout.fillWidth: true
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 25
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Supported placeholders: {title}, {artist}, {album}, {duration} (seconds), {durationMs}, {spotifyId}.")
         }
     }
 }

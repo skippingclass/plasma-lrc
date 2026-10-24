@@ -12,7 +12,7 @@
         "Id": "org.kde.plasma.lrc",
         "License": "MIT",
         "Name": "Plasma LRC",
-        "Version": "1.7.0",
+        "Version": "1.7.1",
         "Website": "https://github.com/skippingclass/plasma-lrc"
     },
     "X-Plasma-API": "declarativeapplet",
