@@ -19,9 +19,7 @@
 
 <br/>
 
-<p align="center">
-  <em>Updated visual demonstration will follow to reflect full attribution and layout options.</em>
-</p>
+<img src="assets/demo.gif" alt="Plasma LRC live lyrics demo with contributor credits" />
 
 <sub><i>Real-time word sync · Native LRC parser · 0% CPU at idle · 1 fetch per track</i></sub>
 
