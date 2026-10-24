@@ -118,10 +118,10 @@
         </entry>
 
         <entry name="wordStyle" type="Int">
-            <label>How the word being sung is marked: 0 is underline, 1 is bold, 2 is highlight color.</label>
+            <label>How the word being sung is marked: 0 is underline, 1 is bold, 2 is highlight color, 3 is none.</label>
             <default>1</default>
             <min>0</min>
-            <max>2</max>
+            <max>3</max>
         </entry>
 
         <entry name="pauseHideDelay" type="Int">

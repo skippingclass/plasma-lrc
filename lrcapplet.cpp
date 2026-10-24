@@ -395,7 +395,7 @@ void LrcApplet::readSettings()
     const QString attributionLayout = (attributionLayoutRaw.compare(QLatin1String("Below"), Qt::CaseInsensitive) == 0 || attributionLayoutRaw == QLatin1String("1"))
         ? QStringLiteral("Below")
         : QStringLiteral("Right");
-    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 1), 2);
+    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 1), 3);
     const int lyricOffset = qBound(-2000, intSetting(QStringLiteral("lyricOffset"), 0), 2000);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), false);
     const int pauseHideDelay = qBound(0, intSetting(QStringLiteral("pauseHideDelay"), 3), 60);

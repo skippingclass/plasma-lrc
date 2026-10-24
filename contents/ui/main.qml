@@ -21,6 +21,10 @@ PlasmoidItem {
     readonly property bool hasLyrics: !Plasmoid.pauseHidden && Plasmoid.active && lyricText.length > 0
     readonly property int maxCharacters: Plasmoid.maxCharacters
 
+    Layout.minimumWidth: root.vertical ? 0 : 200
+    Layout.preferredWidth: root.vertical ? -1 : Math.max(200, compactRepresentationItem ? compactRepresentationItem.Layout.preferredWidth : 200)
+    implicitWidth: root.vertical ? (compactRepresentationItem ? compactRepresentationItem.implicitWidth : 0) : Math.max(200, compactRepresentationItem ? compactRepresentationItem.implicitWidth : 200)
+
     // Lyrics come from a third party and end up in rich text, so they have to
     // be escaped before anything is wrapped around them.
     function escapeHtml(text) {
@@ -40,7 +44,7 @@ PlasmoidItem {
         return Qt.rgba(base.r, base.g, base.b, 0.45);
     }
 
-    // The word being sung is marked either with an underline (0), bold (1), or highlight color (2).
+    // The word being sung is marked either with an underline (0), bold (1), highlight color (2), or none (3).
     readonly property color highlightColor: {
         const custom = Plasmoid.customHighlightColor ? Plasmoid.customHighlightColor.trim() : "";
         if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(custom)) {
@@ -51,6 +55,9 @@ PlasmoidItem {
 
     function formatActiveWord(word) {
         const escaped = escapeHtml(word);
+        if (Plasmoid.wordStyle === 3) {
+            return escaped;
+        }
         if (Plasmoid.wordStyle === 1) {
             return "<b>" + escaped + "</b>";
         }
@@ -79,7 +86,7 @@ PlasmoidItem {
         const suffix = (maxCharacters > 0 && text.length > maxCharacters) ? "…" : "";
         const visibleText = text.substring(0, limit);
 
-        if (!Plasmoid.wordSynced || Plasmoid.word.length === 0 || Plasmoid.wordStart >= limit || text !== lyricText) {
+        if (Plasmoid.wordStyle === 3 || !Plasmoid.wordSynced || Plasmoid.word.length === 0 || Plasmoid.wordStart >= limit || text !== lyricText) {
             return escapeHtml(visibleText + suffix);
         }
         const wStart = Math.max(0, Math.min(Plasmoid.wordStart, limit));
@@ -96,7 +103,7 @@ PlasmoidItem {
     // The line with the word being sung marked, for the popup: what has already
     // been sung is dimmed.
     readonly property string fullLine: {
-        if (!Plasmoid.wordSynced || Plasmoid.word.length === 0) {
+        if (Plasmoid.wordStyle === 3 || !Plasmoid.wordSynced || Plasmoid.word.length === 0) {
             return escapeHtml(lyricText);
         }
         const sung = "<font color=\"" + dimmedColor + "\">" + escapeHtml(lyricText.substring(0, Plasmoid.wordStart)) + "</font>";
@@ -260,16 +267,16 @@ PlasmoidItem {
         // The panel gives an applet the width it asks for and does not come back
         // to it, so an empty lyric once meant a widget a few pixels wide, with the
         // text wrapped to one letter per line. The floor keeps a usable width
-        // (at least 200px) whatever the content happens to be at that moment.
-        readonly property int floorWidth: Plasmoid.pauseHidden ? 0 : 200
+        // (at least 200px on horizontal panels) whatever the content happens to be.
+        readonly property int floorWidth: root.vertical ? 0 : 200
 
         readonly property bool showIconItem: Plasmoid.showIcon && !Plasmoid.pauseHidden
         readonly property real iconReservedWidth: showIconItem ? Kirigami.Units.iconSizes.small : 0
         readonly property bool creditItemVisible: root.hasLyrics && root.hasPanelCredit
         readonly property real creditFullWidth: creditItemVisible ? Math.ceil(creditLabel.implicitWidth) : 0
 
-        readonly property real lyricDesiredWidth: Plasmoid.pauseHidden ? 0 : lyricContainer.animatedWidth
-        readonly property real usefulLyricWidth: Plasmoid.pauseHidden ? 0 : Math.max(floorWidth, lyricDesiredWidth)
+        readonly property real lyricDesiredWidth: lyricContainer.targetWidth
+        readonly property real usefulLyricWidth: Math.max(floorWidth, lyricDesiredWidth)
 
         readonly property real spacing: compactLayout.columnSpacing
 
@@ -292,23 +299,17 @@ PlasmoidItem {
             + rightGapsWidth
 
         readonly property real desiredTotalWidth: {
-            if (Plasmoid.pauseHidden) {
-                return 0;
-            }
             if (root.vertical) {
                 return compactLayout.implicitWidth;
             }
-            return Math.max(200, root.isLayoutBelow ? belowDesiredWidth : rightDesiredWidth);
+            return Math.max(floorWidth, root.isLayoutBelow ? belowDesiredWidth : rightDesiredWidth);
         }
 
         readonly property real minTotalWidth: {
-            if (Plasmoid.pauseHidden) {
-                return 0;
-            }
             if (root.vertical) {
                 return 0;
             }
-            return Math.max(200, root.isLayoutBelow ? belowMinWidth : rightMinWidth);
+            return Math.max(floorWidth, root.isLayoutBelow ? belowMinWidth : rightMinWidth);
         }
 
         implicitWidth: desiredTotalWidth
@@ -385,30 +386,19 @@ PlasmoidItem {
                 readonly property real targetWidth: root.maxCharacters > 0 //
                     ? Math.min(Math.ceil(lineMetrics.advanceWidth) + 4, maxLyricWidth)
                     : Math.ceil(lineMetrics.advanceWidth) + 4
-                property real animatedWidth: targetWidth
 
-                Behavior on animatedWidth {
-                    enabled: Plasmoid.fadeTransition && root.hasLyrics
-                    NumberAnimation {
-                        duration: 160
-                        easing.type: Easing.OutQuad
-                    }
-                }
-
-                implicitWidth: animatedWidth
+                implicitWidth: targetWidth
                 implicitHeight: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricRowHeight : lyricLabel.implicitHeight
-
-                clip: true
 
                 Layout.row: root.vertical ? 1 : 0
                 Layout.column: root.vertical ? 0 : (noteIcon.visible ? 1 : 0)
                 Layout.fillWidth: true
                 Layout.fillHeight: root.isLayoutBelow
                 Layout.minimumWidth: root.vertical ? 0 : compactArea.usefulLyricWidth
-                Layout.preferredWidth: animatedWidth
+                Layout.preferredWidth: targetWidth
                 Layout.preferredHeight: implicitHeight
                 Layout.maximumWidth: root.maxCharacters > 0 //
-                    ? maxLyricWidth
+                    ? Math.max(maxLyricWidth, compactArea.floorWidth)
                     : Math.max(implicitWidth, Layout.minimumWidth)
                 Layout.alignment: Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) :
                     (root.isLayoutBelow ? (Qt.AlignHCenter | Qt.AlignVCenter) : Qt.AlignCenter)
@@ -428,14 +418,28 @@ PlasmoidItem {
                     opacity: 1.0
                 }
 
-                NumberAnimation {
+                SequentialAnimation {
                     id: lineFadeAnim
-                    target: lyricLabel
-                    property: "opacity"
-                    from: 0.35
-                    to: 1.0
-                    duration: 80
-                    easing.type: Easing.OutQuad
+
+                    NumberAnimation {
+                        target: lyricLabel
+                        property: "opacity"
+                        to: 0.0
+                        duration: 60
+                        easing.type: Easing.InQuad
+                    }
+                    ScriptAction {
+                        script: {
+                            lyricContainer.displayedLyric = root.lyricText;
+                        }
+                    }
+                    NumberAnimation {
+                        target: lyricLabel
+                        property: "opacity"
+                        to: 1.0
+                        duration: 80
+                        easing.type: Easing.OutQuad
+                    }
                 }
 
                 Connections {
@@ -443,8 +447,8 @@ PlasmoidItem {
 
                     function onLyricTextChanged() {
                         lineFadeAnim.stop();
-                        lyricContainer.displayedLyric = root.lyricText;
-                        if (!Plasmoid.fadeTransition || !root.hasLyrics || root.lyricText.length === 0) {
+                        if (!Plasmoid.fadeTransition || !root.hasLyrics || lyricContainer.displayedLyric.length === 0 || root.lyricText.length === 0) {
+                            lyricContainer.displayedLyric = root.lyricText;
                             lyricLabel.opacity = 1.0;
                         } else {
                             lineFadeAnim.restart();
@@ -452,12 +456,11 @@ PlasmoidItem {
                     }
 
                     function onHasLyricsChanged() {
+                        lineFadeAnim.stop();
                         if (!root.hasLyrics) {
-                            lineFadeAnim.stop();
                             lyricContainer.displayedLyric = "";
                             lyricLabel.opacity = 1.0;
                         } else if (lyricContainer.displayedLyric !== root.lyricText) {
-                            lineFadeAnim.stop();
                             lyricContainer.displayedLyric = root.lyricText;
                             lyricLabel.opacity = 1.0;
                         }

@@ -77,7 +77,7 @@ KCM.SimpleKCM {
             id: wordStyleBox
 
             Kirigami.FormData.label: i18n("Sung word:")
-            model: [i18n("Underlined"), i18n("Bold"), i18n("Highlight color")]
+            model: [i18n("Underlined"), i18n("Bold"), i18n("Highlight color"), i18n("None")]
         }
 
         RowLayout {
