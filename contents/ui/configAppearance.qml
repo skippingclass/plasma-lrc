@@ -21,7 +21,7 @@ KCM.SimpleKCM {
     property alias cfg_showTrackInfo: showTrackInfoCheckBox.checked
     property alias cfg_placeholderText: placeholderField.text
     property alias cfg_maxCharacters: maxCharactersField.value
-    property alias cfg_compactPanel: compactModeCheckBox.checked
+    property alias cfg_attributionLayout: attributionLayoutBox.currentIndex
     property alias cfg_wordStyle: wordStyleBox.currentIndex
     property alias cfg_fadeTransition: fadeTransitionCheckBox.checked
     property alias cfg_textAlignment: textAlignmentBox.currentIndex
@@ -66,21 +66,11 @@ KCM.SimpleKCM {
             }
         }
 
-        QQC2.CheckBox {
-            id: compactModeCheckBox
+        QQC2.ComboBox {
+            id: attributionLayoutBox
 
-            Kirigami.FormData.label: i18n("Panel:")
-            text: i18n("Compact mode")
-        }
-
-        QQC2.Label {
-            Layout.columnSpan: 2
-            Layout.fillWidth: true
-            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-            wrapMode: Text.Wrap
-            opacity: 0.75
-            visible: compactModeCheckBox.checked
-            text: i18n("Leave the panel to the lyrics alone. The credit stays in the popup, where it is spelled out with a link to the contributor.")
+            Kirigami.FormData.label: i18n("Credit layout:")
+            model: [i18n("Right of lyrics"), i18n("Below lyrics")]
         }
 
         QQC2.ComboBox {

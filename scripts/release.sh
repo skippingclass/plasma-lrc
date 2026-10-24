@@ -65,10 +65,13 @@ sed -i -E "s/\"Version\": \"[0-9.]+\"/\"Version\": \"${NEW_VER}\"/" metadata.jso
 # PKGBUILD
 sed -i -E "s/pkgver=[0-9.]+\.r0/pkgver=${NEW_VER}.r0/" PKGBUILD
 
-echo "==> Updated CMakeLists.txt, metadata.json, and PKGBUILD"
+# lrclib.cpp
+sed -i -E "s|plasma-lrc/[0-9.]+|plasma-lrc/${NEW_VER}|" lrclib.cpp
+
+echo "==> Updated CMakeLists.txt, metadata.json, PKGBUILD, and lrclib.cpp"
 
 # 5. Commit and tag
-git add CMakeLists.txt metadata.json PKGBUILD
+git add CMakeLists.txt metadata.json PKGBUILD lrclib.cpp
 if [[ -f CHANGELOG.md ]]; then
     git add CHANGELOG.md || true
 fi

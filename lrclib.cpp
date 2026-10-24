@@ -27,7 +27,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.5.2 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.6.0 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -129,6 +129,9 @@ bool LrclibClient::parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint6
     const QString synced = cand.value(QStringLiteral("syncedLyrics")).toString();
     if (!synced.isEmpty()) {
         if (LrcParser::parseLrc(synced, lyrics, trackDurationMs) && lyrics->isUsable()) {
+            lyrics->attributionData.provider = QStringLiteral("lrclib");
+            lyrics->attributionData.providerUrl = QStringLiteral("https://lrclib.net");
+            lyrics->attributionData.contributors.clear();
             lyrics->attribution = QStringLiteral("lrclib");
             lyrics->attributionUrl = QStringLiteral("https://lrclib.net");
             return true;

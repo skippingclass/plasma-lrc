@@ -19,7 +19,7 @@ install=plasma-lrc.install
 
 # Placeholders: makepkg 7 refuses an empty one, and pkgver() below replaces this
 # with the real thing on every build.
-pkgver=1.5.2.r0
+pkgver=1.6.0.r0
 pkgrel=1
 
 pkgver() {

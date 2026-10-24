@@ -63,6 +63,25 @@ enum class MissingReason {
     Unreachable, ///< no network, key rejected, rate limited, bad reply
 };
 
+struct LyricContributor
+{
+    QString role; ///< e.g. "maker", "uploader", "maker & uploader"
+    QString name; ///< exact username from API
+    QString url;  ///< exact safe http(s) URL, or empty
+};
+
+struct LyricAttribution
+{
+    QString provider; ///< "Spicy Lyrics", "Apple Music", "Spotify", "lrclib", "unknown source"
+    QString providerUrl; ///< safe http(s) URL for provider, if any
+    QVector<LyricContributor> contributors;
+
+    bool isEmpty() const
+    {
+        return provider.isEmpty() && contributors.isEmpty();
+    }
+};
+
 /**
  * Lyrics of one track, as served by the Spicy Lyrics API.
  *
@@ -75,8 +94,10 @@ struct Lyrics
     LyricsType type = LyricsType::None;
     QVector<LyricLine> lines;
 
-    QString attribution; ///< "Spicy Lyrics · слова: maker", already human readable
-    QString attributionUrl; ///< profile of the contributor to link to
+    QString attribution; ///< Human-readable plain text, e.g. "Spicy Lyrics · maker: alice · uploader: bob"
+    QString attributionUrl; ///< Compatibility URL
+    LyricAttribution attributionData;
+    qint64 validUntilMs = 0;
 
     bool isUsable() const
     {
@@ -136,6 +157,13 @@ public:
     /// Parses an API response. Exposed for testing.
     static bool parse(const QByteArray &json, Lyrics *lyrics, QString *error);
 
+    static bool isSafeHttpUrl(const QString &url);
+    static QString escapeHtml(const QString &text);
+    static LyricAttribution parseAttribution(const QString &source, const QJsonObject &uploadAttribution);
+    static QString buildAttributionText(const LyricAttribution &attr);
+    static QString buildAttributionHtml(const LyricAttribution &attr);
+    static QString primaryAttributionUrl(const LyricAttribution &attr);
+
     /// Directory used for the response cache.
     static QString cacheDirectory();
 
@@ -162,7 +190,7 @@ private:
     };
     QHash<QString, CachedLyrics> m_memoryCache;
     QTimer *m_watchdog;
-    int m_writesSincePrune = 0;
+    QTimer *m_cleanupTimer = nullptr;
     quint64 m_generation = 0;
     int m_lastHttpStatus = 0;
     QString m_lastErrorCode;
@@ -171,4 +199,5 @@ private:
     QString m_key;
     QString m_currentTrackId;
     bool m_enabled = false;
+    bool m_suspended = false;
 };

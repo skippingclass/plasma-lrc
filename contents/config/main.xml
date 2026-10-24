@@ -83,9 +83,13 @@
             <max>2000</max>
         </entry>
 
-        <entry name="compactPanel" type="Bool">
-            <label>Compact mode: keep the panel to the lyrics alone and leave the credit to the popup.</label>
-            <default>false</default>
+        <entry name="attributionLayout" type="Enum">
+            <label>Attribution layout in the panel: Right or Below.</label>
+            <choices>
+                <choice name="Right"/>
+                <choice name="Below"/>
+            </choices>
+            <default>Right</default>
         </entry>
 
         <entry name="wordStyle" type="Int">

@@ -35,6 +35,7 @@ ColumnLayout {
     /// Who the lyrics came from, when it is worth naming.
     property string attribution
     property string attributionUrl
+    property string attributionHtml
     property bool showAttribution: false
 
     property bool isBlacklisted: false
@@ -105,24 +106,14 @@ ColumnLayout {
         wrapMode: Text.Wrap
     }
 
-    PlasmaComponents3.Label {
+    AttributionLabel {
         Layout.fillWidth: true
         Layout.maximumWidth: root.maxWidth
 
-        readonly property bool hasValidUrl: root.attributionUrl.length > 0 &&
-            (root.attributionUrl.indexOf("https://") === 0 || root.attributionUrl.indexOf("http://") === 0)
-
-        text: hasValidUrl //
-            ? "<a href=\"" + root.attributionUrl + "\">" + root.attribution + "</a>"
-            : root.attribution
-        textFormat: Text.StyledText
-        color: Kirigami.Theme.textColor
-        opacity: 0.6
-        font: Kirigami.Theme.smallFont
+        attributionHtml: root.attributionHtml
+        fallbackText: root.attribution
+        fallbackUrl: root.attributionUrl
         wrapMode: Text.Wrap
         visible: root.showAttribution && root.hasLyrics
-        onLinkActivated: function (link) {
-            Qt.openUrlExternally(link);
-        }
     }
 }

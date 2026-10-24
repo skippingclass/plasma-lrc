@@ -19,7 +19,9 @@
 
 <br/>
 
-<img src="assets/demo.gif" alt="Plasma LRC Live Karaoke Demo" />
+<p align="center">
+  <em>Updated visual demonstration will follow to reflect full attribution and layout options.</em>
+</p>
 
 <sub><i>Real-time word sync · Native LRC parser · 0% CPU at idle · 1 fetch per track</i></sub>
 
@@ -41,6 +43,12 @@
   During musical solos and song intros, the panel stays clean instead of displaying outdated phantom lines. Configurable pause hide delay gently hides text when playback is paused.
 - **Customizable Mouse Actions**:  
   Configure Left-click (Popup / Play-Pause) and Middle-click (None / Play-Pause / Next Track) right from your panel.
+- **Song Lyrics Reader & Manual Copy**:
+  The full song lyrics window (**Open song lyrics…**) supports all lyric sources without timestamps or karaoke markup. For API tracks, ordinary on-screen text selection and manual keyboard copy (Ctrl+C) remain functional, while dedicated copy buttons (**Copy all lyrics**, **Copy selection**, and context menu **Copy current lyric line**) are reserved exclusively for native LRCLIB lyrics. The widget provides no file download, export, or raw API response endpoints.
+- **Always-Visible Complete Attribution**:
+  Provider attribution is mandatory and cannot be hidden across all surfaces (panel, popup, and song lyrics reader). The provider name is always displayed, and individual clickable links for sync makers and uploaders are shown whenever provided by the community synchronization source (`source=spicy_lyrics`, Spotify and Apple Music providers only). The panel tooltip shows track metadata, player, and provider info without repeating uncredited lyric lines. For native LRCLIB lyrics, attribution is displayed in the popup and reader only, keeping the panel dedicated solely to the lyric line. Panel placement for API credits offers two layouts: **Right of lyrics** (default) or **Below lyrics** (stacked two-line layout designed for standard ~30px panels).
+- **Strict Cache Expiration & Data Retention**:
+  All cached API payloads have a hard deadline of 30 days maximum, and payloads with unknown or non-positive expiration times are rejected. Stored responses are automatically purged on startup, on access, and during periodic maintenance passes while the widget runs (in-memory cache entries and open-reader snapshots expire under the same policy; no background deletion occurs while the application or computer is stopped). Line-synced fallbacks are refreshed after 2 days to discover newly added community syllable syncs.
 - **Smooth Visual Transitions**:  
   Subtle fade animations between lyric lines without any flickering during word-to-word singing.
 
@@ -67,7 +75,7 @@
                             │ Text, active word, progress
 ┌───────────────────────────▼────────────────────────────┐
 │                 QML UI (KDE Plasma 6)                  │
-│       Compact Panel Label + Rich Popup Card View       │
+│       Panel Line + Popup + Song Lyrics Reader          │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -128,11 +136,11 @@ Right-click the widget on your panel → **Configure Plasma LRC...**:
 | **Highlight color** | *(System accent)* | Custom color for active word. Presets: Spotify (`#1ed760`), Cyan (`#00d4ff`), Purple (`#b342f5`), Yellow (`#ffd600`), Coral (`#ff4d4d`), White (`#ffffff`). |
 | **Transitions** | `Enabled` | Smooth fade animation when switching lines. |
 | **Alignment** | `Center` | Text alignment on the panel: `Center` or `Left`. |
-| **Panel** | `Standard` | Compact mode leaves the panel to lyrics alone (moving contributor credits to popup). |
+| **Credit layout** | `Right of lyrics` | Attribution placement on the panel for Spicy API sources: `Right of lyrics` (default) or `Below lyrics` (stacked two-line layout for standard 30px panels). Spicy API attribution is required across all surfaces (panel, popup, and song lyrics reader) and cannot be hidden; native LRCLIB lyrics show attribution in popup/reader only, leaving the panel to the lyric line. |
 | **Maximum length** | `40 characters` | Truncates text after N characters to preserve panel space (0 = no limit). |
 | **No lyrics text** | `♪` | Placeholder text when no track or lyrics are active. |
 | **Icon** | `Enabled` | Shows music note icon next to lyrics. |
-| **Tooltip** | `Enabled` | Shows current track title and artist in the tooltip. |
+| **Tooltip** | `Enabled` | Shows current track title, artist, player, and provider info (does not repeat uncredited lyric text). |
 
 ### Lyrics Tab
 
@@ -160,7 +168,7 @@ Right-click the widget on your panel → **Configure Plasma LRC...**:
 | Setting | Default | Description |
 |---|---|---|
 | **Spicy Lyrics** | `Enabled` | Enables community word-level sync for Spotify tracks. |
-| **API key** | *(empty)* | Your personal client key `sl_pk_…` from the app template. |
+| **API key** | *(empty)* | Personal client key `sl_pk_…` obtained through an application template in the catalog. |
 
 ---
 
@@ -168,16 +176,23 @@ Right-click the widget on your panel → **Configure Plasma LRC...**:
 
 [Spicy Lyrics](https://spicylyrics.org) provides synchronized word-level timings for Spotify tracks:
 
-1. Add Plasma LRC through its approved app template in the [Spicy Lyrics catalog](https://developers.spicylyrics.org/catalog), then copy the issued **client key** (`sl_pk_…`). A direct template link will be published here after approval. Do not create a standalone developer application for the widget.
-2. Paste your key in **Configure Plasma LRC → Source**, or export it in your environment:
+1. For a distributed native desktop widget, the standard and intended setup is that **each user obtains their own personal client key** (`sl_pk_…`) through an application template in the [Spicy Lyrics catalog](https://developers.spicylyrics.org/catalog) (configured for native clients with no Origin header required). The widget contains no shared bundled secret.
+2. The application template requires approval before becoming available in the catalog; a direct template link will be published here after approval. The widget does not embed or distribute shared credentials, and private developer keys must not be shared or used as a distribution mechanism.
+3. Enter your client key in **Configure Plasma LRC → Source**, or export it in your environment:
 
 ```bash
 export SPICY_LYRICS_SECRET_KEY=sl_pk_...
 ```
 
-*The environment variable keeps its legacy name and accepts client keys too. It takes precedence over GUI settings. For a native desktop client, the template must allow requests without an Origin header.*
+*The environment variable preserves its legacy name `SPICY_LYRICS_SECRET_KEY` for backward compatibility, accepts client keys (`sl_pk_…`), and its name does not mean a secret key is required. It takes precedence over GUI settings.*
 
-If the API reports that the application is suspended, check the developer dashboard. Changing the token does not lift the suspension. Previously cached lyrics and the LRCLIB fallback may still work.
+### API Policy & Data Retention
+
+- **Strict 30-Day Cache Deadline:** All stored API payloads are kept for a maximum of 30 days, and entries with unknown or non-positive expiration deadlines are rejected. Stored responses are automatically purged on widget startup, on access, and during periodic maintenance passes while the application is running. In-memory cache items and open-reader snapshots expire under the same policy (no background deletion occurs while the application or computer is stopped).
+- **Line-Sync Refresh:** Cached line-synced fallbacks are refreshed after 2 days to promptly discover newly added community syllable syncs.
+- **No Bulk Export or Downloads:** The widget provides no download buttons, file export options, or raw API response endpoints. Dedicated copy buttons are reserved exclusively for native LRCLIB; API lyrics allow only standard on-screen text selection and manual keyboard copy (Ctrl+C).
+
+If the API reports that the application is suspended (`application_suspended`), serving cached API lyrics is blocked until a fresh authorized HTTP 200 response is received. Changing the token does not lift an application-level suspension. Ordinary network failures and rate limits (HTTP 429) continue to allow serving valid unexpired cache. Native LRCLIB lyrics remain fully operational regardless of API status. Any existing raw cache remains strictly local, is never shared, and expires normally under the retention policy.
 
 ---
 

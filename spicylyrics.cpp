@@ -7,6 +7,7 @@
 #include "spicylyrics.h"
 
 #include <algorithm>
+#include <limits>
 
 #include <QDateTime>
 #include <QDir>
@@ -44,7 +45,15 @@ QByteArray apiRoot()
     }();
     return root;
 }
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.0 (Plasma 6 panel widget)");
+
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.6.0 (Plasma 6 panel widget)");
+
+bool isSuspensionCode(const QString &code)
+{
+    return code == QLatin1String("application_suspended")
+        || code == QLatin1String("account_suspended")
+        || code == QLatin1String("template_suspended");
+}
 
 // The terms require stored responses to be refetched or thrown away within this
 // many days, so that a withdrawn sync actually disappears.
@@ -73,8 +82,6 @@ MissingReason reasonFromMarker(const QByteArray &payload)
 /// How far back to look when the newest line has already ended.
 constexpr int kLineLookBack = 8;
 constexpr int kRequestTimeoutMs = 15000;
-// How many cache writes between sweeps for expired entries.
-constexpr int kPruneEveryWrites = 64;
 
 qint64 secondsToMs(const QJsonValue &value)
 {
@@ -136,55 +143,6 @@ bool needsSpace(const QString &previous, const QString &current, bool previousSt
         return false;
     }
     return true;
-}
-
-QString humanAttribution(const QString &source, const QJsonObject &uploadAttribution)
-{
-    const QString contributor = uploadAttribution.value(QStringLiteral("Maker")).toObject().value(QStringLiteral("username")).toString();
-    const QString uploader = uploadAttribution.value(QStringLiteral("Uploader")).toObject().value(QStringLiteral("username")).toString();
-
-    if (source == QLatin1String("spicy_lyrics")) {
-        QString attribution = QStringLiteral("Spicy Lyrics");
-        if (!contributor.isEmpty() || !uploader.isEmpty()) {
-            attribution += QStringLiteral(" · ");
-            const QString name = !contributor.isEmpty() ? contributor : uploader;
-            attribution += QStringLiteral("made by @%1").arg(name);
-            if (!contributor.isEmpty() && !uploader.isEmpty() && contributor != uploader) {
-                attribution += QStringLiteral(" (@%1)").arg(uploader);
-            }
-        }
-        return attribution;
-    }
-
-    if (source == QLatin1String("apple_music") || source == QLatin1String("applemusic") || source.contains(QLatin1String("apple"), Qt::CaseInsensitive)) {
-        return QStringLiteral("Apple Music");
-    }
-
-    if (source.contains(QLatin1String("spotify"), Qt::CaseInsensitive)) {
-        return QStringLiteral("Spotify");
-    }
-
-    // The terms ask for "unknown" rather than guessing a provider.
-    return QStringLiteral("unknown source");
-}
-
-QString attributionUrl(const QString &source, const QJsonObject &uploadAttribution)
-{
-    if (source != QLatin1String("spicy_lyrics")) {
-        return QString();
-    }
-    QString url;
-    const QJsonObject maker = uploadAttribution.value(QStringLiteral("Maker")).toObject();
-    if (!maker.value(QStringLiteral("url")).toString().isEmpty()) {
-        url = maker.value(QStringLiteral("url")).toString().trimmed();
-    } else {
-        url = uploadAttribution.value(QStringLiteral("Uploader")).toObject().value(QStringLiteral("url")).toString().trimmed();
-    }
-    if ((url.startsWith(QLatin1String("https://"), Qt::CaseInsensitive) || url.startsWith(QLatin1String("http://"), Qt::CaseInsensitive))
-        && !url.contains(QLatin1Char('"')) && !url.contains(QLatin1Char('<')) && !url.contains(QLatin1Char('>'))) {
-        return url;
-    }
-    return QString();
 }
 
 /**
@@ -304,6 +262,166 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 }
 }
 
+bool SpicyLyrics::isSafeHttpUrl(const QString &url)
+{
+    const QString trimmed = url.trimmed();
+    if (!trimmed.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)
+        && !trimmed.startsWith(QLatin1String("http://"), Qt::CaseInsensitive)) {
+        return false;
+    }
+    for (const QChar c : trimmed) {
+        if (c == QLatin1Char('"') || c == QLatin1Char('\'') || c == QLatin1Char('<')
+            || c == QLatin1Char('>') || c.isSpace() || c.unicode() < 32) {
+            return false;
+        }
+    }
+    const QUrl parsed(trimmed);
+    if (!parsed.isValid() || parsed.isEmpty() || parsed.host().isEmpty()) {
+        return false;
+    }
+    const QString scheme = parsed.scheme().toLower();
+    return (scheme == QLatin1String("http") || scheme == QLatin1String("https"));
+}
+
+QString SpicyLyrics::escapeHtml(const QString &text)
+{
+    QString escaped;
+    escaped.reserve(static_cast<int>(text.size() * 1.2));
+    for (const QChar c : text) {
+        if (c == QLatin1Char('&')) {
+            escaped.append(QStringLiteral("&amp;"));
+        } else if (c == QLatin1Char('<')) {
+            escaped.append(QStringLiteral("&lt;"));
+        } else if (c == QLatin1Char('>')) {
+            escaped.append(QStringLiteral("&gt;"));
+        } else if (c == QLatin1Char('"')) {
+            escaped.append(QStringLiteral("&quot;"));
+        } else if (c == QLatin1Char('\'')) {
+            escaped.append(QStringLiteral("&#39;"));
+        } else {
+            escaped.append(c);
+        }
+    }
+    return escaped;
+}
+
+LyricAttribution SpicyLyrics::parseAttribution(const QString &source, const QJsonObject &uploadAttribution)
+{
+    LyricAttribution attr;
+
+    if (source == QLatin1String("spicy_lyrics")) {
+        attr.provider = QStringLiteral("Spicy Lyrics");
+
+        const QJsonObject makerObj = uploadAttribution.value(QStringLiteral("Maker")).toObject();
+        const QJsonObject uploaderObj = uploadAttribution.value(QStringLiteral("Uploader")).toObject();
+
+        const QString makerName = makerObj.value(QStringLiteral("username")).toString().trimmed();
+        const QString rawMakerUrl = makerObj.value(QStringLiteral("url")).toString().trimmed();
+        const QString makerUrl = isSafeHttpUrl(rawMakerUrl) ? rawMakerUrl : QString();
+
+        const QString uploaderName = uploaderObj.value(QStringLiteral("username")).toString().trimmed();
+        const QString rawUploaderUrl = uploaderObj.value(QStringLiteral("url")).toString().trimmed();
+        const QString uploaderUrl = isSafeHttpUrl(rawUploaderUrl) ? rawUploaderUrl : QString();
+
+        const bool hasMaker = !makerName.isEmpty();
+        const bool hasUploader = !uploaderName.isEmpty();
+
+        if (hasMaker && hasUploader && makerName.compare(uploaderName, Qt::CaseInsensitive) == 0 && makerUrl == uploaderUrl) {
+            LyricContributor c;
+            c.role = QStringLiteral("maker & uploader");
+            c.name = makerName;
+            c.url = makerUrl;
+            attr.contributors.append(c);
+        } else {
+            if (hasMaker) {
+                LyricContributor c;
+                c.role = QStringLiteral("maker");
+                c.name = makerName;
+                c.url = makerUrl;
+                attr.contributors.append(c);
+            }
+            if (hasUploader) {
+                LyricContributor c;
+                c.role = QStringLiteral("uploader");
+                c.name = uploaderName;
+                c.url = uploaderUrl;
+                attr.contributors.append(c);
+            }
+        }
+        return attr;
+    }
+
+    if (source == QLatin1String("apple_music") || source == QLatin1String("applemusic")) {
+        attr.provider = QStringLiteral("Apple Music");
+        return attr;
+    }
+
+    if (source == QLatin1String("spotify")) {
+        attr.provider = QStringLiteral("Spotify");
+        return attr;
+    }
+
+    // The terms ask for "unknown" rather than guessing a provider.
+    attr.provider = QStringLiteral("unknown source");
+    return attr;
+}
+
+QString SpicyLyrics::buildAttributionText(const LyricAttribution &attr)
+{
+    if (attr.provider.isEmpty() && attr.contributors.isEmpty()) {
+        return QString();
+    }
+    QString text = attr.provider;
+    for (const auto &c : attr.contributors) {
+        if (!text.isEmpty()) {
+            text += QStringLiteral(" · ");
+        }
+        text += QStringLiteral("%1: %2").arg(c.role, c.name);
+    }
+    return text;
+}
+
+QString SpicyLyrics::buildAttributionHtml(const LyricAttribution &attr)
+{
+    if (attr.provider.isEmpty() && attr.contributors.isEmpty()) {
+        return QString();
+    }
+    QString html;
+    if (!attr.provider.isEmpty()) {
+        if (!attr.providerUrl.isEmpty() && isSafeHttpUrl(attr.providerUrl)) {
+            html += QStringLiteral("<a href=\"%1\">%2</a>").arg(escapeHtml(attr.providerUrl), escapeHtml(attr.provider));
+        } else {
+            html += escapeHtml(attr.provider);
+        }
+    }
+    for (const auto &c : attr.contributors) {
+        if (!html.isEmpty()) {
+            html += QStringLiteral(" · ");
+        }
+        const QString roleEscaped = escapeHtml(c.role);
+        const QString nameEscaped = escapeHtml(c.name);
+        if (!c.url.isEmpty() && isSafeHttpUrl(c.url)) {
+            html += QStringLiteral("%1: <a href=\"%2\">%3</a>").arg(roleEscaped, escapeHtml(c.url), nameEscaped);
+        } else {
+            html += QStringLiteral("%1: %2").arg(roleEscaped, nameEscaped);
+        }
+    }
+    return html;
+}
+
+QString SpicyLyrics::primaryAttributionUrl(const LyricAttribution &attr)
+{
+    if (!attr.providerUrl.isEmpty() && isSafeHttpUrl(attr.providerUrl)) {
+        return attr.providerUrl;
+    }
+    for (const auto &c : attr.contributors) {
+        if (!c.url.isEmpty() && isSafeHttpUrl(c.url)) {
+            return c.url;
+        }
+    }
+    return QString();
+}
+
 int Lyrics::lineAt(qint64 positionMs) const
 {
     // Lines are sorted by start time, and a good part of them overlap: the next
@@ -341,6 +459,7 @@ int Lyrics::lineAt(qint64 positionMs) const
 SpicyLyrics::SpicyLyrics(QObject *parent)
     : QObject(parent)
     , m_watchdog(new QTimer(this))
+    , m_cleanupTimer(new QTimer(this))
 {
     m_watchdog->setSingleShot(true);
     connect(m_watchdog, &QTimer::timeout, this, [this] {
@@ -352,6 +471,13 @@ SpicyLyrics::SpicyLyrics(QObject *parent)
             }
         }
     });
+
+    m_cleanupTimer->setSingleShot(true);
+    connect(m_cleanupTimer, &QTimer::timeout, this, [this] {
+        pruneCache();
+    });
+
+    pruneCache();
 }
 
 void SpicyLyrics::cancel()
@@ -394,6 +520,7 @@ void SpicyLyrics::invalidate(const QString &trackId)
         QFile::remove(cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json"));
     }
     m_retryClock.invalidate();
+    pruneCache();
 }
 
 QString SpicyLyrics::key() const
@@ -452,62 +579,129 @@ void SpicyLyrics::emitMissing(const QString &trackId, MissingReason reason)
 
 void SpicyLyrics::load(const QString &trackId)
 {
-    const auto cached = m_memoryCache.constFind(trackId);
-    if (cached != m_memoryCache.constEnd() && QDateTime::currentMSecsSinceEpoch() < cached->expiresAtMs) {
-        QTimer::singleShot(0, this, [this, trackId, lyrics = cached->lyrics, generation = m_generation] {
-            if (generation == m_generation && trackId == m_currentTrackId) {
-                Q_EMIT loaded(trackId, lyrics);
-            }
-        });
+    if (m_suspended) {
+        fetch(trackId);
         return;
+    }
+
+    const auto cached = m_memoryCache.constFind(trackId);
+    if (cached != m_memoryCache.constEnd()) {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (nowMs >= cached->expiresAtMs) {
+            m_memoryCache.erase(cached);
+        } else {
+            const Lyrics lyrics = cached->lyrics;
+            const qint64 deadline = cached->expiresAtMs;
+            QTimer::singleShot(0, this, [this, trackId, lyrics, deadline, generation = m_generation] {
+                if (generation == m_generation && trackId == m_currentTrackId) {
+                    if (deadline > 0 && QDateTime::currentMSecsSinceEpoch() >= deadline) {
+                        m_memoryCache.remove(trackId);
+                        const QString p = cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json");
+                        QFile::remove(p);
+                        load(trackId);
+                        return;
+                    }
+                    Q_EMIT loaded(trackId, lyrics);
+                }
+            });
+            return;
+        }
     }
 
     const QString directory = cacheDirectory();
     const QString path = directory + QLatin1Char('/') + trackId + QStringLiteral(".json");
-    // QFile::exists() is static and answers about the empty name when called on
-    // an instance, so the path has to be passed to it.
     if (QFile::exists(path)) {
+        const QDateTime now = QDateTime::currentDateTime();
+        const QDateTime modified = QFileInfo(path).lastModified();
+        if (!modified.isValid() || modified > now) {
+            QFile::remove(path);
+            fetch(trackId);
+            return;
+        }
+
+        const qint64 age = modified.msecsTo(now);
+        if (age > kCacheTtlMs) {
+            QFile::remove(path);
+            fetch(trackId);
+            return;
+        }
+
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
+            QFile::remove(path);
             fetch(trackId);
             return;
         }
         const QByteArray payload = file.readAll();
         file.close();
 
-        const QDateTime modified = QFileInfo(path).lastModified();
-        const qint64 age = modified.isValid() ? modified.msecsTo(QDateTime::currentDateTime()) : kCacheTtlMs + 1;
-
-        if (age <= kNegativeCacheTtlMs && QJsonDocument::fromJson(payload).object().value(QStringLiteral("missing")).toBool()) {
-            // We already asked about this track today and there was nothing.
+        const QJsonDocument doc = QJsonDocument::fromJson(payload);
+        if (!doc.isObject()) {
+            QFile::remove(path);
+            fetch(trackId);
+            return;
+        }
+        const QJsonObject obj = doc.object();
+        if (obj.value(QStringLiteral("missing")).toBool()) {
+            if (age > kNegativeCacheTtlMs) {
+                QFile::remove(path);
+                fetch(trackId);
+                return;
+            }
             const MissingReason reason = reasonFromMarker(payload);
-            QTimer::singleShot(0, this, [this, trackId, reason, generation = m_generation] {
+            const qint64 deadline = modified.toMSecsSinceEpoch() + kNegativeCacheTtlMs;
+            QTimer::singleShot(0, this, [this, trackId, reason, deadline, generation = m_generation] {
                 if (generation == m_generation && trackId == m_currentTrackId) {
+                    if (deadline > 0 && QDateTime::currentMSecsSinceEpoch() >= deadline) {
+                        const QString p = cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json");
+                        QFile::remove(p);
+                        load(trackId);
+                        return;
+                    }
                     Q_EMIT missing(trackId, reason);
                 }
             });
             return;
         }
 
-        if (age <= kCacheTtlMs) {
-            Lyrics lyrics;
-            if (parse(payload, &lyrics, nullptr) && lyrics.isUsable()) {
-                if (lyrics.type != LyricsType::Syllable && age > kLineSyncCacheTtlMs) {
-                    // Line-synced fallback is older than 2 days — re-fetch to see if a community syllable sync was added
-                    fetch(trackId);
-                    return;
-                }
-                const qint64 ttl = lyrics.type == LyricsType::Syllable ? kCacheTtlMs : kLineSyncCacheTtlMs;
-                m_memoryCache.insert(trackId, {lyrics, modified.toMSecsSinceEpoch() + ttl});
-                QTimer::singleShot(0, this, [this, trackId, lyrics, generation = m_generation] {
-                    if (generation == m_generation && trackId == m_currentTrackId) {
-                        Q_EMIT loaded(trackId, lyrics);
-                    }
-                });
+        Lyrics lyrics;
+        if (parse(payload, &lyrics, nullptr) && lyrics.isUsable()) {
+            const qint64 ttl = (lyrics.type == LyricsType::Syllable) ? kCacheTtlMs : kLineSyncCacheTtlMs;
+            const qint64 originalAcquiredMs = modified.toMSecsSinceEpoch();
+            const qint64 validUntilMs = originalAcquiredMs + ttl;
+            if (now.toMSecsSinceEpoch() >= validUntilMs || age > ttl) {
+                QFile::remove(path);
+                fetch(trackId);
                 return;
             }
+
+            lyrics.validUntilMs = validUntilMs;
+            m_memoryCache.insert(trackId, {lyrics, validUntilMs});
+
+            if (m_cleanupTimer) {
+                const qint64 remainingMs = validUntilMs - now.toMSecsSinceEpoch();
+                if (!m_cleanupTimer->isActive() || remainingMs < m_cleanupTimer->remainingTime()) {
+                    const int clampedDelay = static_cast<int>(qBound(0LL, remainingMs, static_cast<qint64>(std::numeric_limits<int>::max())));
+                    m_cleanupTimer->start(clampedDelay);
+                }
+            }
+
+            const qint64 deadline = validUntilMs;
+            QTimer::singleShot(0, this, [this, trackId, lyrics, deadline, generation = m_generation] {
+                if (generation == m_generation && trackId == m_currentTrackId) {
+                    if (deadline > 0 && QDateTime::currentMSecsSinceEpoch() >= deadline) {
+                        m_memoryCache.remove(trackId);
+                        const QString p = cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json");
+                        QFile::remove(p);
+                        load(trackId);
+                        return;
+                    }
+                    Q_EMIT loaded(trackId, lyrics);
+                }
+            });
+            return;
         }
-        // Stale or unusable: forget it and go to the network.
+
         QFile::remove(path);
     }
 
@@ -520,25 +714,87 @@ void SpicyLyrics::write(const QString &trackId, const QByteArray &payload)
     QFile file(cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json"));
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(payload);
+        file.close();
     }
 
-    // Entries are only ever read, never deleted, so without this the cache grows
-    // for as long as the widget exists. Every so often, drop what has expired.
-    if (++m_writesSincePrune >= kPruneEveryWrites) {
-        m_writesSincePrune = 0;
-        pruneCache();
-    }
+    pruneCache();
 }
 
 void SpicyLyrics::pruneCache()
 {
-    QDir directory(cacheDirectory());
     const QDateTime now = QDateTime::currentDateTime();
-    const QFileInfoList entries = directory.entryInfoList({QStringLiteral("*.json")}, QDir::Files);
-    for (const QFileInfo &entry : entries) {
-        const QDateTime modified = entry.lastModified();
-        if (!modified.isValid() || modified.msecsTo(now) > kCacheTtlMs) {
-            QFile::remove(entry.absoluteFilePath());
+    const qint64 nowMs = now.toMSecsSinceEpoch();
+    qint64 earliestExpiryMs = std::numeric_limits<qint64>::max();
+
+    for (auto it = m_memoryCache.begin(); it != m_memoryCache.end(); ) {
+        if (nowMs >= it.value().expiresAtMs) {
+            it = m_memoryCache.erase(it);
+        } else {
+            earliestExpiryMs = std::min(earliestExpiryMs, it.value().expiresAtMs);
+            ++it;
+        }
+    }
+
+    const QDir directory(cacheDirectory());
+    if (directory.exists()) {
+        const QFileInfoList entries = directory.entryInfoList({QStringLiteral("*.json")}, QDir::Files);
+        for (const QFileInfo &entry : entries) {
+            const QDateTime modified = entry.lastModified();
+            if (!modified.isValid() || modified > now) {
+                QFile::remove(entry.absoluteFilePath());
+                continue;
+            }
+
+            const qint64 age = modified.msecsTo(now);
+            if (age > kCacheTtlMs) {
+                QFile::remove(entry.absoluteFilePath());
+                continue;
+            }
+
+            QFile file(entry.absoluteFilePath());
+            if (!file.open(QIODevice::ReadOnly)) {
+                QFile::remove(entry.absoluteFilePath());
+                continue;
+            }
+            const QByteArray payload = file.readAll();
+            file.close();
+
+            qint64 ttl = kCacheTtlMs;
+            const QJsonDocument doc = QJsonDocument::fromJson(payload);
+            if (!doc.isObject()) {
+                QFile::remove(entry.absoluteFilePath());
+                continue;
+            }
+            const QJsonObject obj = doc.object();
+            if (obj.value(QStringLiteral("missing")).toBool()) {
+                ttl = kNegativeCacheTtlMs;
+            } else {
+                const QString type = obj.value(QStringLiteral("Body")).toObject().value(QStringLiteral("Type")).toString();
+                if (type == QLatin1String("Line") || type == QLatin1String("Static")) {
+                    ttl = kLineSyncCacheTtlMs;
+                } else if (type == QLatin1String("Syllable")) {
+                    ttl = kCacheTtlMs;
+                } else {
+                    QFile::remove(entry.absoluteFilePath());
+                    continue;
+                }
+            }
+
+            const qint64 expiryMs = modified.toMSecsSinceEpoch() + ttl;
+            if (nowMs >= expiryMs || age > ttl) {
+                QFile::remove(entry.absoluteFilePath());
+            } else {
+                earliestExpiryMs = std::min(earliestExpiryMs, expiryMs);
+            }
+        }
+    }
+
+    if (m_cleanupTimer) {
+        m_cleanupTimer->stop();
+        if (earliestExpiryMs != std::numeric_limits<qint64>::max()) {
+            const qint64 delayMs = earliestExpiryMs - nowMs;
+            const int clampedDelay = static_cast<int>(qBound(0LL, delayMs, static_cast<qint64>(std::numeric_limits<int>::max())));
+            m_cleanupTimer->start(clampedDelay);
         }
     }
 }
@@ -593,6 +849,9 @@ void SpicyLyrics::fetch(const QString &trackId)
             if (QRegularExpression(QStringLiteral("^[a-z0-9_]{1,64}$")).match(code).hasMatch()) {
                 m_lastErrorCode = code;
             }
+            if (isSuspensionCode(code)) {
+                m_suspended = true;
+            }
             if (m_lastHttpStatus == 401 || m_lastHttpStatus == 403 || m_lastHttpStatus == 429) {
                 const qint64 retrySeconds = reply->rawHeader("Retry-After").toLongLong();
                 m_retryDelayMs = m_lastHttpStatus == 429
@@ -615,10 +874,16 @@ void SpicyLyrics::fetch(const QString &trackId)
             // timings, which is what Apple Music and Spotify answer for a track
             // nobody has made a sync for. Remembering it keeps us from asking
             // again on every repeat.
-            const bool untimed = QJsonDocument::fromJson(payload).object()
-                .value(QStringLiteral("Body")).toObject().value(QStringLiteral("Type")).toString() == QLatin1String("Static");
+            const QJsonObject body = QJsonDocument::fromJson(payload).object()
+                .value(QStringLiteral("Body")).toObject();
+            const QString code = body.value(QStringLiteral("error")).toString();
+            const bool untimed = body.value(QStringLiteral("Type")).toString() == QLatin1String("Static");
             if (untimed) {
+                m_suspended = false;
                 write(trackId, missingMarker(MissingReason::Unsynced));
+            } else if (isSuspensionCode(code)) {
+                m_suspended = true;
+                m_lastErrorCode = code;
             } else {
                 m_lastErrorCode = QStringLiteral("invalid_response");
             }
@@ -626,10 +891,20 @@ void SpicyLyrics::fetch(const QString &trackId)
             return;
         }
 
-        write(trackId, payload);
+        const qint64 acquiredTimeMs = QDateTime::currentMSecsSinceEpoch();
+        const qint64 ttl = (lyrics.type == LyricsType::Syllable) ? kCacheTtlMs : kLineSyncCacheTtlMs;
+        lyrics.validUntilMs = acquiredTimeMs + ttl;
+
+        m_suspended = false;
         m_retryClock.invalidate();
-        const qint64 ttl = lyrics.type == LyricsType::Syllable ? kCacheTtlMs : kLineSyncCacheTtlMs;
-        m_memoryCache.insert(trackId, {lyrics, QDateTime::currentMSecsSinceEpoch() + ttl});
+        m_memoryCache.insert(trackId, {lyrics, lyrics.validUntilMs});
+        write(trackId, payload);
+
+        const qint64 deadline = lyrics.validUntilMs;
+        if (deadline > 0 && QDateTime::currentMSecsSinceEpoch() >= deadline) {
+            emitMissing(trackId, MissingReason::Unreachable);
+            return;
+        }
         Q_EMIT loaded(trackId, lyrics);
     });
 
@@ -677,8 +952,9 @@ bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
 
     const QString source = body.value(QStringLiteral("source")).toString();
     const QJsonObject uploadAttribution = body.value(QStringLiteral("UploadAttribution")).toObject();
-    lyrics->attribution = humanAttribution(source, uploadAttribution);
-    lyrics->attributionUrl = attributionUrl(source, uploadAttribution);
+    lyrics->attributionData = parseAttribution(source, uploadAttribution);
+    lyrics->attribution = buildAttributionText(lyrics->attributionData);
+    lyrics->attributionUrl = primaryAttributionUrl(lyrics->attributionData);
 
     const QJsonArray content = body.value(QStringLiteral("Content")).toArray();
     for (const QJsonValue &value : content) {

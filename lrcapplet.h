@@ -8,6 +8,7 @@
 
 #include <Plasma/Applet>
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QProcess>
 #include <QStringList>
@@ -39,6 +40,7 @@ class LrcApplet : public Plasma::Applet
 
     // State coming from lrc_tty
     Q_PROPERTY(QString text READ text NOTIFY textChanged)
+    Q_PROPERTY(QString fullLyrics READ fullLyrics NOTIFY lyricsChanged)
     Q_PROPERTY(bool active READ isActive NOTIFY activeChanged)
     Q_PROPERTY(bool available READ isAvailable NOTIFY availableChanged)
     Q_PROPERTY(QString error READ error NOTIFY availableChanged)
@@ -55,7 +57,12 @@ class LrcApplet : public Plasma::Applet
     // Who the lyrics came from, required to be shown when the API is used
     Q_PROPERTY(QString attribution READ attribution NOTIFY lyricsChanged)
     Q_PROPERTY(QString attributionUrl READ attributionUrl NOTIFY lyricsChanged)
+    Q_PROPERTY(QString provider READ provider NOTIFY lyricsChanged)
+    Q_PROPERTY(QString providerUrl READ providerUrl NOTIFY lyricsChanged)
+    Q_PROPERTY(QVariantList contributors READ contributors NOTIFY lyricsChanged)
+    Q_PROPERTY(QString attributionHtml READ attributionHtml NOTIFY lyricsChanged)
     Q_PROPERTY(bool fromSpicyLyrics READ fromSpicyLyrics NOTIFY lyricsChanged)
+    Q_PROPERTY(qint64 lyricsValidUntilMs READ lyricsValidUntilMs NOTIFY lyricsChanged)
     /// Whether the API source can be used at all, i.e. it is on and has a key.
     Q_PROPERTY(bool spicyConfigured READ isSpicyConfigured NOTIFY settingsChanged)
     // Why the API did not provide the line, so that the tooltip can say it
@@ -80,7 +87,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(bool showTimestamp READ showTimestamp NOTIFY settingsChanged)
     Q_PROPERTY(bool showIcon READ showIcon NOTIFY settingsChanged)
     Q_PROPERTY(bool showTrackInfo READ showTrackInfo NOTIFY settingsChanged)
-    Q_PROPERTY(bool compactPanel READ compactPanel NOTIFY settingsChanged)
+    Q_PROPERTY(QString attributionLayout READ attributionLayout NOTIFY settingsChanged)
     /// 0 marks the current word with an underline, 1 with bold.
     Q_PROPERTY(int wordStyle READ wordStyle NOTIFY settingsChanged)
     /// Milliseconds the lyrics are shifted by, for syncs that run early or late.
@@ -116,8 +123,22 @@ public:
         return m_showTimestamp;
     }
 
+    bool isSpicyExpired() const
+    {
+        if (!m_fromSpicy) {
+            return false;
+        }
+        if (m_lyrics.validUntilMs <= 0) {
+            return true;
+        }
+        return QDateTime::currentMSecsSinceEpoch() >= m_lyrics.validUntilMs;
+    }
+
     QString text() const
     {
+        if (isSpicyExpired()) {
+            return QString();
+        }
         return m_text;
     }
     /// Why lrc_tty could not be run, empty when everything is fine.
@@ -128,32 +149,62 @@ public:
     /// The word being sung right now, empty when there are no word timings.
     QString word() const
     {
+        if (isSpicyExpired()) {
+            return QString();
+        }
         return m_word;
     }
     /// Where that word starts inside text().
     int wordStart() const
     {
+        if (isSpicyExpired()) {
+            return 0;
+        }
         return m_wordStart;
     }
     /// Where that word ends inside text().
     int wordEnd() const
     {
+        if (isSpicyExpired()) {
+            return 0;
+        }
         return m_wordEnd;
     }
     /// How far through that word playback is, 0.0 to 1.0.
     double wordProgress() const
     {
+        if (isSpicyExpired()) {
+            return 0.0;
+        }
         return m_wordProgress;
     }
     bool isWordSynced() const
     {
+        if (isSpicyExpired()) {
+            return false;
+        }
         return m_wordSynced;
     }
+    QString fullLyrics() const;
     QString attribution() const;
     QString attributionUrl() const;
+    QString provider() const;
+    QString providerUrl() const;
+    QVariantList contributors() const;
+    QString attributionHtml() const;
     bool fromSpicyLyrics() const
     {
+        if (isSpicyExpired()) {
+            return false;
+        }
         return m_fromSpicy;
+    }
+    qint64 lyricsValidUntilMs() const
+    {
+        if (!m_fromSpicy || isSpicyExpired()) {
+            return 0;
+        }
+        return m_lyrics.validUntilMs;
     }
     bool isSpicyConfigured() const
     {
@@ -185,6 +236,9 @@ public:
 
     bool isActive() const
     {
+        if (isSpicyExpired()) {
+            return false;
+        }
         return m_active;
     }
     bool isAvailable() const
@@ -208,8 +262,8 @@ public:
     int maxCharacters() const;
     bool showIcon() const;
     bool showTrackInfo() const;
-    /// Whether the panel is left to the lyrics alone.
-    bool compactPanel() const;
+    /// Attribution layout in panel ("Right" or "Below")
+    QString attributionLayout() const;
     int wordStyle() const;
     int lyricOffset() const;
     int pauseHideDelay() const
@@ -249,6 +303,8 @@ public:
     Q_INVOKABLE void togglePlayPause();
     Q_INVOKABLE void nextTrack();
     Q_INVOKABLE void previousTrack();
+    Q_INVOKABLE void copyCurrentLine();
+    Q_INVOKABLE int currentLyricOffset() const;
     Q_INVOKABLE void toggleBlacklistCurrentTrack();
     Q_INVOKABLE QStringList blacklistedTrackList() const;
     Q_INVOKABLE void addBlacklistTrack(const QString &track);
@@ -285,6 +341,7 @@ private Q_SLOTS:
     void onLrclibMissing(const QString &requestKey);
     void onPositionFetched();
     void onPauseTimeout();
+    void onLyricsExpired();
     /// Whether the reported position differs from ours by more than a seek.
     bool positionJumped(qint64 reportedMs) const;
     void updateWord();
@@ -315,6 +372,8 @@ private:
     void requestSpicyLyrics();
     void fetchLrcLyrics(bool rawFallback = false);
     void clearLyrics();
+    void armExpiryTimer();
+    void handleLyricsExpired();
     void resetTrackPosition(bool isTrackTransition);
     void saveSyncState() const;
     bool restoreSyncState(const QString &rawTrackId, const QString &title, const QString &artist, qint64 *outGaplessLeadMs) const;
@@ -360,6 +419,8 @@ private:
     QTimer m_busTimer;
     /// Clears displayed lyrics after the player has remained paused for pauseHideDelay seconds.
     QTimer m_pauseTimer;
+    /// Dedicated timer for Spicy Lyrics API expiry deadline.
+    QTimer m_expiryTimer;
     QProcess *m_process;
     SpicyLyrics *m_spicy;
     LrclibClient *m_lrclib;
@@ -394,7 +455,7 @@ private:
     bool m_showTimestamp;
     bool m_showIcon;
     bool m_showTrackInfo;
-    bool m_compactPanel;
+    QString m_attributionLayout;
     int m_wordStyle;
     int m_lyricOffset;
     bool m_pauseWhenIdle;
@@ -468,6 +529,8 @@ private:
     /// Monotonic generation counter to invalidate asynchronous fetches across track changes.
     quint64 m_lookupGeneration = 0;
     quint64 m_processGeneration = 0;
+    quint64 m_expiryGeneration = 0;
+    int m_expiryRetryCount = 0;
     bool m_positionValid;
     bool m_trackJustChanged = false;
     bool m_manualSkipPending = false;

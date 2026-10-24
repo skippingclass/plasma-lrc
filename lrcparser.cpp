@@ -35,6 +35,9 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
 
     lyrics->type = LyricsType::None;
     lyrics->lines.clear();
+    lyrics->attributionData.provider = QStringLiteral("lrclib");
+    lyrics->attributionData.providerUrl = QStringLiteral("https://lrclib.net");
+    lyrics->attributionData.contributors.clear();
     lyrics->attribution = QStringLiteral("lrclib");
     lyrics->attributionUrl = QStringLiteral("https://lrclib.net");
 

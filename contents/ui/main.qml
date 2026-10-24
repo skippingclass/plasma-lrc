@@ -116,13 +116,47 @@ PlasmoidItem {
     }
     readonly property string hintText: displayText
 
-    // The credit for the lyrics, in a short form for the panel and a full one for
-    // the popup.
-    readonly property bool hasCredit: Plasmoid.attribution.length > 0
-    readonly property string shortCredit: {
-        const separator = Plasmoid.attribution.indexOf(" · ");
-        return "· " + (separator > 0 ? Plasmoid.attribution.substring(0, separator) : Plasmoid.attribution);
+    readonly property bool hasCredit: (Plasmoid.attributionHtml.length > 0 || Plasmoid.attribution.length > 0)
+    readonly property bool hasPanelCredit: hasCredit && Plasmoid.fromSpicyLyrics
+    readonly property bool isLayoutBelow: !vertical && hasPanelCredit && Plasmoid.attributionLayout === "Below"
+
+    FontMetrics {
+        id: defaultFontMetrics
+        font: Kirigami.Theme.defaultFont
     }
+
+    FontMetrics {
+        id: smallFontMetrics
+        font: Kirigami.Theme.smallFont
+    }
+
+    readonly property real creditRowHeight: Math.ceil(smallFontMetrics.height)
+
+    readonly property font lyricBelowFont: {
+        if (!root.isLayoutBelow || !root.hasLyrics || !root.hasPanelCredit) {
+            return Kirigami.Theme.defaultFont;
+        }
+        if (defaultFontMetrics.height + smallFontMetrics.height <= 30) {
+            return Kirigami.Theme.defaultFont;
+        }
+        const sf = Kirigami.Theme.smallFont;
+        const maxLyricHeight = Math.floor(30 - creditRowHeight);
+        if (smallFontMetrics.height > maxLyricHeight && maxLyricHeight >= 8) {
+            return Qt.font({
+                family: sf.family,
+                pixelSize: maxLyricHeight,
+                weight: sf.weight
+            });
+        }
+        return sf;
+    }
+
+    FontMetrics {
+        id: lyricFontMetrics
+        font: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricBelowFont : Kirigami.Theme.defaultFont
+    }
+
+    readonly property real lyricRowHeight: Math.max(Math.ceil(lyricFontMetrics.height), 30 - creditRowHeight)
 
     Plasmoid.backgroundHints: Plasmoid.location === PlasmaCore.Types.Desktop //
         ? PlasmaCore.Types.DefaultBackground
@@ -130,6 +164,21 @@ PlasmoidItem {
     preferredRepresentation: compactRepresentation
 
     Plasmoid.contextualActions: [
+        PlasmaCore.Action {
+            text: i18n("Copy current lyric line")
+            icon.name: "edit-copy"
+            visible: !Plasmoid.fromSpicyLyrics
+            enabled: !Plasmoid.fromSpicyLyrics && Plasmoid.text.trim().length > 0
+            onTriggered: Plasmoid.copyCurrentLine()
+        },
+        PlasmaCore.Action {
+            text: i18n("Open song lyrics…")
+            icon.name: "text-x-generic"
+            enabled: Plasmoid.fullLyrics.length > 0
+            onTriggered: lyricsWindow.openSong(Plasmoid.trackInfo, Plasmoid.fullLyrics,
+                Plasmoid.currentLyricOffset(), Plasmoid.attribution, Plasmoid.attributionUrl, Plasmoid.attributionHtml,
+                Plasmoid.lyricsValidUntilMs, Plasmoid.fromSpicyLyrics)
+        },
         PlasmaCore.Action {
             text: Plasmoid.isCurrentTrackBlacklisted
                 ? i18n("Unblacklist current track lyrics")
@@ -140,10 +189,20 @@ PlasmoidItem {
         }
     ]
 
+    SongLyricsWindow {
+        id: lyricsWindow
+    }
+
     // Which source the line actually came from.
-    readonly property string sourceName: Plasmoid.fromSpicyLyrics //
-        ? i18n("Spicy Lyrics")
-        : (Plasmoid.attribution.length > 0 ? Plasmoid.attribution : i18n("LRCLIB"))
+    readonly property string sourceName: {
+        if (Plasmoid.provider.length > 0) {
+            return Plasmoid.provider;
+        }
+        if (Plasmoid.attribution.length > 0) {
+            return Plasmoid.attribution;
+        }
+        return Plasmoid.fromSpicyLyrics ? i18n("Unknown") : i18n("LRCLIB");
+    }
     readonly property string attributionHint: {
         if (Plasmoid.isCurrentTrackBlacklisted) {
             return i18n("Lyrics blacklisted for this track");
@@ -181,15 +240,10 @@ PlasmoidItem {
         }
 
         const lines = [];
-        if (root.hasLyrics) {
-            lines.push(root.lyricText);
-            lines.push(attributionHint);
-        } else {
-            lines.push(attributionHint);
-        }
         if (Plasmoid.player.length > 0) {
             lines.push(i18n("player: %1", Plasmoid.player));
         }
+        lines.push(attributionHint);
         return lines.filter(Boolean).join("\n");
     }
 
@@ -209,14 +263,70 @@ PlasmoidItem {
         // whatever the content happens to be at that moment.
         readonly property int floorWidth: Plasmoid.pauseHidden ? 0 : Kirigami.Units.gridUnit * 8
 
-        implicitWidth: Plasmoid.pauseHidden ? compactLayout.implicitWidth : Math.max(compactLayout.implicitWidth, floorWidth)
+        readonly property bool showIconItem: Plasmoid.showIcon && !Plasmoid.pauseHidden
+        readonly property real iconReservedWidth: showIconItem ? Kirigami.Units.iconSizes.small : 0
+        readonly property bool creditItemVisible: root.hasLyrics && root.hasPanelCredit
+        readonly property real creditFullWidth: creditItemVisible ? Math.ceil(creditLabel.implicitWidth) : 0
+
+        readonly property real lyricDesiredWidth: Plasmoid.pauseHidden ? 0 : lyricContainer.animatedWidth
+        readonly property real usefulLyricWidth: Plasmoid.pauseHidden ? 0 : Math.min(floorWidth, lyricDesiredWidth)
+
+        readonly property real spacing: compactLayout.columnSpacing
+
+        // Below mode: noteIcon is in column 0 (spanning 2 rows), lyric and credit share column 1.
+        readonly property real belowDesiredWidth: (showIconItem ? (iconReservedWidth + spacing) : 0)
+            + Math.max(lyricDesiredWidth, creditFullWidth)
+        readonly property real belowMinWidth: (showIconItem ? (iconReservedWidth + spacing) : 0)
+            + Math.max(usefulLyricWidth, creditFullWidth)
+
+        // Right mode: [icon?] [lyric] [credit?] in separate columns.
+        readonly property int rightItemCount: (showIconItem ? 1 : 0) + 1 + (creditItemVisible ? 1 : 0)
+        readonly property real rightGapsWidth: Math.max(0, rightItemCount - 1) * spacing
+        readonly property real rightDesiredWidth: (showIconItem ? iconReservedWidth : 0)
+            + lyricDesiredWidth
+            + (creditItemVisible ? creditFullWidth : 0)
+            + rightGapsWidth
+        readonly property real rightMinWidth: (showIconItem ? iconReservedWidth : 0)
+            + usefulLyricWidth
+            + (creditItemVisible ? creditFullWidth : 0)
+            + rightGapsWidth
+
+        readonly property real desiredTotalWidth: {
+            if (Plasmoid.pauseHidden) {
+                return 0;
+            }
+            if (root.vertical) {
+                return compactLayout.implicitWidth;
+            }
+            return root.isLayoutBelow ? belowDesiredWidth : rightDesiredWidth;
+        }
+
+        readonly property real minTotalWidth: {
+            if (Plasmoid.pauseHidden) {
+                return 0;
+            }
+            if (root.vertical) {
+                return 0;
+            }
+            return root.isLayoutBelow ? belowMinWidth : rightMinWidth;
+        }
+
+        implicitWidth: desiredTotalWidth
         implicitHeight: compactLayout.implicitHeight
 
-        Layout.minimumWidth: implicitWidth
+        Layout.preferredWidth: desiredTotalWidth
+        Layout.minimumWidth: minTotalWidth
+        Layout.maximumWidth: Math.max(desiredTotalWidth, minTotalWidth)
+        Layout.preferredHeight: implicitHeight
         Layout.minimumHeight: implicitHeight
-        Layout.maximumWidth: implicitWidth
 
         onClicked: function (mouse) {
+            if (creditLabel.visible) {
+                const pt = creditLabel.mapFromItem(compactArea, mouse.x, mouse.y);
+                if (creditLabel.hoveredLink.length > 0 || creditLabel.linkAt(pt.x, pt.y).length > 0) {
+                    return;
+                }
+            }
             if (mouse.button === Qt.MiddleButton) {
                 if (Plasmoid.middleClickAction === 1) {
                     Plasmoid.togglePlayPause();
@@ -236,8 +346,10 @@ PlasmoidItem {
             id: compactLayout
 
             anchors.fill: parent
-            columns: 3
+            columns: root.vertical ? 1 : (root.isLayoutBelow ? (noteIcon.visible ? 2 : 1) : (noteIcon.visible ? (root.hasPanelCredit ? 3 : 2) : (root.hasPanelCredit ? 2 : 1)))
+            rows: root.vertical ? (root.hasPanelCredit ? 3 : 2) : (root.isLayoutBelow ? 2 : 1)
             columnSpacing: Kirigami.Units.smallSpacing * 2
+            rowSpacing: 0
 
             Kirigami.Icon {
                 id: noteIcon
@@ -245,8 +357,12 @@ PlasmoidItem {
                 // Follows the icon theme, so that it does not look out of place
                 // in the panel.
                 source: root.hasLyrics ? "audio-x-generic" : "media-playlist-repeat"
+                Layout.row: 0
+                Layout.column: 0
+                Layout.rowSpan: root.isLayoutBelow ? 2 : 1
                 Layout.preferredWidth: Kirigami.Units.iconSizes.small
                 Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                Layout.minimumWidth: Kirigami.Units.iconSizes.small
                 Layout.alignment: Qt.AlignCenter
                 visible: Plasmoid.showIcon && !Plasmoid.pauseHidden
                 opacity: root.hasLyrics ? 1.0 : 0.5
@@ -254,7 +370,7 @@ PlasmoidItem {
 
             TextMetrics {
                 id: lineMetrics
-                font: Kirigami.Theme.defaultFont
+                font: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricBelowFont : Kirigami.Theme.defaultFont
                 text: root.plainLine(lyricContainer.displayedLyric)
             }
 
@@ -263,7 +379,12 @@ PlasmoidItem {
 
                 property string displayedLyric: root.lyricText
 
-                readonly property real targetWidth: Math.ceil(lineMetrics.advanceWidth) + 4
+                readonly property real maxLyricWidth: root.maxCharacters > 0 //
+                    ? Math.ceil(characterWidth.advanceWidth) * root.maxCharacters
+                    : Infinity
+                readonly property real targetWidth: root.maxCharacters > 0 //
+                    ? Math.min(Math.ceil(lineMetrics.advanceWidth) + 4, maxLyricWidth)
+                    : Math.ceil(lineMetrics.advanceWidth) + 4
                 property real animatedWidth: targetWidth
 
                 Behavior on animatedWidth {
@@ -275,20 +396,31 @@ PlasmoidItem {
                 }
 
                 implicitWidth: animatedWidth
-                implicitHeight: lyricLabel.implicitHeight
+                implicitHeight: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricRowHeight : lyricLabel.implicitHeight
 
+                clip: true
+
+                Layout.row: root.vertical ? 1 : 0
+                Layout.column: root.vertical ? 0 : (noteIcon.visible ? 1 : 0)
+                Layout.fillWidth: true
+                Layout.fillHeight: root.isLayoutBelow
+                Layout.minimumWidth: root.vertical ? 0 : compactArea.usefulLyricWidth
                 Layout.preferredWidth: animatedWidth
                 Layout.preferredHeight: implicitHeight
                 Layout.maximumWidth: root.maxCharacters > 0 //
-                    ? Math.ceil(characterWidth.advanceWidth) * root.maxCharacters
-                    : implicitWidth
-                Layout.alignment: Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) : Qt.AlignCenter
+                    ? maxLyricWidth
+                    : Math.max(implicitWidth, Layout.minimumWidth)
+                Layout.alignment: Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) :
+                    (root.isLayoutBelow ? (Qt.AlignHCenter | Qt.AlignVCenter) : Qt.AlignCenter)
 
                 PlasmaComponents3.Label {
                     id: lyricLabel
                     anchors.fill: parent
                     text: root.hasLyrics ? root.formatCompactLine(lyricContainer.displayedLyric) : root.escapeHtml(root.displayText)
-                    textFormat: Text.RichText
+                    textFormat: Text.StyledText
+                    wrapMode: Text.NoWrap
+                    maximumLineCount: 1
+                    font: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricBelowFont : Kirigami.Theme.defaultFont
                     color: root.hasLyrics ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
                     elide: Text.ElideRight
                     horizontalAlignment: Plasmoid.textAlignment === 1 ? Text.AlignLeft : Text.AlignHCenter
@@ -333,22 +465,29 @@ PlasmoidItem {
                 }
             }
 
-            PlasmaComponents3.Label {
+            AttributionLabel {
                 id: creditLabel
 
-                // Tiny, and it expands to the full credit while the pointer is
-                // on the widget.
-                text: root.shortCredit
-                color: Kirigami.Theme.textColor
-                opacity: compactArea.containsMouse ? 0.85 : 0.6
-                elide: Text.ElideRight
-                visible: root.hasLyrics && root.hasCredit && !Plasmoid.compactPanel
-                Layout.alignment: Qt.AlignVCenter
-                // The lyric gives up width first: without a minimum the panel
-                // squeezes this one down to nothing, and then there is no credit
-                // at all to be seen.
-                Layout.minimumWidth: implicitWidth
-                Layout.maximumWidth: Math.ceil(characterWidth.advanceWidth) * 22
+                attributionHtml: Plasmoid.attributionHtml
+                fallbackText: Plasmoid.attribution
+                fallbackUrl: Plasmoid.attributionUrl
+                visible: root.hasLyrics && root.hasPanelCredit
+                font: Kirigami.Theme.smallFont
+                opacity: compactArea.containsMouse ? 0.95 : 0.75
+                wrapMode: root.vertical ? Text.Wrap : Text.NoWrap
+
+                Layout.row: (root.isLayoutBelow || root.vertical) ? (root.vertical ? 2 : 1) : 0
+                Layout.column: root.vertical ? 0 : (root.isLayoutBelow ? (noteIcon.visible ? 1 : 0) : (noteIcon.visible ? 2 : 1))
+                Layout.alignment: root.vertical ? Qt.AlignHCenter :
+                    (root.isLayoutBelow ?
+                        (Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) : (Qt.AlignHCenter | Qt.AlignVCenter)) :
+                        Qt.AlignVCenter)
+                Layout.preferredHeight: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.creditRowHeight : implicitHeight
+                Layout.minimumHeight: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.creditRowHeight : 0
+                Layout.fillWidth: false
+                Layout.fillHeight: false
+                Layout.minimumWidth: root.vertical ? 0 : implicitWidth
+                Layout.preferredWidth: implicitWidth
             }
         }
     }
@@ -385,10 +524,9 @@ PlasmoidItem {
         }
         hasLyrics: root.hasLyrics
 
-        attribution: root.escapeHtml(Plasmoid.attribution)
+        attribution: Plasmoid.attribution
         attributionUrl: Plasmoid.attributionUrl
-        // The popup is where the credit is spelled out in full, so it does not
-        // follow the compact setting from the panel.
+        attributionHtml: Plasmoid.attributionHtml
         showAttribution: root.hasCredit
         isBlacklisted: Plasmoid.isCurrentTrackBlacklisted
         onToggleBlacklist: Plasmoid.toggleBlacklistCurrentTrack()

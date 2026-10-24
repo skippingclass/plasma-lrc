@@ -121,8 +121,10 @@ int main(int argc, char **argv)
               lyrics.lines.value(0).text.mid(lyrics.lines.value(0).words.value(1).groupStart,
                   lyrics.lines.value(0).words.value(1).groupEnd - lyrics.lines.value(0).words.value(1).groupStart) == QStringLiteral("ok"));
         check("community: выбор строки", lyrics.lineAt(2800) == 0, QString::number(lyrics.lineAt(2800)));
-        check("community: атрибуция", lyrics.attribution == QStringLiteral("Spicy Lyrics · made by @maker (@uploader)"), lyrics.attribution);
+        check("community: атрибуция", lyrics.attribution == QStringLiteral("Spicy Lyrics · maker: maker · uploader: uploader"), lyrics.attribution);
         check("community: ссылка", lyrics.attributionUrl == QStringLiteral("https://example/m"), lyrics.attributionUrl);
+        check("community: distinct maker link", lyrics.attributionData.contributors.size() == 2 && lyrics.attributionData.contributors.at(0).url == QStringLiteral("https://example/m"));
+        check("community: distinct uploader link", lyrics.attributionData.contributors.size() == 2 && lyrics.attributionData.contributors.at(1).url == QStringLiteral("https://example/u"));
     }
 
     // --- Несколько кусков одного слова подряд: E+very+bo+dy ---
@@ -857,6 +859,248 @@ int main(int argc, char **argv)
         const QString reqKey = client.request(QStringLiteral("Выстрелы"), QStringLiteral("OG Buda"), 175000);
         check("lrclib request: возвращает валидный ключ", reqKey == key1);
         client.cancel();
+    }
+
+    // --- Табличные тесты атрибуции через REAL SpicyLyrics::parse ---
+    {
+        struct ContributorExpectation {
+            QString role;
+            QString name;
+            QString url;
+        };
+
+        struct AttributionFixture {
+            const char *label;
+            QByteArray json;
+            QString expectedProvider;
+            QString expectedPlain;
+            QString expectedHtml;
+            QString expectedPrimaryUrl;
+            QVector<ContributorExpectation> expectedContributors;
+            bool checkNoScriptTag = false;
+            bool checkNoAnchorTag = false;
+        };
+
+        const AttributionFixture fixtures[] = {
+            {
+                "distinct contributor links",
+                R"json({"Body":{"source":"spicy_lyrics","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"alice","url":"https://example.com/alice"},
+                                         "Uploader":{"username":"bob","url":"https://example.com/bob"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics · maker: alice · uploader: bob"),
+                QStringLiteral("Spicy Lyrics · maker: <a href=\"https://example.com/alice\">alice</a> · uploader: <a href=\"https://example.com/bob\">bob</a>"),
+                QStringLiteral("https://example.com/alice"),
+                {
+                    {QStringLiteral("maker"), QStringLiteral("alice"), QStringLiteral("https://example.com/alice")},
+                    {QStringLiteral("uploader"), QStringLiteral("bob"), QStringLiteral("https://example.com/bob")}
+                }
+            },
+            {
+                "only uploader",
+                R"json({"Body":{"source":"spicy_lyrics","Type":"Line",
+                    "UploadAttribution":{"Uploader":{"username":"bob","url":"https://example.com/bob"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics · uploader: bob"),
+                QStringLiteral("Spicy Lyrics · uploader: <a href=\"https://example.com/bob\">bob</a>"),
+                QStringLiteral("https://example.com/bob"),
+                {
+                    {QStringLiteral("uploader"), QStringLiteral("bob"), QStringLiteral("https://example.com/bob")}
+                }
+            },
+            {
+                "only maker",
+                R"json({"Body":{"source":"spicy_lyrics","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"alice","url":"https://example.com/alice"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics · maker: alice"),
+                QStringLiteral("Spicy Lyrics · maker: <a href=\"https://example.com/alice\">alice</a>"),
+                QStringLiteral("https://example.com/alice"),
+                {
+                    {QStringLiteral("maker"), QStringLiteral("alice"), QStringLiteral("https://example.com/alice")}
+                }
+            },
+            {
+                "no contributors",
+                R"json({"Body":{"source":"spicy_lyrics","Type":"Line",
+                    "UploadAttribution":{},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics"),
+                QString(),
+                {}
+            },
+            {
+                "same person in both roles",
+                R"json({"Body":{"source":"spicy_lyrics","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"alice","url":"https://example.com/alice"},
+                                         "Uploader":{"username":"alice","url":"https://example.com/alice"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics · maker & uploader: alice"),
+                QStringLiteral("Spicy Lyrics · maker &amp; uploader: <a href=\"https://example.com/alice\">alice</a>"),
+                QStringLiteral("https://example.com/alice"),
+                {
+                    {QStringLiteral("maker & uploader"), QStringLiteral("alice"), QStringLiteral("https://example.com/alice")}
+                }
+            },
+            {
+                "malicious username HTML must be escaped by buildAttributionHtml",
+                R"json({"Body":{"source":"spicy_lyrics","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"<script>alert(\"xss\")</script>","url":"https://example.com/maker"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics · maker: <script>alert(\"xss\")</script>"),
+                QStringLiteral("Spicy Lyrics · maker: <a href=\"https://example.com/maker\">&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;</a>"),
+                QStringLiteral("https://example.com/maker"),
+                {
+                    {QStringLiteral("maker"), QStringLiteral("<script>alert(\"xss\")</script>"), QStringLiteral("https://example.com/maker")}
+                },
+                true, // checkNoScriptTag
+                false
+            },
+            {
+                "unsafe URLs plain only",
+                R"json({"Body":{"source":"spicy_lyrics","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"mallory","url":"javascript:alert(1)"},
+                                         "Uploader":{"username":"trudy","url":"http://example.com/trudy<script>"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spicy Lyrics"),
+                QStringLiteral("Spicy Lyrics · maker: mallory · uploader: trudy"),
+                QStringLiteral("Spicy Lyrics · maker: mallory · uploader: trudy"),
+                QString(),
+                {
+                    {QStringLiteral("maker"), QStringLiteral("mallory"), QString()},
+                    {QStringLiteral("uploader"), QStringLiteral("trudy"), QString()}
+                },
+                false,
+                true // checkNoAnchorTag
+            },
+            {
+                "noncommunity source ignores injected contributor fields (apple_music)",
+                R"json({"Body":{"source":"apple_music","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"injected_maker","url":"https://example.com/maker"},
+                                         "Uploader":{"username":"injected_uploader","url":"https://example.com/uploader"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Apple Music"),
+                QStringLiteral("Apple Music"),
+                QStringLiteral("Apple Music"),
+                QString(),
+                {}
+            },
+            {
+                "noncommunity source ignores injected contributor fields (applemusic)",
+                R"json({"Body":{"source":"applemusic","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"injected_maker","url":"https://example.com/maker"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Apple Music"),
+                QStringLiteral("Apple Music"),
+                QStringLiteral("Apple Music"),
+                QString(),
+                {}
+            },
+            {
+                "noncommunity source ignores injected contributor fields (spotify)",
+                R"json({"Body":{"source":"spotify","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"injected_maker","url":"https://example.com/maker"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("Spotify"),
+                QStringLiteral("Spotify"),
+                QStringLiteral("Spotify"),
+                QString(),
+                {}
+            },
+            {
+                "unknown source with apple/spotify substrings remains unknown (apple)",
+                R"json({"Body":{"source":"apple","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"maker","url":"https://example.com/m"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("unknown source"),
+                QStringLiteral("unknown source"),
+                QStringLiteral("unknown source"),
+                QString(),
+                {}
+            },
+            {
+                "unknown source with apple/spotify substrings remains unknown (spotify_tracks)",
+                R"json({"Body":{"source":"spotify_tracks","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"maker","url":"https://example.com/m"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("unknown source"),
+                QStringLiteral("unknown source"),
+                QStringLiteral("unknown source"),
+                QString(),
+                {}
+            },
+            {
+                "unknown source with apple/spotify substrings remains unknown (pineapple_music)",
+                R"json({"Body":{"source":"pineapple_music","Type":"Line",
+                    "UploadAttribution":{"Maker":{"username":"maker","url":"https://example.com/m"}},
+                    "Content":[{"Text":"line","StartTime":1.0,"EndTime":2.0}]}})json",
+                QStringLiteral("unknown source"),
+                QStringLiteral("unknown source"),
+                QStringLiteral("unknown source"),
+                QString(),
+                {}
+            }
+        };
+
+        for (const auto &fix : fixtures) {
+            Lyrics lyrics;
+            QString error;
+            const bool parsed = SpicyLyrics::parse(fix.json, &lyrics, &error);
+            check(QStringLiteral("fixture %1: parse").arg(QLatin1String(fix.label)), parsed, error);
+            if (!parsed) {
+                continue;
+            }
+
+            check(QStringLiteral("fixture %1: provider").arg(QLatin1String(fix.label)),
+                  lyrics.attributionData.provider == fix.expectedProvider,
+                  lyrics.attributionData.provider + QStringLiteral(" != ") + fix.expectedProvider);
+
+            check(QStringLiteral("fixture %1: plain").arg(QLatin1String(fix.label)),
+                  lyrics.attribution == fix.expectedPlain,
+                  lyrics.attribution + QStringLiteral(" != ") + fix.expectedPlain);
+
+            const QString html = SpicyLyrics::buildAttributionHtml(lyrics.attributionData);
+            check(QStringLiteral("fixture %1: html").arg(QLatin1String(fix.label)),
+                  html == fix.expectedHtml,
+                  html + QStringLiteral(" != ") + fix.expectedHtml);
+
+            check(QStringLiteral("fixture %1: primary url").arg(QLatin1String(fix.label)),
+                  lyrics.attributionUrl == fix.expectedPrimaryUrl,
+                  lyrics.attributionUrl + QStringLiteral(" != ") + fix.expectedPrimaryUrl);
+
+            check(QStringLiteral("fixture %1: contributor count").arg(QLatin1String(fix.label)),
+                  lyrics.attributionData.contributors.size() == fix.expectedContributors.size(),
+                  QString::number(lyrics.attributionData.contributors.size()) + QStringLiteral(" != ") + QString::number(fix.expectedContributors.size()));
+
+            if (lyrics.attributionData.contributors.size() == fix.expectedContributors.size()) {
+                for (int i = 0; i < fix.expectedContributors.size(); ++i) {
+                    const auto &actual = lyrics.attributionData.contributors.at(i);
+                    const auto &expected = fix.expectedContributors.at(i);
+                    check(QStringLiteral("fixture %1: contrib[%2] role").arg(QLatin1String(fix.label)).arg(i),
+                          actual.role == expected.role, actual.role + QStringLiteral(" != ") + expected.role);
+                    check(QStringLiteral("fixture %1: contrib[%2] name").arg(QLatin1String(fix.label)).arg(i),
+                          actual.name == expected.name, actual.name + QStringLiteral(" != ") + expected.name);
+                    check(QStringLiteral("fixture %1: contrib[%2] url").arg(QLatin1String(fix.label)).arg(i),
+                          actual.url == expected.url, actual.url + QStringLiteral(" != ") + expected.url);
+                }
+            }
+
+            if (fix.checkNoScriptTag) {
+                check(QStringLiteral("fixture %1: no script tag in html").arg(QLatin1String(fix.label)),
+                      !html.contains(QLatin1String("<script"), Qt::CaseInsensitive), html);
+            }
+            if (fix.checkNoAnchorTag) {
+                check(QStringLiteral("fixture %1: no anchor tag in html").arg(QLatin1String(fix.label)),
+                      !html.contains(QLatin1String("<a"), Qt::CaseInsensitive), html);
+            }
+        }
     }
 
     printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");
