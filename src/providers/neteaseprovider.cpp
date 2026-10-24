@@ -6,6 +6,7 @@
 
 #include "neteaseprovider.h"
 #include "lrcparser.h"
+#include "trackmatch.h"
 #include "trackname.h"
 #include "yrcparser.h"
 
@@ -20,13 +21,6 @@ namespace
 {
 constexpr int kTimeoutMs = 7000;
 constexpr int kMaxDurationDiffMs = 4000;
-
-bool titlesMatch(const QString &candidate, const QString &target)
-{
-    const QString c = cleanTrackTitle(candidate).trimmed().toLower();
-    const QString t = cleanTrackTitle(target).trimmed().toLower();
-    return c == t || c.contains(t) || t.contains(c);
-}
 } // namespace
 
 NeteaseProvider::NeteaseProvider(QObject *parent)
@@ -158,28 +152,28 @@ void NeteaseProvider::handleSearchReply(const QByteArray &data)
             continue;
         }
 
-        if (m_meta.durationMs > 0 && dt > 0 && qAbs(m_meta.durationMs - dt) > kMaxDurationDiffMs) {
-            continue;
+        // Parse artists from NetEase in-source fields: 'ar' or 'artists'
+        QStringList artistList;
+        QJsonArray arArray = obj.value(QStringLiteral("ar")).toArray();
+        if (arArray.isEmpty()) {
+            arArray = obj.value(QStringLiteral("artists")).toArray();
+        }
+        for (const QJsonValue &a : arArray) {
+            const QString aName = a.toObject().value(QStringLiteral("name")).toString().trimmed();
+            if (!aName.isEmpty()) {
+                artistList.append(aName);
+            }
+        }
+        if (artistList.isEmpty() && obj.contains(QStringLiteral("artist"))) {
+            const QString aName = obj.value(QStringLiteral("artist")).toString().trimmed();
+            if (!aName.isEmpty()) {
+                artistList.append(aName);
+            }
         }
 
-        if (titlesMatch(name, m_meta.title)) {
+        if (TrackMatch::matchCandidate(m_meta, name, artistList, dt, kMaxDurationDiffMs)) {
             matchedId = songId;
             break;
-        }
-    }
-
-    if (matchedId.isEmpty() && !songs.isEmpty()) {
-        for (const QJsonValue &v : songs) {
-            const QJsonObject obj = v.toObject();
-            const qint64 dt = obj.value(QStringLiteral("dt")).toVariant().toLongLong();
-            const QString songId = QString::number(obj.value(QStringLiteral("id")).toVariant().toLongLong());
-            if (songId.isEmpty() || songId == QLatin1String("0")) {
-                continue;
-            }
-            if (m_meta.durationMs <= 0 || dt <= 0 || qAbs(m_meta.durationMs - dt) <= kMaxDurationDiffMs) {
-                matchedId = songId;
-                break;
-            }
         }
     }
 

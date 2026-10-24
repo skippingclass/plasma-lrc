@@ -21,7 +21,8 @@ class AmllProvider : public LyricsProvider
 
 public:
     explicit AmllProvider(QObject *parent = nullptr,
-                          const QString &cdnBase = QStringLiteral("https://cdn.jsdelivr.net/gh/amll-dev/amll-ttml-db@main/spotify-lyrics/"));
+                          const QString &cdnBase = QStringLiteral("https://cdn.jsdelivr.net/gh/amll-dev/amll-ttml-db@main/spotify-lyrics/"),
+                          const QString &fallbackBase = QStringLiteral("https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/spotify-lyrics/"));
     ~AmllProvider() override;
 
     QString id() const override { return QStringLiteral("amll"); }
@@ -34,6 +35,10 @@ public:
     bool canHandle(const TrackMetadata &meta) const override;
     void requestLyrics(const TrackMetadata &meta, quint64 generation) override;
     void cancel() override;
+    void invalidateCache(const TrackMetadata &meta) override;
+
+    void setFallbackBase(const QString &fallbackBase) { m_fallbackBase = fallbackBase; }
+    QString fallbackBase() const { return m_fallbackBase; }
 
     static QString cacheDirectory();
 
@@ -47,6 +52,7 @@ private:
     void writeDiskCache(const QString &trackId, const QByteArray &data);
 
     QString m_cdnBase;
+    QString m_fallbackBase;
     QNetworkAccessManager m_network;
     QPointer<QNetworkReply> m_currentReply;
     QTimer m_watchdog;

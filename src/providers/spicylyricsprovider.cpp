@@ -37,6 +37,16 @@ void SpicyLyricsProvider::cancel()
     m_spicy->cancel();
 }
 
+void SpicyLyricsProvider::invalidateCache(const TrackMetadata &meta)
+{
+    if (m_spicy && !meta.spotifyTrackId.isEmpty()) {
+        if (meta.spotifyTrackId == m_pendingTrackId) {
+            m_pendingTrackId.clear();
+        }
+        m_spicy->invalidate(meta.spotifyTrackId);
+    }
+}
+
 void SpicyLyricsProvider::onLoaded(const QString &trackId, const Lyrics &lyrics)
 {
     if (trackId != m_pendingTrackId) {

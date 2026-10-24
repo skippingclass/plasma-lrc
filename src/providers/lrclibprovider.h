@@ -27,6 +27,7 @@ public:
     bool canHandle(const TrackMetadata &meta) const override;
     void requestLyrics(const TrackMetadata &meta, quint64 generation) override;
     void cancel() override;
+    void invalidateCache(const TrackMetadata &meta) override;
 
     LrclibClient *client() const { return m_client; }
 

@@ -35,6 +35,7 @@ public:
     bool canHandle(const TrackMetadata &meta) const override;
     void requestLyrics(const TrackMetadata &meta, quint64 generation) override;
     void cancel() override;
+    void invalidateCache(const TrackMetadata &meta) override;
 
     static QString cacheDirectory();
     static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs, const QString &isrc);
@@ -57,6 +58,7 @@ private:
     QTimer m_watchdog;
     quint64 m_currentGeneration = 0;
     QString m_currentCacheKey;
+    TrackMetadata m_currentMeta;
     qint64 m_targetDurationMs = 0;
     QHash<QString, qint64> m_negativeCache;
 };

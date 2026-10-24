@@ -46,7 +46,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.7.2 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.0 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -935,14 +935,24 @@ bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
             part = entry;
         }
 
-        // A line can carry background vocals in a separate part; the panel is
-        // one line of text, so only the lead is used.
         LyricLine line;
-        if (!readPart(part, &line)) {
-            continue;
+        if (readPart(part, &line)) {
+            lyrics->lines.append(line);
         }
 
-        lyrics->lines.append(line);
+        if (entry.contains(QStringLiteral("Background"))) {
+            const QJsonArray bgList = entry.value(QStringLiteral("Background")).toArray();
+            for (const QJsonValue &bgVal : bgList) {
+                LyricLine bgLine;
+                bgLine.isBackground = true;
+                if (readPart(bgVal.toObject(), &bgLine)) {
+                    for (LyricWord &w : bgLine.words) {
+                        w.isBackground = true;
+                    }
+                    lyrics->lines.append(bgLine);
+                }
+            }
+        }
     }
 
     if (lyrics->lines.isEmpty()) {
@@ -950,7 +960,10 @@ bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
     }
 
     std::sort(lyrics->lines.begin(), lyrics->lines.end(), [](const LyricLine &lhs, const LyricLine &rhs) {
-        return lhs.startMs < rhs.startMs;
+        if (lhs.startMs != rhs.startMs) {
+            return lhs.startMs < rhs.startMs;
+        }
+        return !lhs.isBackground && rhs.isBackground;
     });
 
     return true;

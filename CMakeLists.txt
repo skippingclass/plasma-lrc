@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.7.2 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,53 +41,67 @@ endif()
 
 set(PLUGIN_ID "org.kde.plasma.lrc")
 
+set(LRC_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/applet
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/parsers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/providers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services
+)
+
+include_directories(${LRC_INCLUDE_DIRS})
+
 add_library(${PLUGIN_ID} SHARED
-    lrcapplet.cpp
-    lrcapplet.h
-    lrcparser.cpp
-    lrcparser.h
-    spicylyrics.cpp
-    spicylyrics.h
-    lrclib.cpp
-    lrclib.h
-    trackname.cpp
-    trackname.h
-    playermeta.cpp
-    playermeta.h
-    ttmlparser.cpp
-    ttmlparser.h
-    lyrictypes.h
-    lyricsprovider.h
-    spicylyricsprovider.cpp
-    spicylyricsprovider.h
-    lrclibprovider.cpp
-    lrclibprovider.h
-    amllprovider.cpp
-    amllprovider.h
-    lrcredprovider.cpp
-    lrcredprovider.h
-    kugouprovider.cpp
-    kugouprovider.h
-    neteaseprovider.cpp
-    neteaseprovider.h
-    unisonprovider.cpp
-    unisonprovider.h
-    qqmusicprovider.cpp
-    qqmusicprovider.h
-    localprovider.cpp
-    localprovider.h
-    customprovider.cpp
-    customprovider.h
-    lyricspipelinemanager.cpp
-    lyricspipelinemanager.h
-    zlibcodec.cpp
-    zlibcodec.h
-    krcparser.cpp
-    krcparser.h
-    yrcparser.cpp
-    yrcparser.h
-    qrcdecoder.cpp
-    qrcdecoder.h
+    src/applet/lrcapplet.cpp
+    src/applet/lrcapplet.h
+    src/core/lyrictypes.h
+    src/core/lyricselection.h
+    src/core/trackmatch.h
+    src/core/trackname.cpp
+    src/core/trackname.h
+    src/core/playermeta.cpp
+    src/core/playermeta.h
+    src/parsers/lrcparser.cpp
+    src/parsers/lrcparser.h
+    src/parsers/ttmlparser.cpp
+    src/parsers/ttmlparser.h
+    src/parsers/krcparser.cpp
+    src/parsers/krcparser.h
+    src/parsers/yrcparser.cpp
+    src/parsers/yrcparser.h
+    src/parsers/qrcdecoder.cpp
+    src/parsers/qrcdecoder.h
+    src/parsers/zlibcodec.cpp
+    src/parsers/zlibcodec.h
+    src/services/spicylyrics.cpp
+    src/services/spicylyrics.h
+    src/services/lrclib.cpp
+    src/services/lrclib.h
+    src/providers/lyricsprovider.h
+    src/providers/lyricspipelinemanager.cpp
+    src/providers/lyricspipelinemanager.h
+    src/providers/spicylyricsprovider.cpp
+    src/providers/spicylyricsprovider.h
+    src/providers/lrclibprovider.cpp
+    src/providers/lrclibprovider.h
+    src/providers/amllprovider.cpp
+    src/providers/amllprovider.h
+    src/providers/lrcredprovider.cpp
+    src/providers/lrcredprovider.h
+    src/providers/kugouprovider.cpp
+    src/providers/kugouprovider.h
+    src/providers/neteaseprovider.cpp
+    src/providers/neteaseprovider.h
+    src/providers/unisonprovider.cpp
+    src/providers/unisonprovider.h
+    src/providers/qqmusicprovider.cpp
+    src/providers/qqmusicprovider.h
+    src/providers/localprovider.cpp
+    src/providers/localprovider.h
+    src/providers/customprovider.cpp
+    src/providers/customprovider.h
 )
 
 set_target_properties(${PLUGIN_ID} PROPERTIES
@@ -109,7 +123,7 @@ target_link_libraries(${PLUGIN_ID} PRIVATE
     ${LRC_PLASMA_LIBRARY}
 )
 
-target_include_directories(${PLUGIN_ID} PRIVATE ${LRC_PLASMA_INCLUDE_DIR})
+target_include_directories(${PLUGIN_ID} PRIVATE ${LRC_PLASMA_INCLUDE_DIR} ${LRC_INCLUDE_DIRS})
 
 install(TARGETS ${PLUGIN_ID}
     DESTINATION "${KDE_INSTALL_PLUGINDIR}/plasma/applets"
@@ -131,16 +145,16 @@ option(PLASMA_LRC_TESTS "Build the lyrics parser tests" OFF)
 if(PLASMA_LRC_TESTS)
     add_executable(spicy-parser-test
         tests/spicy-parser-test.cpp
-        lrcparser.cpp
-        lrcparser.h
-        spicylyrics.cpp
-        spicylyrics.h
-        lrclib.cpp
-        lrclib.h
-        trackname.cpp
-        trackname.h
-        playermeta.cpp
-        playermeta.h
+        src/parsers/lrcparser.cpp
+        src/parsers/lrcparser.h
+        src/services/spicylyrics.cpp
+        src/services/spicylyrics.h
+        src/services/lrclib.cpp
+        src/services/lrclib.h
+        src/core/trackname.cpp
+        src/core/trackname.h
+        src/core/playermeta.cpp
+        src/core/playermeta.h
     )
     target_link_libraries(spicy-parser-test PRIVATE Qt6::Core Qt6::Network Qt6::DBus)
     enable_testing()
@@ -148,39 +162,39 @@ if(PLASMA_LRC_TESTS)
 
     add_executable(ttml-parser-test
         tests/ttml-parser-test.cpp
-        ttmlparser.cpp
-        ttmlparser.h
+        src/parsers/ttmlparser.cpp
+        src/parsers/ttmlparser.h
     )
     target_link_libraries(ttml-parser-test PRIVATE Qt6::Core)
     add_test(NAME ttml-parser COMMAND ttml-parser-test)
 
     add_executable(codecs-test
         tests/codecs-test.cpp
-        zlibcodec.cpp
-        zlibcodec.h
-        krcparser.cpp
-        krcparser.h
-        yrcparser.cpp
-        yrcparser.h
-        qrcdecoder.cpp
-        qrcdecoder.h
-        ttmlparser.cpp
-        ttmlparser.h
+        src/parsers/zlibcodec.cpp
+        src/parsers/zlibcodec.h
+        src/parsers/krcparser.cpp
+        src/parsers/krcparser.h
+        src/parsers/yrcparser.cpp
+        src/parsers/yrcparser.h
+        src/parsers/qrcdecoder.cpp
+        src/parsers/qrcdecoder.h
+        src/parsers/ttmlparser.cpp
+        src/parsers/ttmlparser.h
     )
     target_link_libraries(codecs-test PRIVATE Qt6::Core ZLIB::ZLIB)
     add_test(NAME codecs COMMAND codecs-test)
 
     add_executable(pipeline-test
         tests/pipeline-test.cpp
-        lyricspipelinemanager.cpp
-        lyricspipelinemanager.h
-        lyricsprovider.h
-        localprovider.cpp
-        localprovider.h
-        lrcparser.cpp
-        lrcparser.h
-        ttmlparser.cpp
-        ttmlparser.h
+        src/providers/lyricspipelinemanager.cpp
+        src/providers/lyricspipelinemanager.h
+        src/providers/lyricsprovider.h
+        src/providers/localprovider.cpp
+        src/providers/localprovider.h
+        src/parsers/lrcparser.cpp
+        src/parsers/lrcparser.h
+        src/parsers/ttmlparser.cpp
+        src/parsers/ttmlparser.h
     )
     target_link_libraries(pipeline-test PRIVATE Qt6::Core Qt6::Network)
     add_test(NAME pipeline COMMAND pipeline-test)
@@ -188,14 +202,56 @@ if(PLASMA_LRC_TESTS)
     foreach(client IN ITEMS spicy lrclib)
         add_executable(${client}-client-test
             tests/${client}-client-test.cpp
-            lrcparser.cpp spicylyrics.cpp lrclib.cpp trackname.cpp
+            src/parsers/lrcparser.cpp
+            src/services/spicylyrics.cpp
+            src/services/lrclib.cpp
+            src/core/trackname.cpp
         )
         target_link_libraries(${client}-client-test PRIVATE Qt6::Core Qt6::Network)
         add_test(NAME ${client}-client COMMAND ${client}-client-test)
     endforeach()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/provider-match-test.cpp")
+        add_executable(provider-match-test
+            tests/provider-match-test.cpp
+            src/core/trackname.cpp
+            src/core/trackname.h
+            src/core/trackmatch.h
+        )
+        target_link_libraries(provider-match-test PRIVATE Qt6::Core)
+        add_test(NAME provider-match COMMAND provider-match-test)
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/provider-cache-test.cpp")
+        add_executable(provider-cache-test
+            tests/provider-cache-test.cpp
+            src/providers/lyricsprovider.h
+            src/providers/amllprovider.cpp
+            src/providers/lrcredprovider.cpp
+            src/providers/spicylyricsprovider.cpp
+            src/providers/lrclibprovider.cpp
+            src/services/lrclib.cpp
+            src/services/spicylyrics.cpp
+            src/core/trackname.cpp
+            src/parsers/ttmlparser.cpp
+            src/parsers/lrcparser.cpp
+        )
+        target_link_libraries(provider-cache-test PRIVATE Qt6::Core Qt6::Network)
+        add_test(NAME provider-cache COMMAND provider-cache-test)
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/lyricselection-test.cpp")
+        add_executable(lyricselection-test
+            tests/lyricselection-test.cpp
+            src/parsers/ttmlparser.cpp
+            src/parsers/ttmlparser.h
+        )
+        target_link_libraries(lyricselection-test PRIVATE Qt6::Core)
+        add_test(NAME lyricselection COMMAND lyricselection-test)
+    endif()
+
     add_executable(applet-sync-test tests/applet-sync-test.cpp)
-    target_include_directories(applet-sync-test PRIVATE ${LRC_PLASMA_INCLUDE_DIR})
+    target_include_directories(applet-sync-test PRIVATE ${LRC_PLASMA_INCLUDE_DIR} ${LRC_INCLUDE_DIRS})
     target_link_libraries(applet-sync-test PRIVATE ${PLUGIN_ID}
         Qt6::Widgets Qt6::Qml Qt6::DBus Qt6::Network KF6::CoreAddons KF6::ConfigCore ${LRC_PLASMA_LIBRARY})
     add_test(NAME applet-sync COMMAND applet-sync-test)

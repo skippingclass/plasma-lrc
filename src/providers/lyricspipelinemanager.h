@@ -12,6 +12,8 @@
 #include <QObject>
 #include <QStringList>
 
+class QTimer;
+
 class LyricsPipelineManager : public QObject
 {
     Q_OBJECT
@@ -33,26 +35,55 @@ public:
     void requestLyrics(const TrackMetadata &meta, quint64 generation);
     void cancel();
 
-    QString currentProviderId() const { return m_currentProviderId; }
+    QString currentProviderId() const;
+
+    void invalidateCaches(const TrackMetadata &meta);
+
+    int lookupTimeoutMs() const { return m_lookupTimeoutMs; }
+    void setLookupTimeoutMs(int timeoutMs) { m_lookupTimeoutMs = timeoutMs; }
+
+    int maxConcurrentLookups() const { return m_maxConcurrentLookups; }
+    void setMaxConcurrentLookups(int max) { m_maxConcurrentLookups = max; }
 
 Q_SIGNALS:
     void lyricsResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId);
     void allFailed(quint64 generation, MissingReason lastReason);
+    void lookupFinished(quint64 generation);
 
 private Q_SLOTS:
     void onProviderLoaded(quint64 generation, const Lyrics &lyrics, const QString &providerId);
     void onProviderFailed(quint64 generation, MissingReason reason, const QString &providerId);
+    void onLookupDeadline();
 
 private:
-    void tryNextCandidate();
+    struct CandidateEntry {
+        LyricsProvider *provider = nullptr;
+        int priority = -1;
+        bool inFlight = false;
+        bool completed = false;
+    };
+
+    void pumpQueue();
+    void pruneIrrelevantCandidates();
+    void finishLookup();
 
     QList<LyricsProvider *> m_providers;
     QStringList m_providerOrder;
 
     quint64 m_currentGeneration = 0;
     TrackMetadata m_currentMeta;
-    QList<LyricsProvider *> m_activeCandidates;
-    int m_candidateIndex = -1;
-    QString m_currentProviderId;
+    QList<CandidateEntry> m_candidates;
+    QTimer *m_deadlineTimer = nullptr;
+
+    int m_lookupTimeoutMs = 20000;
+    int m_maxConcurrentLookups = 2;
     MissingReason m_lastReason = MissingReason::NotFound;
+
+    bool m_hasEmittedResult = false;
+    LyricsType m_bestQuality = LyricsType::None;
+    int m_bestPriority = -1;
+    QString m_bestProviderId;
+
+    bool m_isLookupActive = false;
+    bool m_pumping = false;
 };

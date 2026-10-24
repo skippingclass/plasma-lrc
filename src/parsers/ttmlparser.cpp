@@ -32,6 +32,19 @@ bool containsWideScript(const QString &text)
     }
     return false;
 }
+
+QString getRoleAttribute(const QXmlStreamAttributes &attrs)
+{
+    const QStringView metaVal = attrs.value(QLatin1String("http://www.w3.org/ns/ttml#metadata"), QLatin1String("role"));
+    if (!metaVal.isEmpty()) {
+        return metaVal.toString();
+    }
+    const QStringView ttmVal = attrs.value(QLatin1String("ttm:role"));
+    if (!ttmVal.isEmpty()) {
+        return ttmVal.toString();
+    }
+    return attrs.value(QLatin1String("role")).toString();
+}
 } // namespace
 
 bool parseTimestamp(const QString &timeStr, qint64 *outMs)
@@ -118,6 +131,8 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
         QString text;
         qint64 startMs = -1;
         qint64 endMs = -1;
+        bool isBackground = false;
+        int backgroundGroup = -1;
     };
 
     while (!xml.atEnd() && !xml.hasError()) {
@@ -137,21 +152,49 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                     parseTimestamp(pAttrs.value(QLatin1String("end")).toString(), &pEnd);
                 }
 
+                const bool pIsBg = (getRoleAttribute(pAttrs) == QLatin1String("x-bg"));
+                int nextBgGroupId = 0;
+                const int pBgGroup = pIsBg ? nextBgGroupId++ : -1;
+
+                struct ContainerContext {
+                    bool isBackground = false;
+                    int backgroundGroup = -1;
+                    qint64 begin = -1;
+                    qint64 end = -1;
+                    bool hasChildSpans = false;
+                };
+
+                QVector<ContainerContext> contextStack;
+                contextStack.append({pIsBg, pBgGroup, -1, -1, false});
+
                 QVector<TtmlChunk> chunks;
                 QString directText;
-                int depth = 1;
 
-                while (depth > 0 && !xml.atEnd() && !xml.hasError()) {
+                while (!contextStack.isEmpty() && !xml.atEnd() && !xml.hasError()) {
                     const QXmlStreamReader::TokenType innerToken = xml.readNext();
 
                     if (innerToken == QXmlStreamReader::StartElement) {
                         const QStringView name = xml.name();
                         if (name == QLatin1String("span")) {
                             const QXmlStreamAttributes spanAttrs = xml.attributes();
-                            const QString role = spanAttrs.value(QLatin1String("ttm:role")).toString();
+                            const QString role = getRoleAttribute(spanAttrs);
                             if (role == QLatin1String("x-translation") || role == QLatin1String("x-roman")) {
                                 xml.skipCurrentElement();
                                 continue;
+                            }
+
+                            contextStack.last().hasChildSpans = true;
+
+                            const bool isBgRole = (role == QLatin1String("x-bg"));
+                            const ContainerContext &parent = contextStack.last();
+                            const bool isBg = parent.isBackground || isBgRole;
+                            int bgGroup = parent.backgroundGroup;
+                            if (isBgRole && !parent.isBackground) {
+                                bgGroup = nextBgGroupId++;
+                                // Always ensure a whitespace separation before background vocals.
+                                TtmlChunk ws;
+                                ws.isWhitespace = true;
+                                chunks.append(ws);
                             }
 
                             qint64 spanBegin = -1;
@@ -163,16 +206,23 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
 
                             if (hasBegin) {
                                 hasAnyWordTimings = true;
+                            }
+
+                            if (isBgRole) {
+                                contextStack.append({isBg, bgGroup, hasBegin ? spanBegin : -1, hasEnd ? spanEnd : -1, false});
+                            } else if (hasBegin) {
                                 const QString spanContent = xml.readElementText(QXmlStreamReader::IncludeChildElements);
                                 TtmlChunk c;
                                 c.isTimed = true;
                                 c.text = spanContent;
                                 c.startMs = spanBegin;
                                 c.endMs = hasEnd ? spanEnd : -1;
+                                c.isBackground = isBg;
+                                c.backgroundGroup = bgGroup;
                                 chunks.append(c);
                             } else {
-                                // Untimed container span (e.g. x-bg)
-                                ++depth;
+                                // Untimed container span
+                                contextStack.append({isBg, bgGroup, -1, -1, false});
                             }
                         } else if (name == QLatin1String("br")) {
                             TtmlChunk ws;
@@ -191,21 +241,41 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                                 chunks.append(ws);
                             }
                         } else {
-                            TtmlChunk c;
-                            c.isTimed = false;
-                            c.text = xml.text().toString();
-                            chunks.append(c);
-                            directText += xml.text().toString();
+                            const QString text = xml.text().toString();
+                            const ContainerContext &ctx = contextStack.last();
+                            if (ctx.begin >= 0 && !ctx.hasChildSpans) {
+                                hasAnyWordTimings = true;
+                                TtmlChunk c;
+                                c.isTimed = true;
+                                c.text = text;
+                                c.startMs = ctx.begin;
+                                c.endMs = ctx.end;
+                                c.isBackground = ctx.isBackground;
+                                c.backgroundGroup = ctx.backgroundGroup;
+                                chunks.append(c);
+                            } else {
+                                TtmlChunk c;
+                                c.isTimed = false;
+                                c.text = text;
+                                c.isBackground = ctx.isBackground;
+                                c.backgroundGroup = ctx.backgroundGroup;
+                                chunks.append(c);
+                                directText += text;
+                            }
                         }
                     } else if (innerToken == QXmlStreamReader::EndElement) {
-                        --depth;
-                        if (depth <= 0) {
+                        contextStack.pop_back();
+                        if (contextStack.isEmpty()) {
                             break;
                         }
+                        TtmlChunk ws;
+                        ws.isWhitespace = true;
+                        chunks.append(ws);
                     }
                 }
 
                 LyricLine line;
+                line.isBackground = pIsBg;
                 line.startMs = qMax<qint64>(0, pBegin);
                 line.endMs = pEnd > line.startMs ? pEnd : line.startMs;
 
@@ -234,7 +304,16 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                             continue;
                         }
 
-                        if (pendingSpace || leadingWs > 0) {
+                        const bool needSpaceBeforeBracket = !built.isEmpty()
+                            && !built.endsWith(QLatin1Char(' '))
+                            && (trimmed.startsWith(QLatin1Char('('))
+                                || trimmed.startsWith(QLatin1Char('['))
+                                || trimmed.startsWith(QLatin1Char('{'))
+                                || built.endsWith(QLatin1Char(')'))
+                                || built.endsWith(QLatin1Char(']'))
+                                || built.endsWith(QLatin1Char('}')));
+
+                        if (pendingSpace || leadingWs > 0 || needSpaceBeforeBracket) {
                             if (!built.isEmpty() && !built.endsWith(QLatin1Char(' '))) {
                                 built.append(QLatin1Char(' '));
                             }
@@ -252,11 +331,23 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                         w.textStart = static_cast<int>(built.length());
                         built.append(trimmed);
                         w.textEnd = static_cast<int>(built.length());
+                        w.isBackground = c.isBackground;
+                        w.backgroundGroup = c.backgroundGroup;
                         line.words.append(w);
 
                         pendingSpace = (trailingWs > 0);
                     } else if (!c.text.trimmed().isEmpty()) {
-                        if (pendingSpace) {
+                        const QString trimmed = c.text.trimmed();
+                        const bool needSpaceBeforeBracket = !built.isEmpty()
+                            && !built.endsWith(QLatin1Char(' '))
+                            && (trimmed.startsWith(QLatin1Char('('))
+                                || trimmed.startsWith(QLatin1Char('['))
+                                || trimmed.startsWith(QLatin1Char('{'))
+                                || built.endsWith(QLatin1Char(')'))
+                                || built.endsWith(QLatin1Char(']'))
+                                || built.endsWith(QLatin1Char('}')));
+
+                        if (pendingSpace || needSpaceBeforeBracket) {
                             if (!built.isEmpty() && !built.endsWith(QLatin1Char(' '))) {
                                 built.append(QLatin1Char(' '));
                             }
@@ -264,7 +355,7 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                                 wordBoundaryAfter.append(true);
                             }
                         }
-                        built.append(c.text.trimmed());
+                        built.append(trimmed);
                         pendingSpace = c.text.endsWith(QLatin1Char(' '));
                     }
                 }
@@ -321,7 +412,7 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
     }
 
     // Sort lines by start time
-    std::sort(parsedLines.begin(), parsedLines.end(), [](const LyricLine &a, const LyricLine &b) {
+    std::stable_sort(parsedLines.begin(), parsedLines.end(), [](const LyricLine &a, const LyricLine &b) {
         return a.startMs < b.startMs;
     });
 

@@ -10,6 +10,7 @@
 #include "lrclib.h"
 #include "playermeta.h"
 #include "trackname.h"
+#include "lyricselection.h"
 
 #include <KLocalizedString>
 #include <KPluginFactory>
@@ -244,6 +245,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
 
     connect(m_pipeline, &LyricsPipelineManager::lyricsResolved, this, &LrcApplet::onPipelineResolved);
     connect(m_pipeline, &LyricsPipelineManager::allFailed, this, &LrcApplet::onPipelineAllFailed);
+    connect(m_pipeline, &LyricsPipelineManager::lookupFinished, this, &LrcApplet::onPipelineLookupFinished);
 
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
@@ -338,7 +340,22 @@ void LrcApplet::startPolling()
 
 void LrcApplet::refresh()
 {
-    m_spicy->invalidate(m_spotifyTrackId);
+    TrackMetadata meta;
+    meta.title = m_trackTitle;
+    meta.artist = m_trackArtist;
+    meta.album = m_trackAlbum;
+    meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
+    meta.spotifyTrackId = m_spotifyTrackId;
+    meta.mprisTrackId = m_mprisTrackId;
+    meta.url = m_trackUrl;
+    meta.isWebSession = m_webPageSession;
+
+    TrackMetadata searchMeta = meta;
+    normalizeTrackMetadata(&searchMeta);
+
+    if (m_pipeline) {
+        m_pipeline->invalidateCaches(searchMeta);
+    }
     // The API lyrics have to go as well: poll() returns early while they are
     // usable, so the button would do nothing at all on a track that has them.
     clearDisplay();
@@ -395,7 +412,7 @@ void LrcApplet::readSettings()
     const QString attributionLayout = (attributionLayoutRaw.compare(QLatin1String("Below"), Qt::CaseInsensitive) == 0 || attributionLayoutRaw == QLatin1String("1"))
         ? QStringLiteral("Below")
         : QStringLiteral("Right");
-    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 1), 3);
+    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 1), 4);
     const int lyricOffset = qBound(-2000, intSetting(QStringLiteral("lyricOffset"), 0), 2000);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), false);
     const int pauseHideDelay = qBound(0, intSetting(QStringLiteral("pauseHideDelay"), 3), 60);
@@ -407,6 +424,7 @@ void LrcApplet::readSettings()
     const QString blacklistedTracks = setting(QStringLiteral("blacklistedTracks")).trimmed();
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
+    const bool showBackingVocals = boolSetting(QStringLiteral("showBackingVocals"), false);
 
     const bool changed = player != m_configuredPlayer //
         || preferredPlayer != m_preferredPlayer //
@@ -428,7 +446,8 @@ void LrcApplet::readSettings()
         || customHighlightColor != m_customHighlightColor //
         || blacklistedTracks != m_blacklistedTracks //
         || useSpicy != m_useSpicy //
-        || spicyKey != m_spicyKey;
+        || spicyKey != m_spicyKey //
+        || showBackingVocals != m_showBackingVocals;
 
     const bool blacklistChanged = (blacklistedTracks != m_blacklistedTracks);
 
@@ -451,46 +470,75 @@ void LrcApplet::readSettings()
     m_textAlignment = textAlignment;
     m_customHighlightColor = customHighlightColor;
     m_blacklistedTracks = blacklistedTracks;
-    m_useSpicy = useSpicy;
-    m_spicyKey = spicyKey;
-
-    m_spicy->setKey(m_spicyKey);
-    m_spicy->setEnabled(m_useSpicy);
 
     const QString defaultOrder = QStringLiteral("local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom");
     const QString providerOrderRaw = setting(QStringLiteral("providerOrder"), defaultOrder).trimmed();
     const QString disabledProvidersRaw = setting(QStringLiteral("disabledProviders")).trimmed();
-
     const QString localFolder = setting(QStringLiteral("localLyricsFolder")).trimmed();
+    const QString customUrl = setting(QStringLiteral("customLyricsUrl")).trimmed();
+    const QString customHeaders = setting(QStringLiteral("customLyricsHeaders")).trimmed();
+
+    const bool localFolderChanged = (localFolder != m_localFolderConfig);
+    const bool customUrlChanged = (customUrl != m_customUrlConfig);
+    const bool customHeadersChanged = (customHeaders != m_customHeadersConfig);
+    const bool orderChanged = (providerOrderRaw != m_providerOrderConfig);
+    const bool disabledProvidersChanged = (disabledProvidersRaw != m_disabledProvidersConfig);
+    const bool useSpicyChanged = (useSpicy != m_useSpicy);
+    const bool spicyKeyChanged = (spicyKey != m_spicyKey);
+
+    const bool providerSettingsChanged = localFolderChanged
+        || customUrlChanged
+        || customHeadersChanged
+        || orderChanged
+        || disabledProvidersChanged
+        || useSpicyChanged
+        || spicyKeyChanged;
+
+    m_localFolderConfig = localFolder;
+    m_customUrlConfig = customUrl;
+    m_customHeadersConfig = customHeaders;
+    m_providerOrderConfig = providerOrderRaw;
+    m_disabledProvidersConfig = disabledProvidersRaw;
+    m_useSpicy = useSpicy;
+    m_spicyKey = spicyKey;
+
+    const bool backingToggleChanged = (showBackingVocals != m_showBackingVocals);
+    m_showBackingVocals = showBackingVocals;
+    if (backingToggleChanged) {
+        if (!m_showBackingVocals) {
+            clearBacking();
+        }
+        updateWord();
+    }
+
     if (m_localProvider) {
         m_localProvider->setCustomDirectory(localFolder);
     }
 
-    const QString customUrl = setting(QStringLiteral("customLyricsUrl")).trimmed();
-    const QString customHeaders = setting(QStringLiteral("customLyricsHeaders")).trimmed();
     if (m_customProvider) {
         m_customProvider->setUrlTemplate(customUrl);
         m_customProvider->setHeaders(customHeaders);
     }
 
-    const bool providerConfigChanged = (providerOrderRaw != m_providerOrderConfig || disabledProvidersRaw != m_disabledProvidersConfig);
+    m_spicy->setKey(m_spicyKey);
+    m_spicy->setEnabled(m_useSpicy);
 
-    if (!providerOrderRaw.isEmpty()) {
-        m_providerOrderConfig = providerOrderRaw;
-        m_pipeline->setProviderOrder(providerOrderRaw.split(QLatin1Char(','), Qt::SkipEmptyParts));
-    }
-    m_disabledProvidersConfig = disabledProvidersRaw;
-    const QStringList disabledList = disabledProvidersRaw.split(QLatin1Char(','), Qt::SkipEmptyParts);
-    for (LyricsProvider *p : m_pipeline->allProviders()) {
-        const bool shouldEnable = !disabledList.contains(p->id());
-        if (p->id() == QLatin1String("spicy")) {
-            p->setEnabled(shouldEnable && m_useSpicy);
-        } else {
-            p->setEnabled(shouldEnable);
+    if (m_pipeline) {
+        if (!providerOrderRaw.isEmpty()) {
+            m_pipeline->setProviderOrder(providerOrderRaw.split(QLatin1Char(','), Qt::SkipEmptyParts));
+        }
+        const QStringList disabledList = disabledProvidersRaw.split(QLatin1Char(','), Qt::SkipEmptyParts);
+        for (LyricsProvider *p : m_pipeline->allProviders()) {
+            const bool shouldEnable = !disabledList.contains(p->id());
+            if (p->id() == QLatin1String("spicy")) {
+                p->setEnabled(shouldEnable && m_useSpicy);
+            } else {
+                p->setEnabled(shouldEnable);
+            }
         }
     }
 
-    if (providerConfigChanged) {
+    if (orderChanged || disabledProvidersChanged) {
         Q_EMIT providerOrderChanged();
     }
 
@@ -517,8 +565,8 @@ void LrcApplet::readSettings()
         invalidatePlayerCandidates();
     }
 
-    // A new key is worth another try, even for the track that is playing now.
-    if (changed && m_useSpicy && !m_spicyKey.isEmpty() && !m_spotifyTrackId.isEmpty() && !m_fromSpicy) {
+    if (providerSettingsChanged && !m_watchedService.isEmpty() && !m_trackTitle.isEmpty()) {
+        m_lyricsLookupDone = false;
         requestLyrics();
     }
 
@@ -581,7 +629,7 @@ void LrcApplet::copyCurrentLine()
         return;
     }
     // Read the source line: m_text may include the optional timestamp prefix.
-    if (m_text.isEmpty() || m_lineIndex < 0 || m_lineIndex >= m_lyrics.lines.size()) {
+    if ((m_text.isEmpty() && (!m_showBackingVocals || m_backingText.isEmpty())) || m_lineIndex < 0 || m_lineIndex >= m_lyrics.lines.size()) {
         return;
     }
     const QString line = m_lyrics.lines.at(m_lineIndex).text.trimmed();
@@ -1014,6 +1062,7 @@ void LrcApplet::clearLyrics()
     m_missingReason = MissingReason::Unsynced;
     m_lineIndex = -1;
     m_wordCursor = 0;
+    clearBacking();
     if (m_playing && !m_pauseHidden) {
         m_wordTimer.start(kIdleTickMs);
     } else {
@@ -1029,6 +1078,7 @@ void LrcApplet::resetTrackPosition(bool isTrackTransition)
 {
     m_expiryTimer.stop();
     m_expiryRetryCount = 0;
+    clearBacking();
     if (m_positionWatcher) {
         delete m_positionWatcher;
         m_positionWatcher = nullptr;
@@ -1181,6 +1231,7 @@ void LrcApplet::clearDisplay()
 
     resetTrackPosition(false);
     clearLyrics();
+    clearBacking();
     m_wordTimer.stop();
 
     m_spotifyTrackId.clear();
@@ -1216,6 +1267,7 @@ void LrcApplet::onPauseTimeout()
         m_lineIndex = -1;
         m_wordTimer.stop();
         clearWordHighlight();
+        clearBacking();
         setText(QString());
         setActive(false);
         Q_EMIT pauseHiddenChanged();
@@ -1273,6 +1325,7 @@ void LrcApplet::handleLyricsExpired()
     m_lineIndex = -1;
     m_wordCursor = 0;
     clearWordHighlight();
+    clearBacking();
     m_word.clear();
     m_wordStart = 0;
     m_wordEnd = 0;
@@ -1635,10 +1688,13 @@ void LrcApplet::requestLyrics()
     meta.url = m_trackUrl;
     meta.isWebSession = m_webPageSession;
 
+    TrackMetadata searchMeta = meta;
+    normalizeTrackMetadata(&searchMeta);
+
     m_fetchingFromSpicy = false;
     m_fetchingLrc = true;
 
-    m_pipeline->requestLyrics(meta, ++m_lookupGeneration);
+    m_pipeline->requestLyrics(searchMeta, ++m_lookupGeneration);
 }
 
 void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId)
@@ -1647,8 +1703,6 @@ void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, con
         return;
     }
 
-    m_fetchingLrc = false;
-    m_fetchingFromSpicy = false;
     m_activeProviderId = providerId;
     m_fromSpicy = (providerId == QLatin1String("spicy"));
 
@@ -1679,7 +1733,13 @@ void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, con
         setError(QString());
     }
 
-    m_lyricsLookupDone = true;
+    // Syllable lyrics cannot be upgraded further; provisional Line lyrics keep fetching in flight.
+    if (lyrics.type == LyricsType::Syllable) {
+        m_fetchingLrc = false;
+        m_fetchingFromSpicy = false;
+        m_lyricsLookupDone = true;
+    }
+
     m_lyrics = lyrics;
     m_wordSynced = (lyrics.type == LyricsType::Syllable);
     m_lineIndex = -1;
@@ -1708,6 +1768,17 @@ void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, con
     Q_EMIT lyricsChanged();
 }
 
+void LrcApplet::onPipelineLookupFinished(quint64 generation)
+{
+    if (generation != m_lookupGeneration) {
+        return;
+    }
+
+    m_fetchingLrc = false;
+    m_fetchingFromSpicy = false;
+    m_lyricsLookupDone = true;
+}
+
 void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason)
 {
     if (generation != m_lookupGeneration) {
@@ -1719,16 +1790,32 @@ void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason
     m_activeProviderId.clear();
     m_missingReason = lastReason;
 
+    // Safely clear lyrics and attribution/expiry state without changing generation
+    m_expiryTimer.stop();
+    m_lyrics = Lyrics();
+    m_word.clear();
+    m_wordStart = 0;
+    m_wordEnd = 0;
+    m_wordProgress = 0.0;
+    m_wordSynced = false;
+    m_fromSpicy = false;
+    m_lineIndex = -1;
+    m_wordCursor = 0;
+    clearWordHighlight();
+    setText(QString());
+    setActive(false);
+    Q_EMIT wordChanged();
+    Q_EMIT lyricsChanged();
+
     if (!QStandardPaths::findExecutable(QStringLiteral("lrc_tty")).isEmpty()) {
         fetchLrcLyrics(false);
     } else {
         m_lyricsLookupDone = true;
         if (m_playing && !m_pauseHidden) {
             m_wordTimer.start(kIdleTickMs);
+        } else {
+            m_wordTimer.stop();
         }
-        setText(QString());
-        setActive(false);
-        Q_EMIT lyricsChanged();
     }
 }
 
@@ -1816,18 +1903,22 @@ void LrcApplet::moveProviderDown(int index)
 
 void LrcApplet::saveProviderConfig()
 {
-    config().group(s_configGroup).writeEntry(QStringLiteral("providerOrder"), m_pipeline->providerOrder().join(QLatin1Char(',')));
+    const QString orderStr = m_pipeline->providerOrder().join(QLatin1Char(','));
+    m_providerOrderConfig = orderStr;
+    config().group(s_configGroup).writeEntry(QStringLiteral("providerOrder"), orderStr);
     QStringList disabledList;
     for (LyricsProvider *p : m_pipeline->allProviders()) {
         if (!p->isEnabled()) {
             disabledList.append(p->id());
         }
     }
-    config().group(s_configGroup).writeEntry(QStringLiteral("disabledProviders"), disabledList.join(QLatin1Char(',')));
+    const QString disabledStr = disabledList.join(QLatin1Char(','));
+    m_disabledProvidersConfig = disabledStr;
+    config().group(s_configGroup).writeEntry(QStringLiteral("disabledProviders"), disabledStr);
     config().sync();
     if (configuration()) {
-        configuration()->insert(QStringLiteral("providerOrder"), m_pipeline->providerOrder().join(QLatin1Char(',')));
-        configuration()->insert(QStringLiteral("disabledProviders"), disabledList.join(QLatin1Char(',')));
+        configuration()->insert(QStringLiteral("providerOrder"), orderStr);
+        configuration()->insert(QStringLiteral("disabledProviders"), disabledStr);
     }
     Q_EMIT providerOrderChanged();
     Q_EMIT settingsChanged();
@@ -2094,7 +2185,7 @@ void LrcApplet::onPositionFetched()
     }
 
     const qint64 rttMs = m_positionFetchTimer.isValid() ? m_positionFetchTimer.elapsed() : 0;
-    const qint64 rttComp = qBound(0LL, rttMs / 2, 50LL);
+    const qint64 rttComp = m_playing ? qBound(0LL, rttMs / 2, 50LL) : 0LL;
     const qint64 reportedMs = (positionUs / 1000) + rttComp;
 
     // Single unified stale-position guard after track change:
@@ -2329,6 +2420,226 @@ void LrcApplet::clearWordHighlight()
     Q_EMIT wordChanged();
 }
 
+void LrcApplet::setBackingState(const QString &text, int start, int end)
+{
+    if (m_backingText != text || m_backingWordStart != start || m_backingWordEnd != end) {
+        m_backingText = text;
+        m_backingWordStart = start;
+        m_backingWordEnd = end;
+        Q_EMIT backingChanged();
+    }
+}
+
+void LrcApplet::clearBacking()
+{
+    setBackingState(QString(), 0, 0);
+}
+
+void LrcApplet::setLineIndex(int index)
+{
+    if (m_lineIndex != index) {
+        m_lineIndex = index;
+        Q_EMIT lineIndexChanged();
+    }
+}
+
+namespace
+{
+struct ProjectedLine
+{
+    QString mainText;
+    // Map main word index in line.words to (projectedGroupStart, projectedGroupEnd) in mainText
+    QVector<QPair<int, int>> mainWordOffsets;
+
+    struct BgPhrase {
+        QString text;
+        qint64 startMs = 0;
+        qint64 endMs = 0;
+        // Map word index in line.words to (phraseWordStart, phraseWordEnd) in BgPhrase::text
+        QVector<QPair<int, int>> wordOffsets;
+    };
+    QVector<BgPhrase> bgPhrases;
+};
+
+ProjectedLine projectLineForSeparateRendering(const LyricLine &line)
+{
+    ProjectedLine result;
+    const int numWords = line.words.size();
+    result.mainWordOffsets.resize(numWords);
+    for (int i = 0; i < numWords; ++i) {
+        result.mainWordOffsets[i] = qMakePair(-1, -1);
+    }
+
+    if (line.isBackground) {
+        // Entire line is background
+        ProjectedLine::BgPhrase phrase;
+        phrase.text = line.text;
+        phrase.startMs = line.startMs;
+        phrase.endMs = line.endMs;
+        phrase.wordOffsets.resize(numWords);
+        for (int i = 0; i < numWords; ++i) {
+            const LyricWord &w = line.words.at(i);
+            const int gStart = (w.groupStart >= 0) ? w.groupStart : w.textStart;
+            const int gEnd = (w.groupEnd > gStart) ? w.groupEnd : ((w.textEnd > gStart) ? w.textEnd : gStart + w.text.length());
+            phrase.wordOffsets[i] = qMakePair(gStart, gEnd);
+        }
+        result.bgPhrases.append(phrase);
+        return result;
+    }
+
+    bool hasBgWords = false;
+    for (const LyricWord &w : line.words) {
+        if (w.isBackground) {
+            hasBgWords = true;
+            break;
+        }
+    }
+
+    if (!hasBgWords) {
+        result.mainText = line.text;
+        for (int i = 0; i < numWords; ++i) {
+            const LyricWord &w = line.words.at(i);
+            const int gStart = (w.groupStart >= 0) ? w.groupStart : w.textStart;
+            const int gEnd = (w.groupEnd > gStart) ? w.groupEnd : ((w.textEnd > gStart) ? w.textEnd : gStart + w.text.length());
+            result.mainWordOffsets[i] = qMakePair(gStart, gEnd);
+        }
+        return result;
+    }
+
+    const int len = line.text.length();
+    QVector<bool> isBgChar(len, false);
+    for (const LyricWord &w : line.words) {
+        if (w.isBackground) {
+            const int gStart = (w.groupStart >= 0) ? w.groupStart : w.textStart;
+            const int gEnd = (w.groupEnd > gStart) ? w.groupEnd : ((w.textEnd > gStart) ? w.textEnd : gStart + w.text.length());
+            const int s = qBound(0, gStart, len);
+            const int e = qBound(s, gEnd, len);
+            for (int i = s; i < e; ++i) {
+                isBgChar[i] = true;
+            }
+        }
+    }
+
+    // Exclude adjacent whitespace appropriately
+    int i = 0;
+    while (i < len) {
+        if (isBgChar[i]) {
+            int bgStart = i;
+            while (i < len && isBgChar[i]) {
+                ++i;
+            }
+            int bgEnd = i;
+            if (bgEnd == len) {
+                if (bgStart > 0 && line.text.at(bgStart - 1).isSpace()) {
+                    isBgChar[bgStart - 1] = true;
+                }
+            } else if (bgStart == 0) {
+                if (bgEnd < len && line.text.at(bgEnd).isSpace()) {
+                    isBgChar[bgEnd] = true;
+                }
+            } else {
+                if (line.text.at(bgStart - 1).isSpace() && line.text.at(bgEnd).isSpace()) {
+                    isBgChar[bgStart - 1] = true;
+                }
+            }
+        } else {
+            ++i;
+        }
+    }
+
+    // Project main text and build mapping
+    QVector<int> origToProj(len + 1, -1);
+    for (int idx = 0; idx < len; ++idx) {
+        if (!isBgChar[idx]) {
+            origToProj[idx] = result.mainText.length();
+            result.mainText.append(line.text.at(idx));
+        }
+    }
+    origToProj[len] = result.mainText.length();
+
+    for (int wIdx = 0; wIdx < numWords; ++wIdx) {
+        const LyricWord &w = line.words.at(wIdx);
+        if (!w.isBackground) {
+            const int gStart = (w.groupStart >= 0) ? w.groupStart : w.textStart;
+            const int gEnd = (w.groupEnd > gStart) ? w.groupEnd : ((w.textEnd > gStart) ? w.textEnd : gStart + w.text.length());
+            int s = qBound(0, gStart, len);
+            int e = qBound(s, gEnd, len);
+            int projS = -1;
+            for (int k = s; k < e; ++k) {
+                if (origToProj[k] >= 0) {
+                    projS = origToProj[k];
+                    break;
+                }
+            }
+            int projE = -1;
+            for (int k = e - 1; k >= s; --k) {
+                if (origToProj[k] >= 0) {
+                    projE = origToProj[k] + 1;
+                    break;
+                }
+            }
+            if (projS >= 0 && projE >= projS) {
+                result.mainWordOffsets[wIdx] = qMakePair(projS, projE);
+            } else {
+                result.mainWordOffsets[wIdx] = qMakePair(-1, -1);
+            }
+        }
+    }
+
+    // Build background phrases from background words in this line
+    int curGroup = -2;
+    ProjectedLine::BgPhrase curPhrase;
+    QVector<int> curPhraseWordIndices;
+
+    auto finalizePhrase = [&]() {
+        if (curPhraseWordIndices.isEmpty()) return;
+        const LyricWord &firstW = line.words.at(curPhraseWordIndices.first());
+        const LyricWord &lastW = line.words.at(curPhraseWordIndices.last());
+        const int firstGStart = (firstW.groupStart >= 0) ? firstW.groupStart : firstW.textStart;
+        const int lastGEnd = (lastW.groupEnd > lastW.groupStart) ? lastW.groupEnd : ((lastW.textEnd > lastW.textStart) ? lastW.textEnd : lastW.groupStart + lastW.text.length());
+        const int s = qBound(0, firstGStart, len);
+        const int e = qBound(s, lastGEnd, len);
+        curPhrase.text = line.text.mid(s, e - s);
+        curPhrase.startMs = firstW.startMs;
+        curPhrase.endMs = lastW.endMs;
+        curPhrase.wordOffsets.resize(numWords);
+        for (int k = 0; k < numWords; ++k) {
+            curPhrase.wordOffsets[k] = qMakePair(-1, -1);
+        }
+        for (int wIdx : curPhraseWordIndices) {
+            const LyricWord &w = line.words.at(wIdx);
+            const int gStart = (w.groupStart >= 0) ? w.groupStart : w.textStart;
+            const int gEnd = (w.groupEnd > gStart) ? w.groupEnd : ((w.textEnd > gStart) ? w.textEnd : gStart + w.text.length());
+            curPhrase.wordOffsets[wIdx] = qMakePair(gStart - s, gEnd - s);
+        }
+        result.bgPhrases.append(curPhrase);
+        curPhrase = ProjectedLine::BgPhrase();
+        curPhraseWordIndices.clear();
+        curGroup = -2;
+    };
+
+    for (int wIdx = 0; wIdx < numWords; ++wIdx) {
+        const LyricWord &w = line.words.at(wIdx);
+        if (!w.isBackground) {
+            if (curGroup == -1) {
+                finalizePhrase();
+            }
+            continue;
+        }
+
+        const int g = w.backgroundGroup;
+        if (curGroup != -2 && (g >= 0 ? (g != curGroup) : (curGroup != -1))) {
+            finalizePhrase();
+        }
+        curGroup = g;
+        curPhraseWordIndices.append(wIdx);
+    }
+    finalizePhrase();
+
+    return result;
+}
+} // namespace
+
 void LrcApplet::updateWord()
 {
     if (m_fromSpicy && isSpicyExpired()) {
@@ -2352,34 +2663,83 @@ void LrcApplet::updateWord()
         return;
     }
 
-    // Some syncs simply run early or late, and no amount of clever reading will
-    // fix that; a setting does.
-    // m_gaplessLeadMs compensates for Spotify pre-buffering audio before the previous track finished playing.
-    // kAudioLeadCompensationMs compensates for the PipeWire/ALSA DAC audio buffer depth,
-    // bringing the decoder playhead into alignment with what comes out of the speakers.
-    // m_lyricOffset is subtracted so that positive values delay the lyrics (shift them later).
     m_positionMs = m_positionBaseMs + (m_playing && m_positionClock.isValid() ? m_positionClock.elapsed() : 0) - m_gaplessLeadMs - kAudioLeadCompensationMs - m_lyricOffset;
 
     // Before the first line of the track (intro), clear any stale or phantom text.
     if (!m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs) {
-        m_lineIndex = -1;
+        setLineIndex(-1);
         m_wordCursor = 0;
         clearWordHighlight();
-        if (!m_text.isEmpty()) {
-            setText(QString());
-            setActive(false);
-        }
+        clearBacking();
+        setText(QString());
+        setActive(false);
         return;
     }
 
-    const int lineIndex = m_lyrics.lineAt(m_positionMs);
-    if (lineIndex < 0) {
+    int nextLineIdx = -1;
+    const int rawLineIndex = m_lyrics.lineAt(m_positionMs, &nextLineIdx);
+
+    int mainLineIndex = -1;
+    int bgLineIndex = -1;
+
+    const int latestStartedIdx = (nextLineIdx >= 0) ? (nextLineIdx - 1) : (m_lyrics.lines.size() - 1);
+
+    if (rawLineIndex >= 0 && rawLineIndex < m_lyrics.lines.size()) {
+        if (m_lyrics.lines.at(rawLineIndex).isBackground) {
+            bgLineIndex = rawLineIndex;
+            // Scan backwards from latestStartedIdx for an active main line
+            for (int i = latestStartedIdx; i >= 0; --i) {
+                const LyricLine &l = m_lyrics.lines.at(i);
+                if (!l.isBackground && m_positionMs >= l.startMs && m_positionMs < l.endMs) {
+                    mainLineIndex = i;
+                    break;
+                }
+            }
+        } else {
+            mainLineIndex = rawLineIndex;
+        }
+    }
+
+    // Scan BG backwards from latest started line index (nextLineIdx>=0? nextLineIdx-1:lines.size()-1),
+    // no hard 8 bound, select latest active BG. Main remains lineAt primary.
+    if (m_showBackingVocals && bgLineIndex < 0 && latestStartedIdx >= 0) {
+        for (int i = latestStartedIdx; i >= 0; --i) {
+            const LyricLine &l = m_lyrics.lines.at(i);
+            if (l.isBackground && m_positionMs >= l.startMs && m_positionMs < l.endMs) {
+                bgLineIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (m_showBackingVocals && bgLineIndex < 0 && mainLineIndex >= 0) {
+        const LyricLine &main = m_lyrics.lines.at(mainLineIndex);
+        for (int i = 0; i < m_lyrics.lines.size(); ++i) {
+            const LyricLine &l = m_lyrics.lines.at(i);
+            if (l.isBackground && l.startMs < main.endMs && l.endMs > main.startMs) {
+                bgLineIndex = i;
+                break;
+            }
+        }
+    }
+
+    // Check if both main and background are inactive
+    if (mainLineIndex < 0 && (!m_showBackingVocals || bgLineIndex < 0)) {
         clearWordHighlight();
+
+        if (m_text.isEmpty()) {
+            clearBacking();
+            setLineIndex(-1);
+            setActive(false);
+            return;
+        }
 
         // Check if playback is past the last line (outro)
         if (!m_lyrics.lines.isEmpty() && m_positionMs > m_lyrics.lines.last().endMs) {
-            if (m_positionMs > m_lyrics.lines.last().endMs + kTailGraceMs && !m_text.isEmpty()) {
+            if (m_positionMs > m_lyrics.lines.last().endMs + kTailGraceMs) {
                 setText(QString());
+                clearBacking();
+                setLineIndex(-1);
                 setActive(false);
             }
             return;
@@ -2387,127 +2747,278 @@ void LrcApplet::updateWord()
 
         // Between lines: during an instrumental break (gap >= 2.5s), clear the display
         // after a 1.2s grace period so nothing is shown during the musical pause.
-        int nextLineIndex = -1;
-        for (int i = 0; i < m_lyrics.lines.size(); ++i) {
-            if (m_lyrics.lines.at(i).startMs > m_positionMs) {
-                nextLineIndex = i;
-                break;
-            }
-        }
-
-        if (nextLineIndex > 0) {
-            const LyricLine &prevLine = m_lyrics.lines.at(nextLineIndex - 1);
-            const LyricLine &nextLine = m_lyrics.lines.at(nextLineIndex);
+        if (nextLineIdx > 0 && nextLineIdx < m_lyrics.lines.size()) {
+            const LyricLine &prevLine = m_lyrics.lines.at(nextLineIdx - 1);
+            const LyricLine &nextLine = m_lyrics.lines.at(nextLineIdx);
             const qint64 gapDuration = nextLine.startMs - prevLine.endMs;
 
             if (gapDuration >= 2500) {
-                if (m_positionMs >= prevLine.endMs + 1200 && !m_text.isEmpty()) {
+                if (m_positionMs >= prevLine.endMs + 1200) {
                     setText(QString());
+                    clearBacking();
+                    setLineIndex(-1);
                     setActive(false);
                 }
                 return;
             }
         }
-
         return;
     }
 
-    const LyricLine &line = m_lyrics.lines.at(lineIndex);
-    QString tsPrefix;
-    if (m_showTimestamp) {
-        const qint64 totalSecs = qMax(0LL, line.startMs) / 1000;
-        const qint64 mins = totalSecs / 60;
-        const qint64 secs = totalSecs % 60;
-        tsPrefix = QStringLiteral("[%1:%2] ").arg(mins, 2, 10, QLatin1Char('0')).arg(secs, 2, 10, QLatin1Char('0'));
-    }
-    const QString displayLine = tsPrefix + line.text;
-    if (displayLine != m_text) {
-        setActive(true);
-        setText(displayLine);
-    }
-
-    // A new line starts without its first word, so a word from the line before
-    // must not stay highlighted for a tick.
-    if (lineIndex != m_lineIndex) {
-        m_lineIndex = lineIndex;
-        m_wordCursor = 0;
-        clearWordHighlight();
-    }
-
-    if (!m_wordSynced || line.words.isEmpty()) {
-        clearWordHighlight();
-        return;
-    }
-
-    // The timings are per piece, but the highlight covers the whole word: a word
-    // that was sung in two pieces would otherwise blink between its halves.
-    QString currentWord;
-    int currentStart = 0;
-    int currentEnd = 0;
-    double progress = 0.0;
-
-    const LyricWord *active = nullptr;
-    const int wordCount = static_cast<int>(line.words.size());
-    // Playback moves forward, so the walk continues from last time; a seek that
-    // goes back simply starts over.
-    const int from = m_positionMs >= line.words.value(qBound(0, m_wordCursor, wordCount - 1)).startMs ? qBound(0, m_wordCursor, wordCount - 1) : 0;
-
-    for (int i = from; i < wordCount; ++i) {
-        const LyricWord &word = line.words.at(i);
-        if (m_positionMs >= word.startMs && (m_positionMs < word.endMs || word.endMs <= word.startMs)) {
-            active = &word;
-            m_wordCursor = i;
-            break;
+    if (!m_showBackingVocals) {
+        clearBacking();
+        const int activeLineIdx = (mainLineIndex >= 0) ? mainLineIndex : rawLineIndex;
+        if (activeLineIdx < 0 || activeLineIdx >= m_lyrics.lines.size()) {
+            clearWordHighlight();
+            return;
         }
+        const LyricLine &line = m_lyrics.lines.at(activeLineIdx);
+
+        QString tsPrefix;
+        if (m_showTimestamp) {
+            const qint64 totalSecs = qMax(0LL, line.startMs) / 1000;
+            const qint64 mins = totalSecs / 60;
+            const qint64 secs = totalSecs % 60;
+            tsPrefix = QStringLiteral("[%1:%2] ").arg(mins, 2, 10, QLatin1Char('0')).arg(secs, 2, 10, QLatin1Char('0'));
+        }
+        const QString displayLine = tsPrefix + line.text;
+        const bool lineChanged = (activeLineIdx != m_lineIndex);
+        if (displayLine != m_text) {
+            setActive(true);
+            setText(displayLine);
+        } else if (lineChanged) {
+            setActive(true);
+            Q_EMIT textChanged();
+        }
+
+        if (lineChanged) {
+            setLineIndex(activeLineIdx);
+            m_wordCursor = 0;
+            clearWordHighlight();
+        }
+
+        if (!m_wordSynced || line.words.isEmpty()) {
+            clearWordHighlight();
+            return;
+        }
+
+        QString currentWord;
+        int currentStart = 0;
+        int currentEnd = 0;
+        double progress = 0.0;
+
+        // Legacy single-highlight with primary priority via selector:
+        // Use SINGLE wordAt Voice::Any, hold 80; selector already prioritizes activeMain.
+        const int activeWordIdx = LyricSelection::wordAt(line, m_positionMs, LyricSelection::Voice::Any, kWordGapHoldMs);
+
+        if (activeWordIdx >= 0 && activeWordIdx < line.words.size()) {
+            const LyricWord &word = line.words.at(activeWordIdx);
+            const int gStart = (word.groupStart >= 0) ? word.groupStart : word.textStart;
+            const int gEnd = (word.groupEnd > gStart) ? word.groupEnd : ((word.textEnd > gStart) ? word.textEnd : gStart + word.text.length());
+            currentWord = line.text.mid(gStart, gEnd - gStart);
+            const int prefixOffset = tsPrefix.length();
+            currentStart = gStart + prefixOffset;
+            currentEnd = gEnd + prefixOffset;
+            const qint64 span = word.endMs - word.startMs;
+            progress = span > 0 ? static_cast<double>(m_positionMs - word.startMs) / static_cast<double>(span) : 0.0;
+            progress = qBound(0.0, progress, 1.0);
+        }
+
+        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd) {
+            m_word = currentWord;
+            m_wordStart = currentStart;
+            m_wordEnd = currentEnd;
+            m_wordProgress = progress;
+            Q_EMIT wordChanged();
+        } else {
+            m_wordProgress = progress;
+        }
+        return;
     }
 
-    if (!active) {
-        // The position fell between two words. NEVER snap forward to a future word
-        // (which causes karaoke highlights to jump ahead before the vocal begins).
-        // If the previous word just ended within a small micro-gap (kWordGapHoldMs),
-        // keep it highlighted to prevent jarring flicker between fast syllables.
-        if (from == 0) {
-            // Seeked backward or reset: find the last completed word before m_positionMs
-            int lastPassed = -1;
-            for (int i = 0; i < wordCount; ++i) {
-                if (line.words.at(i).endMs <= m_positionMs) {
-                    lastPassed = i;
-                } else {
-                    break;
+    // Experimental separate rendering mode:
+    // MAIN and BACK highlight SIMULTANEOUSLY and independently with independent cursors/properties per voice.
+    if (mainLineIndex >= 0) {
+        const bool lineChanged = (m_lineIndex != mainLineIndex);
+        if (lineChanged) {
+            m_wordCursor = 0;
+            clearWordHighlight();
+        }
+        const LyricLine &mainLine = m_lyrics.lines.at(mainLineIndex);
+        ProjectedLine projected = projectLineForSeparateRendering(mainLine);
+
+        QString tsPrefix;
+        if (m_showTimestamp && !projected.mainText.isEmpty()) {
+            const qint64 totalSecs = qMax(0LL, mainLine.startMs) / 1000;
+            const qint64 mins = totalSecs / 60;
+            const qint64 secs = totalSecs % 60;
+            tsPrefix = QStringLiteral("[%1:%2] ").arg(mins, 2, 10, QLatin1Char('0')).arg(secs, 2, 10, QLatin1Char('0'));
+        }
+
+        const QString displayLine = projected.mainText.isEmpty() ? QString() : (tsPrefix + projected.mainText);
+        if (displayLine != m_text) {
+            setText(displayLine);
+        } else if (lineChanged) {
+            Q_EMIT textChanged();
+        }
+
+        // Main highlight independently timed for Voice::Main
+        QString currentWord;
+        int currentStart = 0;
+        int currentEnd = 0;
+        double progress = 0.0;
+
+        if (m_wordSynced) {
+            const int activeMainIdx = LyricSelection::wordAt(mainLine, m_positionMs, LyricSelection::Voice::Main, kWordGapHoldMs);
+            if (activeMainIdx >= 0 && activeMainIdx < projected.mainWordOffsets.size()) {
+                const auto offsets = projected.mainWordOffsets.at(activeMainIdx);
+                if (offsets.first >= 0 && offsets.second >= offsets.first) {
+                    currentWord = projected.mainText.mid(offsets.first, offsets.second - offsets.first);
+                    const int prefixOffset = tsPrefix.length();
+                    currentStart = offsets.first + prefixOffset;
+                    currentEnd = offsets.second + prefixOffset;
+                    const LyricWord &w = mainLine.words.at(activeMainIdx);
+                    const qint64 span = w.endMs - w.startMs;
+                    progress = span > 0 ? static_cast<double>(m_positionMs - w.startMs) / static_cast<double>(span) : 0.0;
+                    progress = qBound(0.0, progress, 1.0);
                 }
             }
-            m_wordCursor = lastPassed;
         }
 
-        if (m_wordCursor >= 0 && m_wordCursor < wordCount) {
-            const LyricWord &prevWord = line.words.at(m_wordCursor);
-            if (m_positionMs >= prevWord.endMs && (m_positionMs - prevWord.endMs) <= kWordGapHoldMs) {
-                active = &prevWord;
+        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd) {
+            m_word = currentWord;
+            m_wordStart = currentStart;
+            m_wordEnd = currentEnd;
+            m_wordProgress = progress;
+            Q_EMIT wordChanged();
+        } else {
+            m_wordProgress = progress;
+        }
+
+        // Backing vocal independently timed for Voice::Background
+        QString newBackingText;
+        int newBackingStart = 0;
+        int newBackingEnd = 0;
+
+        if (!projected.bgPhrases.isEmpty()) {
+            const int activeBgIdx = m_wordSynced ? LyricSelection::wordAt(mainLine, m_positionMs, LyricSelection::Voice::Background, kWordGapHoldMs) : -1;
+
+            const ProjectedLine::BgPhrase *chosenPhrase = nullptr;
+            if (activeBgIdx >= 0) {
+                // Choose displayed BG phrase containing selected BG word
+                for (const auto &phrase : projected.bgPhrases) {
+                    if (activeBgIdx < phrase.wordOffsets.size() && phrase.wordOffsets.at(activeBgIdx).first >= 0) {
+                        chosenPhrase = &phrase;
+                        break;
+                    }
+                }
+            }
+
+            // If no active word was found, select latest active phrase by time
+            if (!chosenPhrase) {
+                for (int p = projected.bgPhrases.size() - 1; p >= 0; --p) {
+                    const auto &phrase = projected.bgPhrases.at(p);
+                    if (m_positionMs >= phrase.startMs && m_positionMs < phrase.endMs + kWordGapHoldMs) {
+                        chosenPhrase = &phrase;
+                        break;
+                    }
+                }
+            }
+
+            // If still no phrase by time, keep the line's backing phrase stable throughout the line
+            // so backing text is present from line start ("изначально серое") without layout jumping.
+            if (!chosenPhrase) {
+                if (m_positionMs < projected.bgPhrases.first().startMs) {
+                    chosenPhrase = &projected.bgPhrases.first();
+                } else if (m_positionMs >= projected.bgPhrases.last().endMs) {
+                    chosenPhrase = &projected.bgPhrases.last();
+                } else {
+                    for (const auto &phrase : projected.bgPhrases) {
+                        if (m_positionMs < phrase.endMs) {
+                            chosenPhrase = &phrase;
+                            break;
+                        }
+                    }
+                    if (!chosenPhrase) {
+                        chosenPhrase = &projected.bgPhrases.last();
+                    }
+                }
+            }
+
+            if (chosenPhrase) {
+                newBackingText = chosenPhrase->text;
+                if (activeBgIdx >= 0 && activeBgIdx < chosenPhrase->wordOffsets.size()) {
+                    const auto bgOffsets = chosenPhrase->wordOffsets.at(activeBgIdx);
+                    if (bgOffsets.first >= 0) {
+                        newBackingStart = bgOffsets.first;
+                        newBackingEnd = bgOffsets.second;
+                    }
+                }
             }
         }
+
+        if (!newBackingText.isEmpty()) {
+            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd) {
+                Q_EMIT backingChanged();
+            }
+            setBackingState(newBackingText, newBackingStart, newBackingEnd);
+        } else if (bgLineIndex >= 0) {
+            // Background line alongside main line
+            const LyricLine &bgLine = m_lyrics.lines.at(bgLineIndex);
+            newBackingText = bgLine.text;
+            if (m_wordSynced) {
+                int activeBgIdx = LyricSelection::wordAt(bgLine, m_positionMs, LyricSelection::Voice::Background, kWordGapHoldMs);
+                if (activeBgIdx < 0) {
+                    activeBgIdx = LyricSelection::wordAt(bgLine, m_positionMs, LyricSelection::Voice::Any, kWordGapHoldMs);
+                }
+                if (activeBgIdx >= 0 && activeBgIdx < bgLine.words.size()) {
+                    const LyricWord &w = bgLine.words.at(activeBgIdx);
+                    const int gStart = (w.groupStart >= 0) ? w.groupStart : w.textStart;
+                    const int gEnd = (w.groupEnd > gStart) ? w.groupEnd : ((w.textEnd > gStart) ? w.textEnd : gStart + w.text.length());
+                    newBackingStart = gStart;
+                    newBackingEnd = gEnd;
+                }
+            }
+            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd) {
+                Q_EMIT backingChanged();
+            }
+            setBackingState(newBackingText, newBackingStart, newBackingEnd);
+        } else {
+            clearBacking();
+        }
+        setLineIndex(mainLineIndex);
+    } else if (bgLineIndex >= 0) {
+        // Bg only line (no main line active)
+        setLineIndex(bgLineIndex);
+        setText(QString());
+        clearWordHighlight();
+
+        const LyricLine &bgLine = m_lyrics.lines.at(bgLineIndex);
+        QString newBackingText = bgLine.text;
+        int newBackingStart = 0;
+        int newBackingEnd = 0;
+
+        if (m_wordSynced) {
+            int activeBgIdx = LyricSelection::wordAt(bgLine, m_positionMs, LyricSelection::Voice::Background, kWordGapHoldMs);
+            if (activeBgIdx < 0) {
+                activeBgIdx = LyricSelection::wordAt(bgLine, m_positionMs, LyricSelection::Voice::Any, kWordGapHoldMs);
+            }
+            if (activeBgIdx >= 0 && activeBgIdx < bgLine.words.size()) {
+                const LyricWord &w = bgLine.words.at(activeBgIdx);
+                const int gStart = (w.groupStart >= 0) ? w.groupStart : w.textStart;
+                const int gEnd = (w.groupEnd > gStart) ? w.groupEnd : ((w.textEnd > gStart) ? w.textEnd : gStart + w.text.length());
+                newBackingStart = gStart;
+                newBackingEnd = gEnd;
+            }
+        }
+        setBackingState(newBackingText, newBackingStart, newBackingEnd);
     }
 
-    if (active) {
-        currentWord = line.text.mid(active->groupStart, active->groupEnd - active->groupStart);
-        const int prefixOffset = tsPrefix.length();
-        currentStart = active->groupStart + prefixOffset;
-        currentEnd = active->groupEnd + prefixOffset;
-        const qint64 span = active->endMs - active->startMs;
-        progress = span > 0 ? static_cast<double>(m_positionMs - active->startMs) / static_cast<double>(span) : 0.0;
-        progress = qBound(0.0, progress, 1.0);
-    }
-
-    // Only a change of the word itself is worth a signal. Progress moves on every
-    // tick, and emitting that had the panel rebuilding its rich text fifty times a
-    // second for something nobody draws.
-    if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd) {
-        m_word = currentWord;
-        m_wordStart = currentStart;
-        m_wordEnd = currentEnd;
-        m_wordProgress = progress;
-        Q_EMIT wordChanged();
+    // Set active true when bg only and experimental non-empty; QML agent adapts hasLyrics
+    if (!m_text.isEmpty() || !m_backingText.isEmpty()) {
+        setActive(true);
     } else {
-        m_wordProgress = progress;
+        setActive(false);
     }
 }
 

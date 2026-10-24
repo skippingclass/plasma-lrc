@@ -7,6 +7,7 @@
 #include "qqmusicprovider.h"
 #include "lrcparser.h"
 #include "qrcdecoder.h"
+#include "trackmatch.h"
 #include "trackname.h"
 
 #include <QJsonArray>
@@ -20,13 +21,6 @@ namespace
 {
 constexpr int kTimeoutMs = 7000;
 constexpr int kMaxDurationDiffSec = 4;
-
-bool titlesMatch(const QString &candidate, const QString &target)
-{
-    const QString c = cleanTrackTitle(candidate).trimmed().toLower();
-    const QString t = cleanTrackTitle(target).trimmed().toLower();
-    return c == t || c.contains(t) || t.contains(c);
-}
 } // namespace
 
 QqMusicProvider::QqMusicProvider(QObject *parent)
@@ -157,12 +151,14 @@ void QqMusicProvider::handleSearchReply(const QByteArray &data)
         return;
     }
 
-    const qint64 targetDurSec = m_meta.durationMs > 0 ? (m_meta.durationMs + 500) / 1000 : 0;
     QString matchedMid;
 
     for (const QJsonValue &v : songs) {
         const QJsonObject obj = v.toObject();
-        const QString name = obj.value(QStringLiteral("name")).toString();
+        QString name = obj.value(QStringLiteral("name")).toString();
+        if (name.isEmpty()) {
+            name = obj.value(QStringLiteral("title")).toString();
+        }
         const qint64 interval = obj.value(QStringLiteral("interval")).toInt();
         const QString mid = obj.value(QStringLiteral("mid")).toString();
 
@@ -170,28 +166,30 @@ void QqMusicProvider::handleSearchReply(const QByteArray &data)
             continue;
         }
 
-        if (targetDurSec > 0 && interval > 0 && qAbs(targetDurSec - interval) > kMaxDurationDiffSec) {
-            continue;
+        // Parse singers from QQ Music in-source fields: 'singer' array of objects with 'name' / 'title'
+        QStringList singerList;
+        const QJsonArray singerArray = obj.value(QStringLiteral("singer")).toArray();
+        for (const QJsonValue &s : singerArray) {
+            QString sName = s.toObject().value(QStringLiteral("name")).toString().trimmed();
+            if (sName.isEmpty()) {
+                sName = s.toObject().value(QStringLiteral("title")).toString().trimmed();
+            }
+            if (!sName.isEmpty()) {
+                singerList.append(sName);
+            }
+        }
+        if (singerList.isEmpty() && obj.contains(QStringLiteral("singer_name"))) {
+            const QString sName = obj.value(QStringLiteral("singer_name")).toString().trimmed();
+            if (!sName.isEmpty()) {
+                singerList.append(sName);
+            }
         }
 
-        if (titlesMatch(name, m_meta.title)) {
+        const qint64 durMs = interval > 0 ? interval * 1000 : 0;
+
+        if (TrackMatch::matchCandidate(m_meta, name, singerList, durMs, kMaxDurationDiffSec * 1000)) {
             matchedMid = mid;
             break;
-        }
-    }
-
-    if (matchedMid.isEmpty() && !songs.isEmpty()) {
-        for (const QJsonValue &v : songs) {
-            const QJsonObject obj = v.toObject();
-            const qint64 interval = obj.value(QStringLiteral("interval")).toInt();
-            const QString mid = obj.value(QStringLiteral("mid")).toString();
-            if (mid.isEmpty()) {
-                continue;
-            }
-            if (targetDurSec <= 0 || interval <= 0 || qAbs(targetDurSec - interval) <= kMaxDurationDiffSec) {
-                matchedMid = mid;
-                break;
-            }
         }
     }
 

@@ -14,18 +14,20 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QStandardPaths>
+#include <QXmlStreamReader>
 
 namespace
 {
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.7.2 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.0 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
-AmllProvider::AmllProvider(QObject *parent, const QString &cdnBase)
+AmllProvider::AmllProvider(QObject *parent, const QString &cdnBase, const QString &fallbackBase)
     : LyricsProvider(parent)
     , m_cdnBase(cdnBase)
+    , m_fallbackBase(fallbackBase)
 {
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, &AmllProvider::onTimeout);
@@ -94,13 +96,36 @@ void AmllProvider::cancel()
         m_currentReply = nullptr;
     }
     m_pendingTrackId.clear();
+    m_currentGeneration = 0;
+}
+
+void AmllProvider::invalidateCache(const TrackMetadata &meta)
+{
+    const QString trackId = meta.spotifyTrackId.trimmed();
+    if (trackId.isEmpty()) {
+        return;
+    }
+
+    if (m_pendingTrackId == trackId) {
+        cancel();
+    }
+
+    m_negativeCache.remove(trackId);
+
+    const QString diskPath = cacheDirectory() + QStringLiteral("/") + trackId + QStringLiteral(".ttml");
+    if (QFile::exists(diskPath)) {
+        QFile::remove(diskPath);
+    }
 }
 
 void AmllProvider::executeFetch(const QString &trackId, bool isFallback)
 {
-    QString urlStr = m_cdnBase;
-    if (isFallback) {
-        urlStr = QStringLiteral("https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/spotify-lyrics/");
+    QString urlStr = isFallback ? m_fallbackBase : m_cdnBase;
+    if (urlStr.isEmpty()) {
+        const quint64 gen = m_currentGeneration;
+        m_pendingTrackId.clear();
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
     }
     if (!urlStr.endsWith(QLatin1Char('/'))) {
         urlStr.append(QLatin1Char('/'));
@@ -134,27 +159,58 @@ void AmllProvider::onReplyFinished()
     const qint64 durationMs = m_pendingDurationMs;
     const bool isFallback = reply->property("isFallback").toBool();
 
+    if (trackId.isEmpty() || gen == 0) {
+        return;
+    }
+
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
     if (reply->error() != QNetworkReply::NoError || statusCode != 200) {
-        if (!isFallback && (statusCode == 404 || statusCode == 0 || statusCode >= 500)) {
-            // Try GitHub raw mirror before failing
+        if (!isFallback && !m_fallbackBase.isEmpty() && (statusCode == 404 || statusCode == 0 || statusCode >= 500)) {
+            // Try fallback mirror before failing
             executeFetch(trackId, true);
             return;
         }
 
         m_pendingTrackId.clear();
-        m_negativeCache.insert(trackId, QDateTime::currentMSecsSinceEpoch());
-        const MissingReason reason = (statusCode == 404) ? MissingReason::NotFound : MissingReason::Unreachable;
-        Q_EMIT lyricsFailed(gen, reason, id());
+        // Negative cache ONLY on confirmed 404 Not Found!
+        // Never on transient network errors, 429, 5xx, or status 0.
+        if (statusCode == 404) {
+            m_negativeCache.insert(trackId, QDateTime::currentMSecsSinceEpoch());
+            Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+        } else {
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        }
         return;
     }
 
     const QByteArray data = reply->readAll();
     m_pendingTrackId.clear();
 
+    const QString text = QString::fromUtf8(data);
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("<!DOCTYPE"), Qt::CaseInsensitive)
+        || trimmed.startsWith(QLatin1String("<html"), Qt::CaseInsensitive)
+        || !trimmed.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
+        // Malformed transient response (empty, HTML error page, or not TTML)
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
+    }
+
+    // Check XML well-formedness
+    QXmlStreamReader xmlReader(trimmed);
+    while (!xmlReader.atEnd()) {
+        xmlReader.readNext();
+    }
+    if (xmlReader.hasError()) {
+        // Malformed / truncated XML transient response
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
+    }
+
     Lyrics lyrics;
-    if (!TtmlParser::parseTtml(QString::fromUtf8(data), &lyrics, durationMs)) {
+    if (!TtmlParser::parseTtml(trimmed, &lyrics, durationMs) || !lyrics.isUsable()) {
+        // Well-formed TTML document, but confirmed unsynced
         m_negativeCache.insert(trackId, QDateTime::currentMSecsSinceEpoch());
         Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
         return;

@@ -118,10 +118,10 @@
         </entry>
 
         <entry name="wordStyle" type="Int">
-            <label>How the word being sung is marked: 0 is underline, 1 is bold, 2 is highlight color, 3 is none.</label>
+            <label>How the word being sung is marked: 0 is underline, 1 is bold, 2 is highlight color, 3 is none, 4 is sung words become white.</label>
             <default>1</default>
             <min>0</min>
-            <max>3</max>
+            <max>4</max>
         </entry>
 
         <entry name="pauseHideDelay" type="Int">
@@ -165,6 +165,11 @@
         <entry name="blacklistedTracks" type="String">
             <label>List of artist - title pairs whose lyrics should be ignored (semicolon separated).</label>
             <default></default>
+        </entry>
+
+        <entry name="showBackingVocals" type="Bool">
+            <label>Show backing vocals in parentheses with synchronized highlighting.</label>
+            <default>false</default>
         </entry>
     </group>
 </kcfg>

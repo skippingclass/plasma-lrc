@@ -7,6 +7,7 @@
 #pragma once
 
 #include "lrcparser.h"
+#include "lyrictypes.h"
 
 #include <QHash>
 #include <QJsonObject>
@@ -18,8 +19,8 @@
 class QNetworkReply;
 
 /**
- * Native LRCLIB client with multi-tier search, candidate duration scoring,
- * monotonic generation tracking, and local caching ported from /home/pirkov/self/server/src/lyrics.js.
+ * Native LRCLIB client with multi-tier search, candidate identity validation,
+ * duration scoring, monotonic generation tracking, and local caching.
  */
 class LrclibClient : public QObject
 {
@@ -30,14 +31,18 @@ public:
                           const QUrl &apiBase = QUrl(QStringLiteral("https://lrclib.net/api/")));
     ~LrclibClient() override;
 
+    QString request(const TrackMetadata &meta);
     QString request(const QString &title, const QString &artist, qint64 durationMs = 0, bool fromWebPage = false);
     void cancel();
+    void invalidate(const TrackMetadata &meta);
+    void invalidate(const QString &title, const QString &artist, qint64 durationMs = 0, bool fromWebPage = false);
     QString currentKey() const { return m_currentKey; }
 
-    static int scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs);
-    static bool parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs = 0);
+    static int scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs, const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
+    static bool parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs = 0, const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
     static bool isDurationCompatible(double candDurationSec, qint64 targetDurationMs);
     static double maxAllowedDurationDiffSec(qint64 targetDurationMs);
+    static bool validateCandidateIdentity(const QJsonObject &cand, const QString &expectedTitle, const QString &expectedArtist);
 
     static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs);
     static QString cacheDirectory();
@@ -71,6 +76,8 @@ private:
 
     QString m_currentKey;
     qint64 m_currentDurationMs = 0;
+    QString m_expectedTitle;
+    QString m_expectedArtist;
     QVector<SearchAttempt> m_attempts;
     int m_attemptIndex = 0;
     bool m_hadRateLimitOrNetworkError = false;

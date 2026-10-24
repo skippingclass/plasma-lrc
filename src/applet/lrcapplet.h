@@ -28,6 +28,7 @@
 #include "qqmusicprovider.h"
 #include "localprovider.h"
 #include "customprovider.h"
+#include "lyricselection.h"
 
 class QDBusPendingCallWatcher;
 class LrclibClient;
@@ -64,6 +65,14 @@ class LrcApplet : public Plasma::Applet
     // signal behind it: a binding reads it when it wants it.
     Q_PROPERTY(double wordProgress READ wordProgress)
     Q_PROPERTY(bool wordSynced READ isWordSynced NOTIFY lyricsChanged)
+    Q_PROPERTY(bool showBackingVocals READ showBackingVocals NOTIFY settingsChanged)
+    Q_PROPERTY(QString backingText READ backingText NOTIFY backingChanged)
+    Q_PROPERTY(int backingWordStart READ backingWordStart NOTIFY backingChanged)
+    Q_PROPERTY(int backingWordEnd READ backingWordEnd NOTIFY backingChanged)
+    Q_PROPERTY(int lineIndex READ lineIndex NOTIFY lineIndexChanged)
+    Q_PROPERTY(bool hasLyrics READ hasLyrics NOTIFY lyricsChanged)
+    Q_PROPERTY(bool isIntro READ isIntro NOTIFY lineIndexChanged)
+    Q_PROPERTY(bool isBreak READ isBreak NOTIFY lineIndexChanged)
 
     // Who the lyrics came from, required to be shown when the API is used
     Q_PROPERTY(QString attribution READ attribution NOTIFY lyricsChanged)
@@ -197,6 +206,47 @@ public:
             return false;
         }
         return m_wordSynced;
+    }
+    bool showBackingVocals() const
+    {
+        return m_showBackingVocals;
+    }
+    QString backingText() const
+    {
+        if (isSpicyExpired() || !m_showBackingVocals || m_pauseHidden) {
+            return QString();
+        }
+        return m_backingText;
+    }
+    int backingWordStart() const
+    {
+        if (isSpicyExpired() || !m_showBackingVocals || m_pauseHidden) {
+            return 0;
+        }
+        return m_backingWordStart;
+    }
+    int backingWordEnd() const
+    {
+        if (isSpicyExpired() || !m_showBackingVocals || m_pauseHidden) {
+            return 0;
+        }
+        return m_backingWordEnd;
+    }
+    int lineIndex() const
+    {
+        return m_lineIndex;
+    }
+    bool hasLyrics() const
+    {
+        return !isSpicyExpired() && m_lyrics.isUsable();
+    }
+    bool isIntro() const
+    {
+        return hasLyrics() && !m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs;
+    }
+    bool isBreak() const
+    {
+        return hasLyrics() && !m_lyrics.lines.isEmpty() && m_lineIndex < 0 && !isIntro() && m_positionMs <= m_lyrics.lines.last().endMs;
     }
     QString fullLyrics() const;
     QString attribution() const;
@@ -335,6 +385,8 @@ Q_SIGNALS:
     void activeChanged();
     void availableChanged();
     void wordChanged();
+    void backingChanged();
+    void lineIndexChanged();
     void lyricsChanged();
     void playerChanged();
     void trackInfoChanged();
@@ -357,6 +409,7 @@ private Q_SLOTS:
     void onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
     void onPipelineResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId);
     void onPipelineAllFailed(quint64 generation, MissingReason lastReason);
+    void onPipelineLookupFinished(quint64 generation);
     void onSpicyLoaded(const QString &trackId, const Lyrics &lyrics);
     void onSpicyMissing(const QString &trackId, MissingReason reason);
     void onLrclibLoaded(const QString &requestKey, const Lyrics &lyrics);
@@ -369,6 +422,9 @@ private Q_SLOTS:
     void updateWord();
     /// Drops the word highlight, with a signal only if there was one.
     void clearWordHighlight();
+    void clearBacking();
+    void setBackingState(const QString &text, int start, int end);
+    void setLineIndex(int index);
 
 private:
     friend class LrcAppletSyncTest;
@@ -460,6 +516,9 @@ private:
     QString m_activeProviderId;
     QString m_providerOrderConfig;
     QString m_disabledProvidersConfig;
+    QString m_localFolderConfig;
+    QString m_customUrlConfig;
+    QString m_customHeadersConfig;
     void saveProviderConfig();
 
     QString m_text;
@@ -579,4 +638,8 @@ private:
     int m_lineIndex;
     /// Where the word search starts inside the current line.
     int m_wordCursor;
+    bool m_showBackingVocals = false;
+    QString m_backingText;
+    int m_backingWordStart = 0;
+    int m_backingWordEnd = 0;
 };

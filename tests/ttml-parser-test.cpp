@@ -148,6 +148,223 @@ int main()
         }
     }
 
+    // 6. Apple Music / Unison TTML with timed x-bg container immediately following word without space
+    {
+        const QString ttml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p begin=\"01:48.750\" end=\"01:50.743\">\n"
+            "        <span begin=\"01:50.279\" end=\"01:50.743\">bands</span><span ttm:role=\"x-bg\" begin=\"01:49.134\" end=\"01:50.345\"><span begin=\"01:49.134\" end=\"01:49.538\">(Blegh,</span> <span begin=\"01:49.890\" end=\"01:50.345\">blegh)</span></span>\n"
+            "      </p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics;
+        const bool ok = TtmlParser::parseTtml(ttml, &lyrics, 120000);
+        check("x-bg-timed: parsed", ok);
+        check("x-bg-timed: 1 line", lyrics.lines.size() == 1, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 1) {
+            const LyricLine &line = lyrics.lines.at(0);
+            check("x-bg-timed: space separates word and bracket", line.text == QStringLiteral("bands (Blegh, blegh)"), line.text);
+            check("x-bg-timed: word count is 3", line.words.size() == 3, QString::number(line.words.size()));
+            if (line.words.size() == 3) {
+                check("x-bg-timed: word 0 'bands'", line.words.at(0).text == QStringLiteral("bands") && line.words.at(0).groupStart == 0 && line.words.at(0).groupEnd == 5);
+                check("x-bg-timed: word 0 not background", !line.words.at(0).isBackground && line.words.at(0).backgroundGroup == -1);
+                check("x-bg-timed: word 1 '(Blegh,'", line.words.at(1).text == QStringLiteral("(Blegh,") && line.words.at(1).groupStart == 6 && line.words.at(1).groupEnd == 13);
+                check("x-bg-timed: word 1 is background", line.words.at(1).isBackground && line.words.at(1).backgroundGroup == 0);
+                check("x-bg-timed: word 2 'blegh)'", line.words.at(2).text == QStringLiteral("blegh)") && line.words.at(2).groupStart == 14 && line.words.at(2).groupEnd == 20);
+                check("x-bg-timed: word 2 is background same group", line.words.at(2).isBackground && line.words.at(2).backgroundGroup == 0);
+            }
+        }
+    }
+
+    // 7. Explicit background paragraph (<p ttm:role="x-bg">) and role inheritance
+    {
+        const QString ttml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p begin=\"00:10.000\" end=\"00:15.000\">\n"
+            "        <span begin=\"00:10.000\" end=\"00:12.000\">Lead</span> <span begin=\"00:12.000\" end=\"00:14.000\">vocals</span>\n"
+            "      </p>\n"
+            "      <p ttm:role=\"x-bg\" begin=\"00:11.000\" end=\"00:16.000\">\n"
+            "        <span begin=\"00:11.000\" end=\"00:13.000\">Backing</span> <span begin=\"00:13.000\" end=\"00:15.500\">vocals</span>\n"
+            "      </p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics;
+        const bool ok = TtmlParser::parseTtml(ttml, &lyrics, 30000);
+        check("bg-paragraph: parsed", ok);
+        check("bg-paragraph: 2 lines", lyrics.lines.size() == 2, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 2) {
+            const LyricLine &lead = lyrics.lines.at(0);
+            const LyricLine &bg = lyrics.lines.at(1);
+            check("bg-paragraph: lead line is not bg", !lead.isBackground);
+            check("bg-paragraph: bg line isBackground", bg.isBackground);
+            check("bg-paragraph: bg words count", bg.words.size() == 2);
+            if (bg.words.size() == 2) {
+                check("bg-paragraph: bg word 0 isBackground", bg.words.at(0).isBackground && bg.words.at(0).backgroundGroup == 0);
+                check("bg-paragraph: bg word 1 isBackground", bg.words.at(1).isBackground && bg.words.at(1).backgroundGroup == 0);
+            }
+
+            // Test lineAt priority: at 11500 both lead (10000..15000) and bg (11000..16000) are active.
+            // Active primary lead line must be prioritized over simultaneous background line.
+            int nextLine = -1;
+            const int chosen = lyrics.lineAt(11500, &nextLine);
+            check("lineAt: prioritize active primary over bg", chosen == 0, QString::number(chosen));
+
+            // At 15500 lead has ended, bg is still active: bg fallback
+            const int bgChosen = lyrics.lineAt(15500, &nextLine);
+            check("lineAt: fallback to active bg line", bgChosen == 1, QString::number(bgChosen));
+
+            // nextLineIndex check before any line
+            lyrics.lineAt(5000, &nextLine);
+            check("lineAt: nextLineIndex before lines", nextLine == 0, QString::number(nextLine));
+
+            // nextLineIndex check during lead line
+            lyrics.lineAt(10500, &nextLine);
+            check("lineAt: nextLineIndex during lead line points to future bg", nextLine == 1, QString::number(nextLine));
+
+            // nextLineIndex check after all lines
+            lyrics.lineAt(20000, &nextLine);
+            check("lineAt: nextLineIndex after all lines is -1", nextLine == -1, QString::number(nextLine));
+        }
+    }
+
+    // 8. Multiple distinct x-bg containers get stable distinct backgroundGroups
+    {
+        const QString ttml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p begin=\"00:01.000\" end=\"00:10.000\">\n"
+            "        <span begin=\"00:01.000\" end=\"00:02.000\">A</span>\n"
+            "        <span ttm:role=\"x-bg\"><span begin=\"00:02.000\" end=\"00:03.000\">B</span> <span begin=\"00:03.000\" end=\"00:04.000\">C</span></span>\n"
+            "        <span begin=\"00:04.000\" end=\"00:05.000\">D</span>\n"
+            "        <span ttm:role=\"x-bg\"><span begin=\"00:05.000\" end=\"00:06.000\">E</span></span>\n"
+            "      </p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics;
+        const bool ok = TtmlParser::parseTtml(ttml, &lyrics, 20000);
+        check("multi-bg: parsed", ok);
+        if (lyrics.lines.size() == 1) {
+            const LyricLine &line = lyrics.lines.at(0);
+            check("multi-bg: 5 words", line.words.size() == 5, QString::number(line.words.size()));
+            if (line.words.size() == 5) {
+                check("multi-bg: word 0 'A' main", !line.words.at(0).isBackground && line.words.at(0).backgroundGroup == -1);
+                check("multi-bg: word 1 'B' bg group 0", line.words.at(1).isBackground && line.words.at(1).backgroundGroup == 0);
+                check("multi-bg: word 2 'C' bg group 0", line.words.at(2).isBackground && line.words.at(2).backgroundGroup == 0);
+                check("multi-bg: word 3 'D' main", !line.words.at(3).isBackground && line.words.at(3).backgroundGroup == -1);
+                check("multi-bg: word 4 'E' bg group 1", line.words.at(4).isBackground && line.words.at(4).backgroundGroup == 1);
+            }
+        }
+    }
+
+    // 9. Parentheses without explicit x-bg role do NOT infer background
+    {
+        const QString ttml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p begin=\"00:01.000\" end=\"00:05.000\">\n"
+            "        <span begin=\"00:01.000\" end=\"00:02.500\">(Hello</span> <span begin=\"00:02.500\" end=\"00:04.000\">world)</span>\n"
+            "      </p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics;
+        const bool ok = TtmlParser::parseTtml(ttml, &lyrics, 10000);
+        check("no-bg-inference: parsed", ok);
+        if (lyrics.lines.size() == 1) {
+            const LyricLine &line = lyrics.lines.at(0);
+            check("no-bg-inference: line is not bg", !line.isBackground);
+            if (line.words.size() == 2) {
+                check("no-bg-inference: word 0 not bg", !line.words.at(0).isBackground && line.words.at(0).backgroundGroup == -1);
+                check("no-bg-inference: word 1 not bg", !line.words.at(1).isBackground && line.words.at(1).backgroundGroup == -1);
+            }
+        }
+    }
+
+    // 10. Regression: long main line (0..10000) followed by 10 background lines (starting 100..1000)
+    // At 1500, active main index 0 must be selected, not lost due to any lookback window.
+    // Also test gap and after-all nextLineIndex semantics.
+    {
+        Lyrics lyrics;
+        lyrics.type = LyricsType::Line;
+
+        LyricLine mainLine;
+        mainLine.text = QStringLiteral("Main lead line");
+        mainLine.startMs = 0;
+        mainLine.endMs = 10000;
+        mainLine.isBackground = false;
+        lyrics.lines.append(mainLine);
+
+        // 10 background lines starting from 100 to 1000, ending at 1200
+        for (int i = 1; i <= 10; ++i) {
+            LyricLine bgLine;
+            bgLine.text = QStringLiteral("bg %1").arg(i);
+            bgLine.startMs = i * 100;
+            bgLine.endMs = 1200;
+            bgLine.isBackground = true;
+            lyrics.lines.append(bgLine);
+        }
+
+        // At 1500: all 10 bg lines have ended, but mainLine (0..10000) is still active!
+        int nextLine = -1;
+        const int at1500 = lyrics.lineAt(1500, &nextLine);
+        check("regression: at 1500 selects main index 0 despite 10 intervening bg lines", at1500 == 0, QString::number(at1500));
+        // All lines in lyrics have started before 1500, so nextLine must be -1
+        check("regression: nextLine at 1500 (no future lines) is -1", nextLine == -1, QString::number(nextLine));
+
+        // After all lines have ended (e.g. 15000): lineAt returns -1 and nextLineIndex is -1
+        nextLine = 999;
+        const int at15000 = lyrics.lineAt(15000, &nextLine);
+        check("regression: after all lines lineAt is -1", at15000 == -1, QString::number(at15000));
+        check("regression: after all lines nextLine is -1", nextLine == -1, QString::number(nextLine));
+
+        // In gap before future line: add a line at 20000..25000
+        LyricLine futureLine;
+        futureLine.text = QStringLiteral("Future line");
+        futureLine.startMs = 20000;
+        futureLine.endMs = 25000;
+        lyrics.lines.append(futureLine);
+
+        // In gap between 10000 and 20000 (e.g. at 15000):
+        nextLine = -1;
+        const int inGap = lyrics.lineAt(15000, &nextLine);
+        check("regression: in gap lineAt is -1", inGap == -1, QString::number(inGap));
+        check("regression: in gap nextLine points to future line", nextLine == 11, QString::number(nextLine));
+    }
+
+    // 11. TTML metadata namespace URI support with arbitrary prefix
+    {
+        const QString ttml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:meta=\"http://www.w3.org/ns/ttml#metadata\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p meta:role=\"x-bg\" begin=\"00:01.000\" end=\"00:04.000\">\n"
+            "        <span begin=\"00:01.000\" end=\"00:03.000\">Backing vocal</span>\n"
+            "      </p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics;
+        const bool ok = TtmlParser::parseTtml(ttml, &lyrics, 10000);
+        check("meta-ns: parsed", ok);
+        if (lyrics.lines.size() == 1) {
+            check("meta-ns: line recognized as background via namespace URI", lyrics.lines.at(0).isBackground);
+        }
+    }
+
     if (s_failed == 0) {
         std::cout << "\nAll TTML parser tests passed successfully.\n";
         return 0;

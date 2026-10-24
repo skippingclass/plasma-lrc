@@ -26,6 +26,7 @@ KCM.SimpleKCM {
     property alias cfg_fadeTransition: fadeTransitionCheckBox.checked
     property alias cfg_textAlignment: textAlignmentBox.currentIndex
     property alias cfg_customHighlightColor: customHighlightColorField.text
+    property alias cfg_showBackingVocals: showBackingVocalsCheckBox.checked
 
     Kirigami.FormLayout {
 
@@ -77,7 +78,7 @@ KCM.SimpleKCM {
             id: wordStyleBox
 
             Kirigami.FormData.label: i18n("Sung word:")
-            model: [i18n("Underlined"), i18n("Bold"), i18n("Highlight color"), i18n("None")]
+            model: [i18n("Underlined"), i18n("Bold"), i18n("Highlight color"), i18n("None"), i18n("Sung words become white")]
         }
 
         RowLayout {
@@ -168,6 +169,24 @@ KCM.SimpleKCM {
 
             Kirigami.FormData.label: i18n("Transitions:")
             text: i18n("Smooth fade animation between lines")
+        }
+
+        QQC2.CheckBox {
+            id: showBackingVocalsCheckBox
+
+            Kirigami.FormData.label: i18n("Backing vocals:")
+            text: i18n("Experimental backing vocals")
+            QQC2.ToolTip.visible: hovered
+            QQC2.ToolTip.text: i18n("Show backing vocals in parentheses with synchronized highlighting.")
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Show backing vocals in parentheses with synchronized highlighting.")
         }
     }
 }

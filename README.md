@@ -51,6 +51,8 @@
   All cached API payloads have a hard deadline of 30 days maximum, and payloads with unknown or non-positive expiration times are rejected. Stored responses are automatically purged on startup, on access, and during periodic maintenance passes while the widget runs (in-memory cache entries and open-reader snapshots expire under the same policy; no background deletion occurs while the application or computer is stopped). Line-synced fallbacks are refreshed after 2 days to discover newly added community syllable syncs.
 - **Smooth Visual Transitions**:  
   Subtle fade animations between lyric lines without any flickering during word-to-word singing.
+- **Experimental Backing Vocals**:
+  Optional secondary line for backing vocal tracks with independent word-level sync, automatic 30px panel layout adaptation, and support in popup representations.
 
 ---
 
@@ -96,6 +98,9 @@
 ## Installation
 
 ### Arch Linux (AUR)
+
+> [!NOTE]
+> *Once published — waiting for registration reopening due to current AUR limitations.*
 
 ```bash
 yay -S plasma6-applet-lrc-git

@@ -7,9 +7,11 @@
 #include "lrcredprovider.h"
 #include "lrcparser.h"
 #include "lrclib.h"
+#include "trackmatch.h"
 #include "trackname.h"
 #include "ttmlparser.h"
 
+#include <cmath>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -22,13 +24,14 @@
 #include <QNetworkRequest>
 #include <QStandardPaths>
 #include <QUrlQuery>
+#include <QXmlStreamReader>
 
 namespace
 {
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.7.2 (https://github.com/skippingclass/plasma-lrc; contact: skippingclass@github)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.0 (https://github.com/skippingclass/plasma-lrc; contact: skippingclass@github)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -75,6 +78,7 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
     cancel();
 
     m_currentGeneration = generation;
+    m_currentMeta = meta;
     m_targetDurationMs = meta.durationMs;
     m_currentCacheKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, meta.isrc);
 
@@ -113,7 +117,9 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
     // Search query
     QString artist = meta.artist;
     QString title = meta.title;
-    splitTrackArtistAndTitle(&artist, &title, meta.isWebSession);
+    if (!meta.searchNormalized) {
+        splitTrackArtistAndTitle(&artist, &title, meta.isWebSession);
+    }
     const QString cleanedTitle = cleanTrackTitle(title);
     const QString primaryArtist = extractPrimaryArtist(cleanTrackArtist(artist));
 
@@ -136,6 +142,38 @@ void LrcRedProvider::cancel()
         m_currentReply = nullptr;
     }
     m_currentCacheKey.clear();
+    m_currentGeneration = 0;
+    m_currentMeta = TrackMetadata{};
+}
+
+void LrcRedProvider::invalidateCache(const TrackMetadata &meta)
+{
+    QStringList keysToInvalidate;
+    const QString mainKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, meta.isrc);
+    if (!mainKey.isEmpty()) {
+        keysToInvalidate.append(mainKey);
+    }
+    if (!meta.isrc.isEmpty() && !meta.title.isEmpty()) {
+        const QString fallbackKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, QString());
+        if (!fallbackKey.isEmpty() && fallbackKey != mainKey) {
+            keysToInvalidate.append(fallbackKey);
+        }
+    }
+
+    for (const QString &key : keysToInvalidate) {
+        if (m_currentCacheKey == key) {
+            cancel();
+        }
+        m_negativeCache.remove(key);
+        const QString ttmlPath = cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".ttml");
+        if (QFile::exists(ttmlPath)) {
+            QFile::remove(ttmlPath);
+        }
+        const QString lrcPath = cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".lrc");
+        if (QFile::exists(lrcPath)) {
+            QFile::remove(lrcPath);
+        }
+    }
 }
 
 void LrcRedProvider::startSearch(const QString &query)
@@ -190,6 +228,12 @@ void LrcRedProvider::onReplyFinished()
     m_currentReply = nullptr;
     reply->deleteLater();
 
+    const quint64 gen = m_currentGeneration;
+    const QString cacheKey = m_currentCacheKey;
+    if (cacheKey.isEmpty() || gen == 0) {
+        return;
+    }
+
     const QString action = reply->property("action").toString();
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
@@ -206,11 +250,15 @@ void LrcRedProvider::onReplyFinished()
             return;
         }
 
-        const quint64 gen = m_currentGeneration;
-        m_negativeCache.insert(m_currentCacheKey, QDateTime::currentMSecsSinceEpoch());
         m_currentCacheKey.clear();
-        const MissingReason reason = (statusCode == 404) ? MissingReason::NotFound : MissingReason::Unreachable;
-        Q_EMIT lyricsFailed(gen, reason, id());
+        // Negative cache ONLY on confirmed 404 Not Found!
+        // Never on transient network errors, 429, 5xx, or status 0.
+        if (statusCode == 404) {
+            m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+            Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+        } else {
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        }
         return;
     }
 
@@ -225,54 +273,135 @@ void LrcRedProvider::onReplyFinished()
 
 void LrcRedProvider::handleSearchReply(const QByteArray &data)
 {
-    const QJsonObject root = QJsonDocument::fromJson(data).object();
+    const quint64 gen = m_currentGeneration;
+    const QString cacheKey = m_currentCacheKey;
+
+    if (cacheKey.isEmpty() || gen == 0) {
+        return;
+    }
+
+    if (data.trimmed().isEmpty()) {
+        m_currentCacheKey.clear();
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
+    }
+
+    QJsonParseError parseErr;
+    const QJsonDocument doc = QJsonDocument::fromJson(data, &parseErr);
+    if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
+        // Malformed transient response (e.g. truncated JSON or HTML page with 200 status)
+        m_currentCacheKey.clear();
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
+    }
+
+    const QJsonObject root = doc.object();
     const QJsonArray hits = root.value(QStringLiteral("hits")).toArray();
 
     if (hits.isEmpty()) {
-        const quint64 gen = m_currentGeneration;
-        m_negativeCache.insert(m_currentCacheKey, QDateTime::currentMSecsSinceEpoch());
+        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
         m_currentCacheKey.clear();
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
         return;
     }
 
-    // Pick best hit matching duration (if known) or first hit with word sync
+    TrackMetadata target = m_currentMeta;
+    target.durationMs = m_targetDurationMs;
+    if (!m_currentMeta.searchNormalized) {
+        splitTrackArtistAndTitle(&target.artist, &target.title, m_currentMeta.isWebSession);
+    }
+    target.title = target.title.trimmed();
+    target.artist = target.artist.trimmed();
+
     QJsonObject bestHit;
-    bool found = false;
-    double minDurDiff = 999999.0;
+    int bestScore = -1;
+    double bestDurationDiff = 999999.0;
 
     for (const auto &val : hits) {
-        const QJsonObject obj = val.toObject();
-        const double candDur = obj.value(QStringLiteral("duration")).toDouble(0.0);
-        if (m_targetDurationMs > 0) {
-            if (candDur > 0.0) {
-                if (LrclibClient::isDurationCompatible(candDur, m_targetDurationMs)) {
-                    const double diff = qAbs(candDur - (m_targetDurationMs / 1000.0));
-                    if (diff < minDurDiff) {
-                        minDurDiff = diff;
-                        bestHit = obj;
-                        found = true;
-                    }
+        if (!val.isObject()) {
+            continue;
+        }
+        const QJsonObject cand = val.toObject();
+
+        QString candTitle = cand.value(QStringLiteral("title")).toString();
+        if (candTitle.isEmpty()) {
+            candTitle = cand.value(QStringLiteral("name")).toString();
+        }
+        if (candTitle.isEmpty()) {
+            candTitle = cand.value(QStringLiteral("trackName")).toString();
+        }
+        candTitle = candTitle.trimmed();
+
+        QString candArtist = cand.value(QStringLiteral("artist")).toString();
+        if (candArtist.isEmpty()) {
+            candArtist = cand.value(QStringLiteral("artistName")).toString();
+        }
+        if (candArtist.isEmpty()) {
+            candArtist = cand.value(QStringLiteral("artist_name")).toString();
+        }
+        if (candArtist.isEmpty()) {
+            const QJsonValue artsVal = cand.value(QStringLiteral("artists"));
+            if (artsVal.isArray()) {
+                QStringList arts;
+                for (const auto &a : artsVal.toArray()) {
+                    if (a.isString()) arts.append(a.toString());
+                    else if (a.isObject()) arts.append(a.toObject().value(QStringLiteral("name")).toString());
                 }
-            } else if (!found && bestHit.isEmpty()) {
-                // Keep candidate with unknown duration as fallback only if no compatible candidate found
-                bestHit = obj;
+                candArtist = arts.join(QLatin1String(", "));
             }
-        } else if (!found) {
-            bestHit = obj;
-            found = true;
+        }
+        candArtist = candArtist.trimmed();
+
+        const double candDur = cand.value(QStringLiteral("duration")).toDouble(0.0);
+        const QString candIsrc = cand.value(QStringLiteral("isrc")).toString().trimmed();
+
+        const QJsonObject files = cand.value(QStringLiteral("files")).toObject();
+        const QString ttmlUrl = files.value(QStringLiteral("ttml")).toString();
+        const QString lrcUrl = files.value(QStringLiteral("lrc")).toString();
+        if (ttmlUrl.isEmpty() && lrcUrl.isEmpty() && candIsrc.isEmpty()) {
+            continue;
+        }
+
+        const qint64 candDurMs = candDur > 0.0 ? static_cast<qint64>(std::round(candDur * 1000.0)) : 0;
+        if (!TrackMatch::matchCandidate(target, candTitle, candArtist, candDurMs)) {
+            continue;
+        }
+
+        int score = 0;
+        if (candTitle.compare(target.title, Qt::CaseInsensitive) == 0) {
+            score += 50;
+        } else {
+            score += 30;
+        }
+        if (candArtist.compare(target.artist, Qt::CaseInsensitive) == 0) {
+            score += 30;
+        } else {
+            score += 15;
+        }
+        double diff = 999999.0;
+        if (m_targetDurationMs > 0 && candDur > 0.0) {
+            diff = qAbs(candDur - (m_targetDurationMs / 1000.0));
+            if (diff <= 1.0) score += 30;
+            else if (diff <= 2.0) score += 20;
+            else if (diff <= 5.0) score += 10;
+            else score += 5;
+        }
+        if (!candIsrc.isEmpty() && !m_currentMeta.isrc.isEmpty() && candIsrc.compare(m_currentMeta.isrc, Qt::CaseInsensitive) == 0) {
+            score += 40;
+        }
+        if (!ttmlUrl.isEmpty()) {
+            score += 10;
+        }
+
+        if (score > bestScore || (score == bestScore && diff < bestDurationDiff)) {
+            bestScore = score;
+            bestDurationDiff = diff;
+            bestHit = cand;
         }
     }
 
-    if (!found) {
-        if (m_targetDurationMs > 0 && !bestHit.isEmpty() && bestHit.value(QStringLiteral("duration")).toDouble(0.0) <= 0.0) {
-            found = true;
-        }
-    }
-
-    if (!found) {
-        const quint64 gen = m_currentGeneration;
-        m_negativeCache.insert(m_currentCacheKey, QDateTime::currentMSecsSinceEpoch());
+    if (bestHit.isEmpty()) {
+        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
         m_currentCacheKey.clear();
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
         return;
@@ -283,10 +412,18 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
     const QString lrcUrl = files.value(QStringLiteral("lrc")).toString();
     const QString isrc = bestHit.value(QStringLiteral("isrc")).toString();
 
+    auto resolveUrl = [this](const QString &rawUrl) -> QUrl {
+        QUrl u(rawUrl);
+        if (u.isRelative()) {
+            return QUrl(m_apiBase).resolved(u);
+        }
+        return u;
+    };
+
     if (!ttmlUrl.isEmpty()) {
-        startFileDownload(QUrl(ttmlUrl), true, isrc);
+        startFileDownload(resolveUrl(ttmlUrl), true, isrc);
     } else if (!lrcUrl.isEmpty()) {
-        startFileDownload(QUrl(lrcUrl), false, isrc);
+        startFileDownload(resolveUrl(lrcUrl), false, isrc);
     } else if (!isrc.isEmpty()) {
         QString directUrl = m_apiBase;
         if (!directUrl.endsWith(QLatin1Char('/'))) {
@@ -295,8 +432,7 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
         directUrl += QStringLiteral("s/%1.ttml").arg(isrc);
         startFileDownload(QUrl(directUrl), true, isrc);
     } else {
-        const quint64 gen = m_currentGeneration;
-        m_negativeCache.insert(m_currentCacheKey, QDateTime::currentMSecsSinceEpoch());
+        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
         m_currentCacheKey.clear();
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
     }
@@ -308,19 +444,64 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
     const QString cacheKey = m_currentCacheKey;
     m_currentCacheKey.clear();
 
-    Lyrics lyrics;
-    bool ok = false;
+    if (cacheKey.isEmpty() || gen == 0) {
+        return;
+    }
+
     const QString text = QString::fromUtf8(data);
+    const QString trimmed = text.trimmed();
+
+    if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("<!DOCTYPE"), Qt::CaseInsensitive)
+        || trimmed.startsWith(QLatin1String("<html"), Qt::CaseInsensitive)) {
+        // Malformed transient response (HTML error page, empty data)
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
+    }
 
     if (isTtml) {
-        ok = TtmlParser::parseTtml(text, &lyrics, m_targetDurationMs);
-    }
-    if (!ok) {
-        // Fall back to LRC parsing
-        ok = LrcParser::parseLrc(text, &lyrics, m_targetDurationMs);
+        if (!trimmed.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            return;
+        }
+        QXmlStreamReader xmlReader(trimmed);
+        bool hasTt = false;
+        while (!xmlReader.atEnd()) {
+            xmlReader.readNext();
+            if (xmlReader.isStartElement() && xmlReader.name().toString().compare(QLatin1String("tt"), Qt::CaseInsensitive) == 0) {
+                hasTt = true;
+            }
+        }
+        if (xmlReader.hasError() || !hasTt) {
+            // Malformed / truncated XML transient response
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            return;
+        }
+    } else {
+        const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
+        if (!jsonDoc.isNull() && (jsonDoc.isObject() || jsonDoc.isArray())) {
+            // Malformed / JSON response instead of LRC
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            return;
+        }
     }
 
-    if (!ok || !lyrics.isUsable()) {
+    Lyrics lyrics;
+    bool ok = false;
+
+    if (isTtml) {
+        ok = TtmlParser::parseTtml(trimmed, &lyrics, m_targetDurationMs);
+    } else {
+        ok = LrcParser::parseLrc(trimmed, &lyrics, m_targetDurationMs);
+    }
+
+    if (!ok) {
+        // Parsing error in payload -> transient Unreachable, NO negative cache
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
+    }
+
+    if (!lyrics.isUsable()) {
+        // Valid text/TTML, but confirmed unsynced
         m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
         Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
         return;

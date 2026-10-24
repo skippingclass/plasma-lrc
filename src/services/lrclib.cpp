@@ -5,6 +5,7 @@
  */
 
 #include "lrclib.h"
+#include "trackmatch.h"
 #include "trackname.h"
 
 #include <QCryptographicHash>
@@ -27,7 +28,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.7.2 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.0 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -81,12 +82,54 @@ bool LrclibClient::isDurationCompatible(double candDurationSec, qint64 targetDur
     return diff <= maxDiff;
 }
 
-int LrclibClient::scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs)
+bool LrclibClient::validateCandidateIdentity(const QJsonObject &cand, const QString &expectedTitle, const QString &expectedArtist)
+{
+    const QString expTitle = expectedTitle.trimmed();
+    const QString expArtist = expectedArtist.trimmed();
+    if (expTitle.isEmpty() && expArtist.isEmpty()) {
+        return true;
+    }
+
+    QString candTitle = cand.value(QStringLiteral("trackName")).toString();
+    if (candTitle.isEmpty()) {
+        candTitle = cand.value(QStringLiteral("name")).toString();
+    }
+    candTitle = candTitle.trimmed();
+
+    QString candArtist = cand.value(QStringLiteral("artistName")).toString();
+    if (candArtist.isEmpty()) {
+        candArtist = cand.value(QStringLiteral("artist")).toString();
+    }
+    candArtist = candArtist.trimmed();
+
+    // Strict identity validation: missing title or missing artist when expected fails
+    if (!expTitle.isEmpty()) {
+        if (candTitle.isEmpty() || !TrackMatch::matchTitles(candTitle, expTitle)) {
+            return false;
+        }
+    }
+
+    if (!expArtist.isEmpty()) {
+        if (candArtist.isEmpty() || !TrackMatch::matchArtists(candArtist, expArtist)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+int LrclibClient::scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs, const QString &expectedTitle, const QString &expectedArtist)
 {
     const QString synced = cand.value(QStringLiteral("syncedLyrics")).toString();
     const QString plain = cand.value(QStringLiteral("plainLyrics")).toString();
     if (synced.isEmpty() && plain.isEmpty()) {
         return -1;
+    }
+
+    if (!expectedTitle.trimmed().isEmpty() || !expectedArtist.trimmed().isEmpty()) {
+        if (!validateCandidateIdentity(cand, expectedTitle, expectedArtist)) {
+            return -1;
+        }
     }
 
     const double candDurationSec = cand.value(QStringLiteral("duration")).toDouble(-1.0);
@@ -115,11 +158,18 @@ int LrclibClient::scoreSearchMatch(const QJsonObject &cand, qint64 targetDuratio
     return score;
 }
 
-bool LrclibClient::parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs)
+bool LrclibClient::parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs, const QString &expectedTitle, const QString &expectedArtist)
 {
     if (!lyrics) {
         return false;
     }
+
+    if (!expectedTitle.trimmed().isEmpty() || !expectedArtist.trimmed().isEmpty()) {
+        if (!validateCandidateIdentity(cand, expectedTitle, expectedArtist)) {
+            return false;
+        }
+    }
+
     const double candDurationSec = cand.value(QStringLiteral("duration")).toDouble(-1.0);
     if (trackDurationMs > 0 && candDurationSec > 0) {
         if (!isDurationCompatible(candDurationSec, trackDurationMs)) {
@@ -151,6 +201,8 @@ void LrclibClient::cleanupAttemptState()
     m_attempts.clear();
     m_attemptIndex = 0;
     m_currentDurationMs = 0;
+    m_expectedTitle.clear();
+    m_expectedArtist.clear();
     m_bestCandidate = QJsonObject();
     m_bestScore = -1;
     m_hadRateLimitOrNetworkError = false;
@@ -163,22 +215,58 @@ void LrclibClient::cancel()
     m_currentKey.clear();
 }
 
+void LrclibClient::invalidate(const QString &title, const QString &artist, qint64 durationMs, bool fromWebPage)
+{
+    TrackMetadata meta;
+    meta.title = title;
+    meta.artist = artist;
+    meta.durationMs = durationMs;
+    meta.isWebSession = fromWebPage;
+    invalidate(meta);
+}
+
+void LrclibClient::invalidate(const TrackMetadata &meta)
+{
+    TrackMetadata normMeta = meta;
+    normalizeTrackMetadata(&normMeta);
+
+    const QString key = makeCacheKey(normMeta.title, normMeta.artist, normMeta.durationMs);
+    if (key.isEmpty()) {
+        return;
+    }
+
+    if (m_currentKey == key) {
+        cancel();
+    }
+
+    m_memoryCache.remove(key);
+
+    const QString diskPath = cacheDirectory() + QLatin1Char('/') + key + QStringLiteral(".json");
+    if (QFile::exists(diskPath)) {
+        QFile::remove(diskPath);
+    }
+}
+
 QString LrclibClient::request(const QString &title, const QString &artist, qint64 durationMs, bool fromWebPage)
+{
+    TrackMetadata meta;
+    meta.title = title;
+    meta.artist = artist;
+    meta.durationMs = durationMs;
+    meta.isWebSession = fromWebPage;
+    return request(meta);
+}
+
+QString LrclibClient::request(const TrackMetadata &meta)
 {
     cancel();
 
-    QString baseTitle = title.trimmed();
-    QString baseArtist = artist.trimmed();
-
-    splitTrackArtistAndTitle(&baseArtist, &baseTitle, fromWebPage);
-
-    const QString cleanedTitle = cleanTrackTitle(baseTitle);
-    const QString cleanedArtist = cleanTrackArtist(baseArtist);
-    const QString primaryArtist = extractPrimaryArtist(baseArtist);
+    TrackMetadata normMeta = meta;
+    normalizeTrackMetadata(&normMeta);
 
     // If title is empty, return stable key and queue missing asynchronously
-    if (baseTitle.isEmpty()) {
-        const QString emptyKey = makeCacheKey(QString(), baseArtist, durationMs);
+    if (normMeta.title.isEmpty()) {
+        const QString emptyKey = makeCacheKey(QString(), normMeta.artist, normMeta.durationMs);
         m_currentKey = emptyKey;
         const quint64 gen = m_generation;
         QTimer::singleShot(0, this, [this, gen, key = emptyKey] {
@@ -189,8 +277,10 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
         return emptyKey;
     }
 
-    m_currentKey = makeCacheKey(baseTitle, baseArtist, durationMs);
-    m_currentDurationMs = durationMs;
+    m_currentKey = makeCacheKey(normMeta.title, normMeta.artist, normMeta.durationMs);
+    m_currentDurationMs = normMeta.durationMs;
+    m_expectedTitle = normMeta.title;
+    m_expectedArtist = normMeta.artist;
     const QString reqKey = m_currentKey;
     const quint64 gen = m_generation;
 
@@ -207,7 +297,7 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
         return reqKey;
     }
 
-    // Check disk cache
+    // Check disk cache with strict candidate identity validation
     const QString diskPath = cacheDirectory() + QLatin1Char('/') + reqKey + QStringLiteral(".json");
     if (QFile::exists(diskPath)) {
         QFile file(diskPath);
@@ -218,7 +308,8 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
             const QDateTime modified = QFileInfo(diskPath).lastModified();
             const qint64 age = modified.isValid() ? modified.msecsTo(QDateTime::currentDateTime()) : kCacheTtlMs + 1;
 
-            if (QJsonDocument::fromJson(payload).object().value(QStringLiteral("missing")).toBool()) {
+            const QJsonObject diskObj = QJsonDocument::fromJson(payload).object();
+            if (diskObj.value(QStringLiteral("missing")).toBool()) {
                 if (age <= kNegativeCacheTtlMs) {
                     QTimer::singleShot(0, this, [this, gen, key = reqKey] {
                         if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
@@ -230,25 +321,32 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
                     return reqKey;
                 }
             } else if (age <= kCacheTtlMs) {
-                const QJsonObject cand = QJsonDocument::fromJson(payload).object();
-                Lyrics lyrics;
-                if (parseCandidate(cand, &lyrics, durationMs)) {
-                    m_memoryCache.insert(reqKey, {lyrics, modified.toMSecsSinceEpoch() + kCacheTtlMs});
-                    QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics] {
-                        if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
-                            cleanupAttemptState();
-                            m_currentKey.clear();
-                            Q_EMIT loaded(key, lyrics);
-                        }
-                    });
-                    return reqKey;
+                if (validateCandidateIdentity(diskObj, m_expectedTitle, m_expectedArtist)) {
+                    Lyrics lyrics;
+                    if (parseCandidate(diskObj, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
+                        m_memoryCache.insert(reqKey, {lyrics, modified.toMSecsSinceEpoch() + kCacheTtlMs});
+                        QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics] {
+                            if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
+                                cleanupAttemptState();
+                                m_currentKey.clear();
+                                Q_EMIT loaded(key, lyrics);
+                            }
+                        });
+                        return reqKey;
+                    }
+                } else {
+                    // Cached candidate does not match expected identity; purge wrong entry
+                    QFile::remove(diskPath);
                 }
             }
         }
     }
 
-    // Build multi-tier search attempts following /home/pirkov/self/server/src/lyrics.js
-    const qint64 durationSec = durationMs > 0 ? qRound(durationMs / 1000.0) : 0;
+    // Build multi-tier search attempts using normalized metadata
+    const QString cleanedTitle = normMeta.title;
+    const QString cleanedArtist = normMeta.artist;
+    const QString primaryArtist = extractPrimaryArtist(normMeta.artist);
+    const qint64 durationSec = normMeta.durationMs > 0 ? qRound(normMeta.durationMs / 1000.0) : 0;
 
     // 1. Exact match (/api/get)
     QVector<QPair<QString, QString>> getQueries;
@@ -257,11 +355,6 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
     }
     if (!cleanedTitle.isEmpty() && !primaryArtist.isEmpty() && primaryArtist != cleanedArtist) {
         getQueries.append({cleanedTitle, primaryArtist});
-    }
-    if (baseTitle != cleanedTitle || baseArtist != cleanedArtist) {
-        if (!baseTitle.isEmpty() && !baseArtist.isEmpty()) {
-            getQueries.append({baseTitle, baseArtist});
-        }
     }
 
     for (const auto &pair : getQueries) {
@@ -277,7 +370,7 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
     }
 
     // 2. Multi-tier search fallback (/api/search)
-    if (!cleanedArtist.isEmpty() || !baseArtist.isEmpty()) {
+    if (!cleanedArtist.isEmpty()) {
         // Tier 1: clean title + clean artist
         if (!cleanedTitle.isEmpty() && !cleanedArtist.isEmpty()) {
             QUrl url(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
@@ -298,17 +391,7 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
             m_attempts.append({url, true});
         }
 
-        // Tier 3: clean title + raw artist
-        if (!cleanedTitle.isEmpty() && !baseArtist.isEmpty() && baseArtist != cleanedArtist && baseArtist != primaryArtist) {
-            QUrl url(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
-            QUrlQuery query;
-            query.addQueryItem(QStringLiteral("track_name"), cleanedTitle);
-            query.addQueryItem(QStringLiteral("artist_name"), baseArtist);
-            url.setQuery(query);
-            m_attempts.append({url, true});
-        }
-
-        // Tier 4: Fuzzy query search ?q=cleanTitle primaryArtist
+        // Tier 3: Fuzzy query search ?q=cleanTitle primaryArtist
         if (!cleanedTitle.isEmpty() && !primaryArtist.isEmpty()) {
             QUrl url(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
             QUrlQuery query;
@@ -316,42 +399,20 @@ QString LrclibClient::request(const QString &title, const QString &artist, qint6
             url.setQuery(query);
             m_attempts.append({url, true});
         }
-
-        // Tier 5: Raw fallback query search ?q=baseTitle baseArtist
-        if (!baseTitle.isEmpty() && !baseArtist.isEmpty() && (baseTitle != cleanedTitle || baseArtist != primaryArtist)) {
-            QUrl url(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
-            QUrlQuery query;
-            query.addQueryItem(QStringLiteral("q"), baseTitle + QLatin1Char(' ') + baseArtist);
-            url.setQuery(query);
-            m_attempts.append({url, true});
-        }
     } else {
         // Title-only search when artist is empty
-        // Tier 1: Search by clean track_name
         if (!cleanedTitle.isEmpty()) {
             QUrl url(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
             QUrlQuery query;
             query.addQueryItem(QStringLiteral("track_name"), cleanedTitle);
             url.setQuery(query);
             m_attempts.append({url, true});
-        }
 
-        // Tier 2: Fuzzy search by clean title
-        if (!cleanedTitle.isEmpty()) {
-            QUrl url(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
-            QUrlQuery query;
-            query.addQueryItem(QStringLiteral("q"), cleanedTitle);
-            url.setQuery(query);
-            m_attempts.append({url, true});
-        }
-
-        // Tier 3: Search by base title if different
-        if (!baseTitle.isEmpty() && baseTitle != cleanedTitle) {
-            QUrl url(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
-            QUrlQuery query;
-            query.addQueryItem(QStringLiteral("q"), baseTitle);
-            url.setQuery(query);
-            m_attempts.append({url, true});
+            QUrl urlFuzzy(m_apiBase.resolved(QUrl(QStringLiteral("search"))));
+            QUrlQuery queryFuzzy;
+            queryFuzzy.addQueryItem(QStringLiteral("q"), cleanedTitle);
+            urlFuzzy.setQuery(queryFuzzy);
+            m_attempts.append({urlFuzzy, true});
         }
     }
 
@@ -386,10 +447,8 @@ void LrclibClient::startNextAttempt()
 
     const SearchAttempt attempt = m_attempts.at(m_attemptIndex++);
     if (m_attemptIndex == 1) {
-        // First attempt (exact match or primary search): send immediately
         executeAttempt(attempt);
     } else {
-        // Subsequent attempts: throttle with 250ms delay to respect LRCLIB rate limits
         QTimer::singleShot(kSearchThrottleDelayMs, this, [this, attempt, gen, key = m_currentKey] {
             if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
                 executeAttempt(attempt);
@@ -426,7 +485,6 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
 
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (statusCode == 429 || statusCode == 503) {
-        // Rate limited or server busy: mark error and do NOT record negative cache
         m_hadRateLimitOrNetworkError = true;
         finishWithMissing(/*writeNegativeCache=*/false);
         return;
@@ -434,10 +492,8 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
 
     if (reply->error() != QNetworkReply::NoError) {
         if (reply->error() != QNetworkReply::ContentNotFoundError) {
-            // Network failure, timeout, or connection reset
             m_hadRateLimitOrNetworkError = true;
         }
-        // Continue to next attempt
         startNextAttempt();
         return;
     }
@@ -449,10 +505,13 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
         // /api/get: single candidate
         if (doc.isObject()) {
             const QJsonObject cand = doc.object();
-            Lyrics lyrics;
-            if (parseCandidate(cand, &lyrics, m_currentDurationMs)) {
-                finishWithCandidate(cand);
-                return;
+            // Defensively validate candidate identity even for /get
+            if (validateCandidateIdentity(cand, m_expectedTitle, m_expectedArtist)) {
+                Lyrics lyrics;
+                if (parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
+                    finishWithCandidate(cand);
+                    return;
+                }
             }
         }
     } else {
@@ -462,19 +521,27 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
             for (const QJsonValue &val : list) {
                 if (!val.isObject()) continue;
                 const QJsonObject cand = val.toObject();
-                Lyrics lyrics;
-                if (!parseCandidate(cand, &lyrics, m_currentDurationMs)) {
+
+                // Strict candidate identity verification: never match solely on duration
+                if (!validateCandidateIdentity(cand, m_expectedTitle, m_expectedArtist)) {
                     continue;
                 }
-                const int score = scoreSearchMatch(cand, m_currentDurationMs);
+
+                Lyrics lyrics;
+                if (!parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
+                    continue;
+                }
+
+                const int score = scoreSearchMatch(cand, m_currentDurationMs, m_expectedTitle, m_expectedArtist);
                 if (score < 0) {
                     continue;
                 }
+
                 if (score > m_bestScore) {
                     m_bestScore = score;
                     m_bestCandidate = cand;
 
-                    // If synced lyrics with duration match within 2s, virtually perfect match
+                    // If synced lyrics with duration match within 2s and identity matches, virtually perfect match
                     const double candDur = cand.value(QStringLiteral("duration")).toDouble(-1.0);
                     if (m_currentDurationMs > 0 && candDur > 0 && qAbs(candDur - (m_currentDurationMs / 1000.0)) <= 2.0) {
                         finishWithCandidate(m_bestCandidate);
@@ -496,7 +563,7 @@ void LrclibClient::finishWithCandidate(const QJsonObject &cand)
 {
     const QString key = m_currentKey;
     Lyrics lyrics;
-    if (parseCandidate(cand, &lyrics, m_currentDurationMs)) {
+    if (parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
         m_memoryCache.insert(key, {lyrics, QDateTime::currentMSecsSinceEpoch() + kCacheTtlMs});
 
         // Write disk cache
@@ -519,7 +586,6 @@ void LrclibClient::finishWithMissing(bool writeNegativeCache)
     const QString key = m_currentKey;
 
     if (writeNegativeCache && !key.isEmpty()) {
-        // Write negative cache only on clean non-matches
         QDir().mkpath(cacheDirectory());
         QFile file(cacheDirectory() + QLatin1Char('/') + key + QStringLiteral(".json"));
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

@@ -18,10 +18,101 @@ PlasmoidItem {
 
     readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
     readonly property string lyricText: Plasmoid.text
-    readonly property bool hasLyrics: !Plasmoid.pauseHidden && Plasmoid.active && lyricText.length > 0
+    readonly property bool showBackingVocals: {
+        if (Plasmoid.showBackingVocals !== undefined) {
+            return Plasmoid.showBackingVocals;
+        }
+        if (Plasmoid.configuration && Plasmoid.configuration.showBackingVocals !== undefined) {
+            return Plasmoid.configuration.showBackingVocals;
+        }
+        return false;
+    }
+    readonly property string backingText: (showBackingVocals && Plasmoid.backingText) ? Plasmoid.backingText : ""
+    readonly property bool hasPrimaryLyrics: !Plasmoid.pauseHidden && Plasmoid.active && lyricText.length > 0
+    readonly property bool hasBackingLyrics: !Plasmoid.pauseHidden && Plasmoid.active && showBackingVocals && backingText.length > 0
+    readonly property bool hasLyrics: hasPrimaryLyrics || hasBackingLyrics
     readonly property int maxCharacters: Plasmoid.maxCharacters
 
-    Layout.minimumWidth: root.vertical ? 0 : 200
+    property string displayedLyric: lyricText
+    property string displayedBacking: backingText
+    property int sungEnd: 0
+    property int backingSungEnd: 0
+
+    readonly property bool isLineFadeAnimRunning: (typeof lyricContainer !== "undefined" && lyricContainer) ? lyricContainer.lineFadeAnimRunning : false
+
+    Connections {
+        target: Plasmoid
+
+        function onLineIndexChanged() {
+            if (!root.compactRepresentationItem) {
+                root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+            }
+        }
+
+        function onWordChanged() {
+            if (root.compactRepresentationItem && root.isLineFadeAnimRunning) {
+                return;
+            }
+            const we = Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0;
+            if (we > root.sungEnd) {
+                root.sungEnd = we;
+            }
+        }
+
+        function onBackingChanged() {
+            if (root.compactRepresentationItem && root.isLineFadeAnimRunning) {
+                return;
+            }
+            const be = Plasmoid.backingWordEnd !== undefined ? Plasmoid.backingWordEnd : 0;
+            if (be > 0) {
+                const stripped = root.stripOuterBrackets(root.displayedBacking, 0, be);
+                if (stripped.end > root.backingSungEnd) {
+                    root.backingSungEnd = stripped.end;
+                }
+            }
+        }
+    }
+
+    Connections {
+        target: root
+
+        function onLyricTextChanged() {
+            if (!root.compactRepresentationItem) {
+                root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                root.displayedLyric = root.lyricText;
+                root.displayedBacking = root.backingText;
+            }
+        }
+
+        function onBackingTextChanged() {
+            if (!root.compactRepresentationItem) {
+                root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                root.displayedBacking = root.backingText;
+            }
+        }
+
+        function onHasLyricsChanged() {
+            if (!root.hasLyrics) {
+                root.sungEnd = 0;
+                root.backingSungEnd = 0;
+                if (!root.compactRepresentationItem) {
+                    root.displayedLyric = "";
+                    root.displayedBacking = "";
+                }
+            } else {
+                root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                if (!root.compactRepresentationItem) {
+                    root.displayedLyric = root.lyricText;
+                    root.displayedBacking = root.backingText;
+                }
+            }
+        }
+    }
+
+    Layout.minimumWidth: root.vertical ? 0 : Math.max(200, compactRepresentationItem ? compactRepresentationItem.Layout.minimumWidth : 200)
     Layout.preferredWidth: root.vertical ? -1 : Math.max(200, compactRepresentationItem ? compactRepresentationItem.Layout.preferredWidth : 200)
     implicitWidth: root.vertical ? (compactRepresentationItem ? compactRepresentationItem.implicitWidth : 0) : Math.max(200, compactRepresentationItem ? compactRepresentationItem.implicitWidth : 200)
 
@@ -53,8 +144,78 @@ PlasmoidItem {
         return Kirigami.Theme.highlightColor;
     }
 
+    readonly property string textColorHex: {
+        const tc = Kirigami.Theme.textColor;
+        const r = Math.round(tc.r * 255).toString(16).padStart(2, '0');
+        const g = Math.round(tc.g * 255).toString(16).padStart(2, '0');
+        const b = Math.round(tc.b * 255).toString(16).padStart(2, '0');
+        return "#" + r + g + b;
+    }
+
+    readonly property string grayColorHex: {
+        const dt = Kirigami.Theme.disabledTextColor;
+        const r = Math.round(dt.r * 255).toString(16).padStart(2, '0');
+        const g = Math.round(dt.g * 255).toString(16).padStart(2, '0');
+        const b = Math.round(dt.b * 255).toString(16).padStart(2, '0');
+        return "#" + r + g + b;
+    }
+
+    readonly property string faintGrayColorHex: {
+        const dt = Kirigami.Theme.disabledTextColor;
+        const bg = Kirigami.Theme.backgroundColor;
+        const r = Math.round((dt.r * 0.55 + bg.r * 0.45) * 255).toString(16).padStart(2, '0');
+        const g = Math.round((dt.g * 0.55 + bg.g * 0.45) * 255).toString(16).padStart(2, '0');
+        const b = Math.round((dt.b * 0.55 + bg.b * 0.45) * 255).toString(16).padStart(2, '0');
+        return "#" + r + g + b;
+    }
+
+    readonly property string highlightColorHex: {
+        const hc = root.highlightColor;
+        if (typeof hc === "string" && hc.startsWith("#")) {
+            return hc;
+        }
+        const r = Math.round(hc.r * 255).toString(16).padStart(2, '0');
+        const g = Math.round(hc.g * 255).toString(16).padStart(2, '0');
+        const b = Math.round(hc.b * 255).toString(16).padStart(2, '0');
+        return "#" + r + g + b;
+    }
+
+    function stripOuterBrackets(str, bStart, bEnd) {
+        if (!str || str.length === 0) {
+            return { text: "", start: 0, end: 0 };
+        }
+        let s = 0;
+        let e = str.length;
+        while (s < e && str.charAt(s) === ' ') {
+            s++;
+        }
+        if (s < e && (str.charAt(s) === '(' || str.charAt(s) === '[')) {
+            s++;
+            while (s < e && str.charAt(s) === ' ') {
+                s++;
+            }
+        }
+        let trailing = e;
+        while (trailing > s && str.charAt(trailing - 1) === ' ') {
+            trailing--;
+        }
+        if (trailing > s && (str.charAt(trailing - 1) === ')' || str.charAt(trailing - 1) === ']')) {
+            trailing--;
+            while (trailing > s && str.charAt(trailing - 1) === ' ') {
+                trailing--;
+            }
+        }
+        const text = str.substring(s, trailing);
+        const adjStart = Math.max(0, Math.min((bStart !== undefined ? bStart : 0) - s, text.length));
+        const adjEnd = Math.max(adjStart, Math.min((bEnd !== undefined ? bEnd : 0) - s, text.length));
+        return { text: text, start: adjStart, end: adjEnd };
+    }
+
     function formatActiveWord(word) {
         const escaped = escapeHtml(word);
+        if (Plasmoid.wordStyle === 4) {
+            return "<font color=\"" + textColorHex + "\">" + escaped + "</font>";
+        }
         if (Plasmoid.wordStyle === 3) {
             return escaped;
         }
@@ -86,6 +247,22 @@ PlasmoidItem {
         const suffix = (maxCharacters > 0 && text.length > maxCharacters) ? "…" : "";
         const visibleText = text.substring(0, limit);
 
+        if (Plasmoid.wordStyle === 4) {
+            if (!Plasmoid.wordSynced) {
+                return "<font color=\"" + textColorHex + "\">" + escapeHtml(visibleText + suffix) + "</font>";
+            }
+            const sungBoundary = Math.max(0, Math.min(root.sungEnd, limit));
+            if (sungBoundary <= 0) {
+                return "<font color=\"" + grayColorHex + "\">" + escapeHtml(visibleText + suffix) + "</font>";
+            }
+            if (sungBoundary >= limit) {
+                return "<font color=\"" + textColorHex + "\">" + escapeHtml(visibleText + suffix) + "</font>";
+            }
+            const sungPart = "<font color=\"" + textColorHex + "\">" + escapeHtml(visibleText.substring(0, sungBoundary)) + "</font>";
+            const unSungPart = "<font color=\"" + grayColorHex + "\">" + escapeHtml(visibleText.substring(sungBoundary) + suffix) + "</font>";
+            return sungPart + unSungPart;
+        }
+
         if (Plasmoid.wordStyle === 3 || !Plasmoid.wordSynced || Plasmoid.word.length === 0 || Plasmoid.wordStart >= limit || text !== lyricText) {
             return escapeHtml(visibleText + suffix);
         }
@@ -100,24 +277,100 @@ PlasmoidItem {
     // The line with the word being sung marked, for the panel.
     readonly property string compactLine: formatCompactLine(lyricText)
 
+    function formatBackingWord(word) {
+        const escaped = escapeHtml(word);
+        if (Plasmoid.wordStyle === 4 || Plasmoid.wordStyle === 3) {
+            return "<font color=\"" + textColorHex + "\">" + escaped + "</font>";
+        }
+        if (Plasmoid.wordStyle === 1) {
+            return "<font color=\"" + textColorHex + "\"><b>" + escaped + "</b></font>";
+        }
+        if (Plasmoid.wordStyle === 2) {
+            return "<font color=\"" + highlightColorHex + "\">" + escaped + "</font>";
+        }
+        return "<font color=\"" + textColorHex + "\"><u>" + escaped + "</u></font>";
+    }
+
+    function formatBackingLine(text) {
+        const str = text !== undefined ? text : root.displayedBacking;
+        if (!str || str.length === 0) return "";
+        const bStart = Plasmoid.backingWordStart !== undefined ? Plasmoid.backingWordStart : 0;
+        const bEnd = Plasmoid.backingWordEnd !== undefined ? Plasmoid.backingWordEnd : 0;
+
+        const stripped = stripOuterBrackets(str, bStart, bEnd);
+        const cleanText = stripped.text;
+        const adjStart = stripped.start;
+        const adjEnd = stripped.end;
+
+        const limit = (maxCharacters > 0 && cleanText.length > maxCharacters) ? maxCharacters : cleanText.length;
+        const suffix = (maxCharacters > 0 && cleanText.length > maxCharacters) ? "…" : "";
+        const visibleText = cleanText.substring(0, limit);
+
+        if (Plasmoid.wordStyle === 4) {
+            const bgSungBoundary = Math.max(0, Math.min(root.backingSungEnd, limit));
+            if (bgSungBoundary <= 0) {
+                return "<font color=\"" + faintGrayColorHex + "\">" + escapeHtml(visibleText + suffix) + "</font>";
+            }
+            if (bgSungBoundary >= limit) {
+                return "<font color=\"" + textColorHex + "\">" + escapeHtml(visibleText + suffix) + "</font>";
+            }
+            const sungPart = "<font color=\"" + textColorHex + "\">" + escapeHtml(visibleText.substring(0, bgSungBoundary)) + "</font>";
+            const unSungPart = "<font color=\"" + faintGrayColorHex + "\">" + escapeHtml(visibleText.substring(bgSungBoundary) + suffix) + "</font>";
+            return sungPart + unSungPart;
+        }
+
+        if (Plasmoid.wordStyle === 3 || adjEnd <= adjStart || adjStart >= limit) {
+            return escapeHtml(visibleText + suffix);
+        }
+        const wStart = Math.max(0, Math.min(adjStart, limit));
+        const wEnd = Math.max(wStart, Math.min(adjEnd, limit));
+        const activeSlice = visibleText.substring(wStart, wEnd);
+        return escapeHtml(visibleText.substring(0, wStart))
+            + formatBackingWord(activeSlice)
+            + escapeHtml(visibleText.substring(wEnd) + suffix);
+    }
+
     // The line with the word being sung marked, for the popup: what has already
     // been sung is dimmed.
     readonly property string fullLine: {
-        if (Plasmoid.wordStyle === 3 || !Plasmoid.wordSynced || Plasmoid.word.length === 0) {
+        if (!Plasmoid.wordSynced) {
             return escapeHtml(lyricText);
         }
-        const sung = "<font color=\"" + dimmedColor + "\">" + escapeHtml(lyricText.substring(0, Plasmoid.wordStart)) + "</font>";
+        if (Plasmoid.wordStyle === 4) {
+            const sungBoundary = Math.max(0, Math.min(root.sungEnd, lyricText.length));
+            const sung = "<font color=\"" + textColorHex + "\">" + escapeHtml(lyricText.substring(0, sungBoundary)) + "</font>";
+            const rest = "<font color=\"" + grayColorHex + "\">" + escapeHtml(lyricText.substring(sungBoundary)) + "</font>";
+            return sung + rest;
+        }
+        if (Plasmoid.wordStyle === 3 || Plasmoid.word.length === 0) {
+            return escapeHtml(lyricText);
+        }
+        const sung = "<font color=\"" + grayColorHex + "\">" + escapeHtml(lyricText.substring(0, Plasmoid.wordStart)) + "</font>";
         const current = formatActiveWord(Plasmoid.word);
         const rest = escapeHtml(lyricText.substring(Plasmoid.wordEnd));
         return sung + current + rest;
+    }
+
+    readonly property string fullBackingLine: {
+        if (!backingText || backingText.length === 0) return "";
+        return formatBackingLine(backingText);
     }
 
     readonly property string displayText: {
         if (Plasmoid.pauseHidden) {
             return "";
         }
-        if (hasLyrics) {
+        if (hasPrimaryLyrics) {
             return lyricText;
+        }
+        if (hasBackingLyrics) {
+            return backingText;
+        }
+        if (Plasmoid.isIntro) {
+            return Plasmoid.placeholderText.length > 0 ? Plasmoid.placeholderText : "♪";
+        }
+        if (Plasmoid.isBreak) {
+            return Plasmoid.placeholderText.length > 0 ? Plasmoid.placeholderText : "♪";
         }
         return Plasmoid.placeholderText;
     }
@@ -126,6 +379,9 @@ PlasmoidItem {
     readonly property bool hasCredit: (Plasmoid.attributionHtml.length > 0 || Plasmoid.attribution.length > 0)
     readonly property bool hasPanelCredit: hasCredit && Plasmoid.fromSpicyLyrics
     readonly property bool isLayoutBelow: !vertical && hasPanelCredit && Plasmoid.attributionLayout === "Below"
+    readonly property real availPanelHeight: (root.compactRepresentationItem && root.compactRepresentationItem.height > 0) ? root.compactRepresentationItem.height : 30
+    readonly property bool fitsTwoRows: availPanelHeight >= 20
+    readonly property bool hasBackingTwoRows: false
 
     FontMetrics {
         id: defaultFontMetrics
@@ -137,17 +393,17 @@ PlasmoidItem {
         font: Kirigami.Theme.smallFont
     }
 
-    readonly property real creditRowHeight: Math.ceil(smallFontMetrics.height)
+    readonly property real creditRowHeight: Math.min(Math.ceil(smallFontMetrics.height), Math.floor(availPanelHeight * 0.45))
 
     readonly property font lyricBelowFont: {
         if (!root.isLayoutBelow || !root.hasLyrics || !root.hasPanelCredit) {
             return Kirigami.Theme.defaultFont;
         }
-        if (defaultFontMetrics.height + smallFontMetrics.height <= 30) {
+        if (defaultFontMetrics.height + creditRowHeight <= availPanelHeight) {
             return Kirigami.Theme.defaultFont;
         }
         const sf = Kirigami.Theme.smallFont;
-        const maxLyricHeight = Math.floor(30 - creditRowHeight);
+        const maxLyricHeight = Math.floor(availPanelHeight - creditRowHeight);
         if (smallFontMetrics.height > maxLyricHeight && maxLyricHeight >= 8) {
             return Qt.font({
                 family: sf.family,
@@ -158,12 +414,52 @@ PlasmoidItem {
         return sf;
     }
 
-    FontMetrics {
-        id: lyricFontMetrics
-        font: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricBelowFont : Kirigami.Theme.defaultFont
+    readonly property real backingRowHeight: hasBackingTwoRows ? Math.max(9, Math.floor(availPanelHeight * 0.42)) : 0
+    readonly property real primaryTwoRowHeight: hasBackingTwoRows ? Math.floor(availPanelHeight - backingRowHeight) : availPanelHeight
+
+    readonly property font primaryTwoRowFont: {
+        const sf = Kirigami.Theme.smallFont;
+        const target = Math.max(8, Math.min(sf.pixelSize > 0 ? sf.pixelSize : 11, Math.floor(primaryTwoRowHeight - 1)));
+        return Qt.font({
+            family: sf.family,
+            pixelSize: target,
+            weight: sf.weight
+        });
     }
 
-    readonly property real lyricRowHeight: Math.max(Math.ceil(lyricFontMetrics.height), 30 - creditRowHeight)
+    readonly property font backingTwoRowFont: {
+        const sf = Kirigami.Theme.smallFont;
+        const target = Math.max(8, Math.min(sf.pixelSize > 0 ? sf.pixelSize : 10, Math.floor(backingRowHeight - 1)));
+        return Qt.font({
+            family: sf.family,
+            pixelSize: target,
+            weight: sf.weight
+        });
+    }
+
+    function formatInlineBacking(text) {
+        const bg = text !== undefined ? text : root.displayedBacking;
+        if (!bg || bg.length === 0) return "";
+        const formatted = formatBackingLine(bg);
+        if (!formatted || formatted.length === 0) return "";
+        const baseColor = Plasmoid.wordStyle === 4 ? faintGrayColorHex : grayColorHex;
+        return "&nbsp;&nbsp;<font size=\"-1\" color=\"" + baseColor + "\">" + formatted + "</font>";
+    }
+
+    FontMetrics {
+        id: lyricFontMetrics
+        font: (root.hasBackingTwoRows) ? root.primaryTwoRowFont : ((root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricBelowFont : Kirigami.Theme.defaultFont)
+    }
+
+    readonly property real lyricRowHeight: {
+        if (root.hasBackingTwoRows) {
+            return root.primaryTwoRowHeight;
+        }
+        if (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) {
+            return Math.max(Math.ceil(lyricFontMetrics.height), availPanelHeight - creditRowHeight);
+        }
+        return Math.ceil(lyricFontMetrics.height);
+    }
 
     Plasmoid.backgroundHints: Plasmoid.location === PlasmaCore.Types.Desktop //
         ? PlasmaCore.Types.DefaultBackground
@@ -214,7 +510,7 @@ PlasmoidItem {
         if (Plasmoid.isCurrentTrackBlacklisted) {
             return i18n("Lyrics blacklisted for this track");
         }
-        if (root.hasLyrics) {
+        if (Plasmoid.hasLyrics) {
             return i18n("via %1", sourceName);
         }
         if (Plasmoid.hasSpotifyTrackId && Plasmoid.spicyConfigured) {
@@ -275,8 +571,10 @@ PlasmoidItem {
         readonly property bool creditItemVisible: root.hasLyrics && root.hasPanelCredit
         readonly property real creditFullWidth: creditItemVisible ? Math.ceil(creditLabel.implicitWidth) : 0
 
-        readonly property real lyricDesiredWidth: lyricContainer.targetWidth
-        readonly property real usefulLyricWidth: Math.max(floorWidth, lyricDesiredWidth)
+        readonly property real primaryDesiredWidth: (typeof lyricContainer !== "undefined" && lyricContainer) ? lyricContainer.primaryTargetWidth : 0
+        readonly property real backingDesiredWidth: (root.hasBackingTwoRows && typeof lyricContainer !== "undefined" && lyricContainer) ? lyricContainer.backingTargetWidth : 0
+        readonly property real lyricDesiredWidth: Math.max(primaryDesiredWidth, backingDesiredWidth)
+        readonly property real usefulLyricWidth: root.vertical ? 0 : Math.min(floorWidth, lyricDesiredWidth)
 
         readonly property real spacing: compactLayout.columnSpacing
 
@@ -348,7 +646,7 @@ PlasmoidItem {
 
             anchors.fill: parent
             columns: root.vertical ? 1 : (root.isLayoutBelow ? (noteIcon.visible ? 2 : 1) : (noteIcon.visible ? (root.hasPanelCredit ? 3 : 2) : (root.hasPanelCredit ? 2 : 1)))
-            rows: root.vertical ? (root.hasPanelCredit ? 3 : 2) : (root.isLayoutBelow ? 2 : 1)
+            rows: root.vertical ? (root.hasPanelCredit ? 3 : 2) : ((root.isLayoutBelow || root.hasBackingTwoRows) ? 2 : 1)
             columnSpacing: Kirigami.Units.smallSpacing * 2
             rowSpacing: 0
 
@@ -357,41 +655,57 @@ PlasmoidItem {
 
                 // Follows the icon theme, so that it does not look out of place
                 // in the panel.
-                source: root.hasLyrics ? "audio-x-generic" : "media-playlist-repeat"
+                source: Plasmoid.hasLyrics ? "audio-x-generic" : "media-playlist-repeat"
                 Layout.row: 0
                 Layout.column: 0
-                Layout.rowSpan: root.isLayoutBelow ? 2 : 1
+                Layout.rowSpan: (root.isLayoutBelow || root.hasBackingTwoRows) ? 2 : 1
                 Layout.preferredWidth: Kirigami.Units.iconSizes.small
                 Layout.preferredHeight: Kirigami.Units.iconSizes.small
                 Layout.minimumWidth: Kirigami.Units.iconSizes.small
                 Layout.alignment: Qt.AlignCenter
                 visible: Plasmoid.showIcon && !Plasmoid.pauseHidden
-                opacity: root.hasLyrics ? 1.0 : 0.5
+                opacity: root.hasLyrics ? 1.0 : (Plasmoid.hasLyrics ? 0.75 : 0.5)
             }
 
             TextMetrics {
                 id: lineMetrics
                 font: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricBelowFont : Kirigami.Theme.defaultFont
-                text: root.plainLine(lyricContainer.displayedLyric)
+                text: {
+                    if (root.hasBackingLyrics) {
+                        const prim = root.plainLine(root.displayedLyric);
+                        const stripped = root.stripOuterBrackets(root.displayedBacking, 0, 0).text;
+                        const bg = root.plainLine(stripped);
+                        return prim.length > 0 ? (prim + "   " + bg) : bg;
+                    }
+                    return root.plainLine(root.displayedLyric);
+                }
+            }
+
+            TextMetrics {
+                id: backingLineMetrics
+                font: Kirigami.Theme.defaultFont
+                text: root.plainLine(root.backingText)
             }
 
             Item {
                 id: lyricContainer
 
-                property string displayedLyric: root.lyricText
-
                 readonly property real maxLyricWidth: root.maxCharacters > 0 //
                     ? Math.ceil(characterWidth.advanceWidth) * root.maxCharacters
                     : Infinity
-                readonly property real targetWidth: root.maxCharacters > 0 //
+                readonly property real primaryTargetWidth: root.maxCharacters > 0 //
                     ? Math.min(Math.ceil(lineMetrics.advanceWidth) + 4, maxLyricWidth)
                     : Math.ceil(lineMetrics.advanceWidth) + 4
+                readonly property real backingTargetWidth: primaryTargetWidth
+                readonly property real targetWidth: primaryTargetWidth
+                readonly property bool lineFadeAnimRunning: lineFadeAnim.running
 
                 implicitWidth: targetWidth
                 implicitHeight: (root.isLayoutBelow && root.hasLyrics && root.hasPanelCredit) ? root.lyricRowHeight : lyricLabel.implicitHeight
 
                 Layout.row: root.vertical ? 1 : 0
                 Layout.column: root.vertical ? 0 : (noteIcon.visible ? 1 : 0)
+                Layout.rowSpan: 1
                 Layout.fillWidth: true
                 Layout.fillHeight: root.isLayoutBelow
                 Layout.minimumWidth: root.vertical ? 0 : compactArea.usefulLyricWidth
@@ -406,7 +720,22 @@ PlasmoidItem {
                 PlasmaComponents3.Label {
                     id: lyricLabel
                     anchors.fill: parent
-                    text: root.hasLyrics ? root.formatCompactLine(lyricContainer.displayedLyric) : root.escapeHtml(root.displayText)
+                    text: {
+                        if (!root.hasLyrics) {
+                            return root.escapeHtml(root.displayText);
+                        }
+                        if (root.hasBackingLyrics) {
+                            const bgFmt = root.formatInlineBacking(root.displayedBacking);
+                            if (root.hasPrimaryLyrics) {
+                                return root.formatCompactLine(root.displayedLyric) + bgFmt;
+                            }
+                            return bgFmt.trim();
+                        }
+                        if (root.hasPrimaryLyrics) {
+                            return root.formatCompactLine(root.displayedLyric);
+                        }
+                        return root.escapeHtml(root.displayText);
+                    }
                     textFormat: Text.StyledText
                     wrapMode: Text.NoWrap
                     maximumLineCount: 1
@@ -430,7 +759,10 @@ PlasmoidItem {
                     }
                     ScriptAction {
                         script: {
-                            lyricContainer.displayedLyric = root.lyricText;
+                            root.displayedLyric = root.lyricText;
+                            root.displayedBacking = root.backingText;
+                            root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                            root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
                         }
                     }
                     NumberAnimation {
@@ -443,29 +775,79 @@ PlasmoidItem {
                 }
 
                 Connections {
+                    target: Plasmoid
+
+                    function onLineIndexChanged() {
+                        if (Plasmoid.lineIndex < 0) {
+                            lineFadeAnim.stop();
+                            root.displayedLyric = "";
+                            root.displayedBacking = "";
+                            root.sungEnd = 0;
+                            root.backingSungEnd = 0;
+                            lyricLabel.opacity = 1.0;
+                            return;
+                        }
+
+                        if (!Plasmoid.fadeTransition || !root.hasLyrics || root.displayedLyric.length === 0 || root.lyricText.length === 0) {
+                            lineFadeAnim.stop();
+                            root.displayedLyric = root.lyricText;
+                            root.displayedBacking = root.backingText;
+                            root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                            root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                            lyricLabel.opacity = 1.0;
+                        } else {
+                            lineFadeAnim.stop();
+                            lineFadeAnim.restart();
+                        }
+                    }
+                }
+
+                Connections {
                     target: root
 
                     function onLyricTextChanged() {
-                        lineFadeAnim.stop();
-                        if (!Plasmoid.fadeTransition || !root.hasLyrics || lyricContainer.displayedLyric.length === 0 || root.lyricText.length === 0) {
-                            lyricContainer.displayedLyric = root.lyricText;
-                            lyricLabel.opacity = 1.0;
-                        } else {
-                            lineFadeAnim.restart();
+                        if (!Plasmoid.active || !Plasmoid.fadeTransition) {
+                            root.displayedLyric = root.lyricText;
+                        }
+                    }
+
+                    function onBackingTextChanged() {
+                        if (!Plasmoid.active || !Plasmoid.fadeTransition) {
+                            root.displayedBacking = root.backingText;
                         }
                     }
 
                     function onHasLyricsChanged() {
                         lineFadeAnim.stop();
                         if (!root.hasLyrics) {
-                            lyricContainer.displayedLyric = "";
+                            root.displayedLyric = "";
+                            root.displayedBacking = "";
+                            root.sungEnd = 0;
+                            root.backingSungEnd = 0;
                             lyricLabel.opacity = 1.0;
-                        } else if (lyricContainer.displayedLyric !== root.lyricText) {
-                            lyricContainer.displayedLyric = root.lyricText;
+                        } else {
+                            root.displayedLyric = root.lyricText;
+                            root.displayedBacking = root.backingText;
+                            root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                            root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
                             lyricLabel.opacity = 1.0;
                         }
                     }
                 }
+            }
+
+            Item {
+                id: backingContainer
+
+                implicitWidth: lyricContainer.targetWidth
+                implicitHeight: 0
+
+                Layout.row: 1
+                Layout.column: root.vertical ? 0 : (noteIcon.visible ? 1 : 0)
+                Layout.rowSpan: 1
+                Layout.fillWidth: false
+                Layout.fillHeight: false
+                visible: false
             }
 
             AttributionLabel {
@@ -481,6 +863,7 @@ PlasmoidItem {
 
                 Layout.row: (root.isLayoutBelow || root.vertical) ? (root.vertical ? 2 : 1) : 0
                 Layout.column: root.vertical ? 0 : (root.isLayoutBelow ? (noteIcon.visible ? 1 : 0) : (noteIcon.visible ? 2 : 1))
+                Layout.rowSpan: 1
                 Layout.alignment: root.vertical ? Qt.AlignHCenter :
                     (root.isLayoutBelow ?
                         (Plasmoid.textAlignment === 1 ? (Qt.AlignLeft | Qt.AlignVCenter) : (Qt.AlignHCenter | Qt.AlignVCenter)) :
@@ -506,7 +889,25 @@ PlasmoidItem {
         playerName: Plasmoid.player
         showTrackInfo: Plasmoid.showTrackInfo
 
-        line: root.fullLine
+        line: {
+            if (root.hasLyrics) {
+                if (root.showBackingVocals && root.hasBackingLyrics) {
+                    const bgFmt = "<font size=\"-1\" color=\"" + root.grayColorHex + "\">" + root.fullBackingLine + "</font>";
+                    if (root.hasPrimaryLyrics) {
+                        return root.fullLine + " " + bgFmt;
+                    }
+                    return bgFmt;
+                }
+                return root.fullLine;
+            }
+            if (Plasmoid.isIntro) {
+                return "<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Intro ♪") + "</font>";
+            }
+            if (Plasmoid.isBreak) {
+                return "<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Instrumental ♪") + "</font>";
+            }
+            return "";
+        }
         placeholder: {
             if (Plasmoid.isCurrentTrackBlacklisted) {
                 return i18n("Lyrics are blacklisted for this track");
@@ -525,7 +926,7 @@ PlasmoidItem {
             }
             return i18n("No active player");
         }
-        hasLyrics: root.hasLyrics
+        hasLyrics: Plasmoid.hasLyrics
 
         attribution: Plasmoid.attribution
         attributionUrl: Plasmoid.attributionUrl

@@ -27,6 +27,8 @@ struct LyricWord
     // covers "ok" instead of blinking between its halves.
     int groupStart = 0;
     int groupEnd = 0;
+    bool isBackground = false;
+    int backgroundGroup = -1;
 };
 
 /**
@@ -38,6 +40,7 @@ struct LyricLine
     qint64 startMs = 0;
     qint64 endMs = 0;
     QVector<LyricWord> words;
+    bool isBackground = false;
 };
 
 enum class LyricsType {
@@ -95,27 +98,42 @@ struct Lyrics
     }
 
     /// Index of the line that is being sung at @p positionMs, or -1.
-    int lineAt(qint64 positionMs) const
+    int lineAt(qint64 positionMs, int *nextLineIndex = nullptr) const
     {
         const auto it = std::upper_bound(lines.begin(), lines.end(), positionMs, [](qint64 value, const LyricLine &line) {
             return value < line.startMs;
         });
+
+        if (nextLineIndex) {
+            *nextLineIndex = (it != lines.end()) ? static_cast<int>(it - lines.begin()) : -1;
+        }
+
         if (it == lines.begin()) {
             return -1;
         }
+
         const int newest = static_cast<int>(it - lines.begin()) - 1;
-        if (positionMs < lines.at(newest).endMs) {
+
+        // Normal newest active primary can return immediately
+        if (!lines.at(newest).isBackground && positionMs < lines.at(newest).endMs) {
             return newest;
         }
 
-        constexpr int kLookBack = 8;
-        for (int i = newest; i >= 0 && i > newest - kLookBack; --i) {
+        // Reverse search with early return for latest active primary,
+        // while retaining newest active background fallback.
+        int newestActiveBg = -1;
+        for (int i = newest; i >= 0; --i) {
             const LyricLine &line = lines.at(i);
             if (positionMs >= line.startMs && positionMs < line.endMs) {
-                return i;
+                if (!line.isBackground) {
+                    return i;
+                } else if (newestActiveBg == -1) {
+                    newestActiveBg = i;
+                }
             }
         }
-        return -1;
+
+        return newestActiveBg;
     }
 };
 
@@ -133,4 +151,5 @@ struct TrackMetadata
     QString isrc;             ///< International Standard Recording Code if known
     bool isWebSession = false;///< Browser/web page media session
     QString url;              ///< xesam:url from MPRIS (e.g. file:///path/to/song.flac)
+    bool searchNormalized = false;
 };

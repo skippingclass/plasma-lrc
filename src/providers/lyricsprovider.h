@@ -44,6 +44,7 @@ public:
     virtual bool canHandle(const TrackMetadata &meta) const = 0;
     virtual void requestLyrics(const TrackMetadata &meta, quint64 generation) = 0;
     virtual void cancel() = 0;
+    virtual void invalidateCache(const TrackMetadata &meta) { Q_UNUSED(meta); }
 
 Q_SIGNALS:
     void lyricsLoaded(quint64 generation, const Lyrics &lyrics, const QString &providerId);

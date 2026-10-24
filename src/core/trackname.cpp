@@ -5,6 +5,7 @@
  */
 
 #include "trackname.h"
+#include "lyrictypes.h"
 
 #include <QRegularExpression>
 
@@ -13,15 +14,19 @@ namespace
 constexpr auto kCaseInsensitive = QRegularExpression::CaseInsensitiveOption;
 
 // "(Official Video)", "[4K]", "(Lyrics)", "(MV)", "(Премьера)", "(текст песни)".
+// Notice: "live", "remix", "acoustic", "slowed", "sped up" are preserved for strict version matching.
 const QRegularExpression s_bracketedNoise(
-    QStringLiteral(R"((\s*[[(]\s*(?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?(?:\s*video)?|visuali[sz]er|mv|m/v|hd|hq|4k[^\])]*|1080p[^\])]*|live|clip(?:\s*officiel)?|videoclip|премьера[^\])]*|клип|текст(?:\s*песни)?|official)\s*[\]\)]))"),
+    QStringLiteral(R"((\s*[[(]\s*(?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?(?:\s*video)?|visuali[sz]er|mv|m/v|hd|hq|4k[^\])]*|1080p[^\])]*|clip(?:\s*officiel)?|videoclip|премьера[^\])]*|клип|текст(?:\s*песни)?|official)\s*[\]\)]))"),
     kCaseInsensitive);
 
 // Everything after a pipe is the chapter list or " | Lyrics video".
 const QRegularExpression s_chapterTail(QStringLiteral(R"(\s*[|｜].*$)"));
 
-// Leading track numbers: "01 - ", "01. ", "1 - "
-const QRegularExpression s_leadingTrackNum(QStringLiteral(R"(^\s*\d{1,3}[\s.-]+)"));
+// Leading track numbers: allow whitespace between digits and separator (. or -),
+// but require whitespace AFTER the separator.
+// This matches "01 - ", "01. ", "01.- ", "01. - ", "12. ", while preserving
+// "99-Problems" (no whitespace after dash) and "21 Guns" (no separator).
+const QRegularExpression s_leadingTrackNum(QStringLiteral(R"(^\s*\d{1,3}(?:\.\s*[-–—−]?\s+|\s*[-–—−]\s+))"));
 
 // Audio extensions: .mp3, .flac, .m4a, etc.
 const QRegularExpression s_audioExt(QStringLiteral(R"(\.(?:mp3|flac|m4a|wav|ogg|opus|aac|wma)$)"), kCaseInsensitive);
@@ -40,7 +45,8 @@ const QRegularExpression s_officialSuffix(QStringLiteral(R"(\s+(?:official|оф�
 const QRegularExpression s_artistFeatureBracket(QStringLiteral(R"(\s*[,;]?\s*\((?:feat|ft)\.?\s[^)]*\))"), kCaseInsensitive);
 const QRegularExpression s_artistFeatureTail(QStringLiteral(R"(\s*[,;]?\s+(?:feat|ft)\.?\s.*$)"), kCaseInsensitive);
 
-const QRegularExpression s_artistSplit(QStringLiteral(R"([;,/]|(?:\s+and\s+)|\s*&\s*|\s+(?:feat|ft)\.?\s+)"), kCaseInsensitive);
+// Slash is a delimiter ONLY when surrounded by whitespace, preserving all embedded-slash stage names (e.g. AC/DC)
+const QRegularExpression s_artistSplit(QStringLiteral(R"([;,]|(?:\s+/\s+)|(?:\s+and\s+)|\s*&\s*|\s+(?:feat|ft)\.?\s+)"), kCaseInsensitive);
 
 const QRegularExpression s_artistDashTitle(QStringLiteral(R"(^(.+?)\s+[-–—−]\s+(.+)$)"));
 
@@ -48,7 +54,8 @@ QString tidy(QString value)
 {
     return value.simplified();
 }
-}
+
+} // namespace
 
 QString cleanTrackTitle(QString title)
 {
@@ -120,4 +127,20 @@ void splitTrackArtistAndTitle(QString *artist, QString *title, bool fromWebPage)
         *artist = left;
         *title = right;
     }
+}
+
+void normalizeTrackMetadata(TrackMetadata *meta)
+{
+    if (!meta || meta->searchNormalized) {
+        return;
+    }
+
+    // 1. Split Artist - Song for web metadata or when artist matches/is empty
+    splitTrackArtistAndTitle(&meta->artist, &meta->title, meta->isWebSession);
+
+    // 2. Clean ordinary decorations while preserving meaningful version tags
+    meta->artist = cleanTrackArtist(meta->artist);
+    meta->title = cleanTrackTitle(meta->title);
+
+    meta->searchNormalized = true;
 }

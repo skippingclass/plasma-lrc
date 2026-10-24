@@ -815,7 +815,7 @@ int main(int argc, char **argv)
         // 1. Очистка номеров треков
         check("cleanTrackTitle: leading 01 - ", cleanTrackTitle(QStringLiteral("01 - Bohemian Rhapsody")) == QStringLiteral("Bohemian Rhapsody"));
         check("cleanTrackTitle: leading 12. ", cleanTrackTitle(QStringLiteral("12. Track Title")) == QStringLiteral("Track Title"));
-        check("cleanTrackTitle: leading 3 ", cleanTrackTitle(QStringLiteral("3  Song Name")) == QStringLiteral("Song Name"));
+        check("cleanTrackTitle: leading 3  preserved without separator", cleanTrackTitle(QStringLiteral("3  Song Name")) == QStringLiteral("3 Song Name"));
 
         // 2. Очистка аудио-расширений
         check("cleanTrackTitle: audio ext .mp3", cleanTrackTitle(QStringLiteral("Song.mp3")) == QStringLiteral("Song"));
@@ -1100,6 +1100,27 @@ int main(int argc, char **argv)
                 check(QStringLiteral("fixture %1: no anchor tag in html").arg(QLatin1String(fix.label)),
                       !html.contains(QLatin1String("<a"), Qt::CaseInsensitive), html);
             }
+        }
+    }
+
+    // --- Background vocals in SpicyLyrics Content ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable","Content":[
+          {"Type":"Vocal","Lead":{"Syllables":[
+            {"Text":"Lead","StartTime":1.0,"EndTime":2.0}],
+            "StartTime":1.0,"EndTime":2.0},
+           "Background":[
+            {"Syllables":[
+              {"Text":"Back","StartTime":1.2,"EndTime":1.8}],
+              "StartTime":1.2,"EndTime":1.8}]}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("spicy background: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("spicy background: 2 строки (lead + bg)", lyrics.lines.size() == 2, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 2) {
+            check("spicy background: строка 0 — lead", !lyrics.lines.at(0).isBackground && lyrics.lines.at(0).text == QStringLiteral("Lead"));
+            check("spicy background: строка 1 — background", lyrics.lines.at(1).isBackground && lyrics.lines.at(1).text == QStringLiteral("Back"));
+            check("spicy background: слово в строке 1 отмечено isBackground", !lyrics.lines.at(1).words.isEmpty() && lyrics.lines.at(1).words.first().isBackground);
         }
     }
 

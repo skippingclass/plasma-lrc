@@ -22,13 +22,23 @@ bool LrclibProvider::canHandle(const TrackMetadata &meta) const
 void LrclibProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
 {
     m_currentGeneration = generation;
-    m_pendingKey = m_client->request(meta.title, meta.artist, meta.durationMs, meta.isWebSession);
+    m_pendingKey = m_client->request(meta);
 }
 
 void LrclibProvider::cancel()
 {
     m_pendingKey.clear();
     m_client->cancel();
+}
+
+void LrclibProvider::invalidateCache(const TrackMetadata &meta)
+{
+    if (m_client) {
+        m_client->invalidate(meta);
+        if (m_client->currentKey().isEmpty()) {
+            m_pendingKey.clear();
+        }
+    }
 }
 
 void LrclibProvider::onLoaded(const QString &requestKey, const Lyrics &lyrics)

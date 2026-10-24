@@ -7,6 +7,7 @@
 #include "kugouprovider.h"
 #include "krcparser.h"
 #include "lrcparser.h"
+#include "trackmatch.h"
 #include "trackname.h"
 
 #include <QJsonArray>
@@ -20,13 +21,6 @@ namespace
 {
 constexpr int kTimeoutMs = 7000;
 constexpr int kMaxDurationDiffSec = 4;
-
-bool titlesMatch(const QString &candidate, const QString &target)
-{
-    const QString c = cleanTrackTitle(candidate).trimmed().toLower();
-    const QString t = cleanTrackTitle(target).trimmed().toLower();
-    return c == t || c.contains(t) || t.contains(c);
-}
 } // namespace
 
 KugouProvider::KugouProvider(QObject *parent)
@@ -166,31 +160,12 @@ void KugouProvider::handleSearchSongReply(const QByteArray &data)
             continue;
         }
 
-        if (targetDurSec > 0 && dur > 0 && qAbs(targetDurSec - dur) > kMaxDurationDiffSec) {
-            continue;
-        }
+        const qint64 durMs = dur > 0 ? dur * 1000 : 0;
 
-        if (titlesMatch(songname, m_meta.title)) {
+        if (TrackMatch::matchCandidate(m_meta, songname, singername, durMs, kMaxDurationDiffSec * 1000)) {
             matchedHash = hash;
             songDurationSec = dur > 0 ? dur : targetDurSec;
             break;
-        }
-    }
-
-    // If no exact title match, take the first one if length matches
-    if (matchedHash.isEmpty() && !songs.isEmpty()) {
-        for (const QJsonValue &v : songs) {
-            const QJsonObject obj = v.toObject();
-            const qint64 dur = obj.value(QStringLiteral("duration")).toInt();
-            const QString hash = obj.value(QStringLiteral("hash")).toString();
-            if (hash.isEmpty()) {
-                continue;
-            }
-            if (targetDurSec <= 0 || dur <= 0 || qAbs(targetDurSec - dur) <= kMaxDurationDiffSec) {
-                matchedHash = hash;
-                songDurationSec = dur > 0 ? dur : targetDurSec;
-                break;
-            }
         }
     }
 

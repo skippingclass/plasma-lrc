@@ -8,7 +8,6 @@
 
 #include <QString>
 
-
 /**
  * Cleans up the artist and title a media player reports.
  *
@@ -41,3 +40,12 @@ QString extractPrimaryArtist(const QString &artist);
  * Drake from being torn into artist "Love" when it arrives from mpv.
  */
 void splitTrackArtistAndTitle(QString *artist, QString *title, bool fromWebPage = false);
+
+struct TrackMetadata;
+
+/**
+ * Normalizes track title and artist in-place, splitting web metadata and stripping
+ * ordinary decorations while preserving meaningful version info (live/remix/acoustic/slowed/spedup).
+ * Idempotent: repeated calls do not re-split title dashes or alter normalized fields.
+ */
+void normalizeTrackMetadata(TrackMetadata *meta);

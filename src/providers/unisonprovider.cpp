@@ -6,6 +6,7 @@
 
 #include "unisonprovider.h"
 #include "lrcparser.h"
+#include "trackmatch.h"
 #include "trackname.h"
 #include "ttmlparser.h"
 
@@ -19,13 +20,6 @@
 namespace
 {
 constexpr int kTimeoutMs = 7000;
-
-bool titlesMatch(const QString &candidate, const QString &target)
-{
-    const QString c = cleanTrackTitle(candidate).trimmed().toLower();
-    const QString t = cleanTrackTitle(target).trimmed().toLower();
-    return c == t || c.contains(t) || t.contains(c);
-}
 } // namespace
 
 UnisonProvider::UnisonProvider(QObject *parent)
@@ -136,6 +130,25 @@ void UnisonProvider::handleDirectReply(const QByteArray &data, int httpCode)
     const QJsonDocument doc = QJsonDocument::fromJson(data);
     const QJsonObject dataObj = doc.object().value(QStringLiteral("data")).toObject();
 
+    // Validate direct exact-ID lookup metadata only if fields are present in response
+    const QString respSong = dataObj.value(QStringLiteral("song")).toString();
+    const QString respArtist = dataObj.value(QStringLiteral("artist")).toString();
+    qint64 respDurMs = 0;
+    if (dataObj.contains(QStringLiteral("duration"))) {
+        const double d = dataObj.value(QStringLiteral("duration")).toDouble();
+        if (d > 0) {
+            respDurMs = d > 10000 ? static_cast<qint64>(d) : static_cast<qint64>(d * 1000);
+        }
+    } else if (dataObj.contains(QStringLiteral("durationMs"))) {
+        respDurMs = dataObj.value(QStringLiteral("durationMs")).toVariant().toLongLong();
+    }
+
+    if (!TrackMatch::validateExactLookupMetadata(m_meta, respSong, respArtist, respDurMs)) {
+        m_step = Step::Search;
+        startSearch();
+        return;
+    }
+
     Lyrics lyrics;
     if (parsePayload(dataObj, &lyrics)) {
         const quint64 gen = m_currentGeneration;
@@ -186,16 +199,23 @@ void UnisonProvider::handleSearchReply(const QByteArray &data)
             continue;
         }
 
-        if (titlesMatch(song, m_meta.title)) {
+        qint64 durMs = 0;
+        if (obj.contains(QStringLiteral("duration"))) {
+            const double d = obj.value(QStringLiteral("duration")).toDouble();
+            if (d > 0) {
+                durMs = d > 10000 ? static_cast<qint64>(d) : static_cast<qint64>(d * 1000);
+            }
+        } else if (obj.contains(QStringLiteral("durationMs"))) {
+            durMs = obj.value(QStringLiteral("durationMs")).toVariant().toLongLong();
+        }
+
+        if (TrackMatch::matchCandidate(m_meta, song, artist, durMs)) {
             matchedId = idStr;
             break;
         }
     }
 
-    if (matchedId.isEmpty()) {
-        matchedId = results.first().toObject().value(QStringLiteral("id")).toString();
-    }
-
+    // No blind fallback to results.first(): fail if no matching track
     if (matchedId.isEmpty()) {
         const quint64 gen = m_currentGeneration;
         cancel();
@@ -222,6 +242,25 @@ void UnisonProvider::handleDetailsReply(const QByteArray &data)
 {
     const QJsonDocument doc = QJsonDocument::fromJson(data);
     const QJsonObject dataObj = doc.object().value(QStringLiteral("data")).toObject();
+
+    const QString respSong = dataObj.value(QStringLiteral("song")).toString();
+    const QString respArtist = dataObj.value(QStringLiteral("artist")).toString();
+    qint64 respDurMs = 0;
+    if (dataObj.contains(QStringLiteral("duration"))) {
+        const double d = dataObj.value(QStringLiteral("duration")).toDouble();
+        if (d > 0) {
+            respDurMs = d > 10000 ? static_cast<qint64>(d) : static_cast<qint64>(d * 1000);
+        }
+    } else if (dataObj.contains(QStringLiteral("durationMs"))) {
+        respDurMs = dataObj.value(QStringLiteral("durationMs")).toVariant().toLongLong();
+    }
+
+    if (!TrackMatch::validateExactLookupMetadata(m_meta, respSong, respArtist, respDurMs)) {
+        const quint64 gen = m_currentGeneration;
+        cancel();
+        Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+        return;
+    }
 
     Lyrics lyrics;
     if (!parsePayload(dataObj, &lyrics)) {
