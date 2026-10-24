@@ -73,7 +73,7 @@ constexpr qint64 kPositionRetryIntervalMs = 150;
 constexpr qint64 kPositionCheckMs = 400;
 // A difference below this is the clock running slightly off; a bigger one means
 // playback was moved (seeked) or the player flushed its internal pre-buffer.
-constexpr qint64 kPositionSnapToleranceMs = 800;
+constexpr qint64 kPositionSnapToleranceMs = 500;
 // How long a word highlight may linger across a tiny gap between syllables (<= 80ms)
 // to prevent flicker, without ever snapping forward to future words.
 constexpr qint64 kWordGapHoldMs = 80;
@@ -173,8 +173,13 @@ QStringList mprisPlayersFromServiceNames(const QStringList &services)
 LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args)
     : Plasma::Applet(parent, data, args)
     , m_process(nullptr)
-    , m_spicy(new SpicyLyrics(this))
-    , m_lrclib(new LrclibClient(this))
+    , m_pipeline(new LyricsPipelineManager(this))
+    , m_spicyProvider(new SpicyLyricsProvider(this))
+    , m_lrclibProvider(new LrclibProvider(this))
+    , m_amllProvider(new AmllProvider(this))
+    , m_lrcredProvider(new LrcRedProvider(this))
+    , m_spicy(m_spicyProvider->client())
+    , m_lrclib(m_lrclibProvider->client())
     , m_trackLengthUs(0)
     , m_webPageSession(false)
     , m_useCleanedLookup(true)
@@ -183,15 +188,15 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_namesWatcher(nullptr)
     , m_positionWatcher(nullptr)
     , m_pollInterval(kDefaultPollInterval)
-    , m_maxCharacters(40)
+    , m_maxCharacters(100)
     , m_showTimestamp(false)
-    , m_showIcon(true)
+    , m_showIcon(false)
     , m_showTrackInfo(true)
     , m_attributionLayout(QStringLiteral("Right"))
-    , m_wordStyle(0)
+    , m_wordStyle(1)
     , m_lyricOffset(0)
     , m_pauseWhenIdle(true)
-    , m_pauseHideDelay(5)
+    , m_pauseHideDelay(3)
     , m_fadeTransition(true)
     , m_clickAction(0)
     , m_middleClickAction(1)
@@ -220,6 +225,14 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
     , m_lineIndex(-1)
     , m_wordCursor(0)
 {
+    m_pipeline->registerProvider(m_lrcredProvider);
+    m_pipeline->registerProvider(m_amllProvider);
+    m_pipeline->registerProvider(m_spicyProvider);
+    m_pipeline->registerProvider(m_lrclibProvider);
+
+    connect(m_pipeline, &LyricsPipelineManager::lyricsResolved, this, &LrcApplet::onPipelineResolved);
+    connect(m_pipeline, &LyricsPipelineManager::allFailed, this, &LrcApplet::onPipelineAllFailed);
+
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
 
@@ -272,6 +285,7 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
 LrcApplet::~LrcApplet()
 {
     cancelProcess();
+    m_pipeline->cancel();
 }
 
 void LrcApplet::constraintsEvent(Constraints constraints)
@@ -361,18 +375,18 @@ void LrcApplet::readSettings()
     const QString preferredPlayer = setting(QStringLiteral("preferredPlayer")).trimmed();
     const QString placeholder = setting(QStringLiteral("placeholderText"), QStringLiteral("♪"));
     const int pollInterval = qBound(500, intSetting(QStringLiteral("pollInterval"), kDefaultPollInterval), 10000);
-    const int maxCharacters = qBound(0, intSetting(QStringLiteral("maxCharacters"), 40), 500);
+    const int maxCharacters = qBound(0, intSetting(QStringLiteral("maxCharacters"), 100), 500);
     const bool showTimestamp = boolSetting(QStringLiteral("showTimestamp"), false);
-    const bool showIcon = boolSetting(QStringLiteral("showIcon"), true);
+    const bool showIcon = boolSetting(QStringLiteral("showIcon"), false);
     const bool showTrackInfo = boolSetting(QStringLiteral("showTrackInfo"), true);
     const QString attributionLayoutRaw = setting(QStringLiteral("attributionLayout")).trimmed();
     const QString attributionLayout = (attributionLayoutRaw.compare(QLatin1String("Below"), Qt::CaseInsensitive) == 0 || attributionLayoutRaw == QLatin1String("1"))
         ? QStringLiteral("Below")
         : QStringLiteral("Right");
-    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 0), 2);
+    const int wordStyle = qBound(0, intSetting(QStringLiteral("wordStyle"), 1), 2);
     const int lyricOffset = qBound(-2000, intSetting(QStringLiteral("lyricOffset"), 0), 2000);
     const bool pauseWhenIdle = boolSetting(QStringLiteral("pauseWhenIdle"), false);
-    const int pauseHideDelay = qBound(0, intSetting(QStringLiteral("pauseHideDelay"), 5), 60);
+    const int pauseHideDelay = qBound(0, intSetting(QStringLiteral("pauseHideDelay"), 3), 60);
     const bool fadeTransition = boolSetting(QStringLiteral("fadeTransition"), true);
     const int clickAction = qBound(0, intSetting(QStringLiteral("clickAction"), 0), 1);
     const int middleClickAction = qBound(0, intSetting(QStringLiteral("middleClickAction"), 1), 2);
@@ -430,6 +444,30 @@ void LrcApplet::readSettings()
 
     m_spicy->setKey(m_spicyKey);
     m_spicy->setEnabled(m_useSpicy);
+
+    const QString providerOrderRaw = setting(QStringLiteral("providerOrder"), QStringLiteral("lrcred,amll,spicy,lrclib")).trimmed();
+    const QString disabledProvidersRaw = setting(QStringLiteral("disabledProviders")).trimmed();
+
+    const bool providerConfigChanged = (providerOrderRaw != m_providerOrderConfig || disabledProvidersRaw != m_disabledProvidersConfig);
+
+    if (!providerOrderRaw.isEmpty()) {
+        m_providerOrderConfig = providerOrderRaw;
+        m_pipeline->setProviderOrder(providerOrderRaw.split(QLatin1Char(','), Qt::SkipEmptyParts));
+    }
+    m_disabledProvidersConfig = disabledProvidersRaw;
+    const QStringList disabledList = disabledProvidersRaw.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (LyricsProvider *p : m_pipeline->allProviders()) {
+        const bool shouldEnable = !disabledList.contains(p->id());
+        if (p->id() == QLatin1String("spicy")) {
+            p->setEnabled(shouldEnable && m_useSpicy);
+        } else {
+            p->setEnabled(shouldEnable);
+        }
+    }
+
+    if (providerConfigChanged) {
+        Q_EMIT providerOrderChanged();
+    }
 
     if (blacklistChanged) {
         Q_EMIT trackBlacklistChanged();
@@ -570,7 +608,19 @@ QString LrcApplet::provider() const
     if (isSpicyExpired()) {
         return QString();
     }
-    return m_lyrics.attributionData.provider;
+    if (!m_lyrics.attributionData.provider.isEmpty()) {
+        return m_lyrics.attributionData.provider;
+    }
+    if (!m_lyrics.attribution.isEmpty()) {
+        return m_lyrics.attribution;
+    }
+    if (!m_activeProviderId.isEmpty() && m_pipeline) {
+        LyricsProvider *p = m_pipeline->provider(m_activeProviderId);
+        if (p) {
+            return p->displayName();
+        }
+    }
+    return QString();
 }
 
 QString LrcApplet::providerUrl() const
@@ -578,7 +628,13 @@ QString LrcApplet::providerUrl() const
     if (isSpicyExpired()) {
         return QString();
     }
-    return m_lyrics.attributionData.providerUrl;
+    if (!m_lyrics.attributionData.providerUrl.isEmpty()) {
+        return m_lyrics.attributionData.providerUrl;
+    }
+    if (!m_lyrics.attributionUrl.isEmpty()) {
+        return m_lyrics.attributionUrl;
+    }
+    return QString();
 }
 
 QVariantList LrcApplet::contributors() const
@@ -1054,9 +1110,9 @@ bool LrcApplet::restoreSyncState(const QString &rawTrackId, const QString &title
     if (savedLengthMs > 0 && savedPosMs >= 0) {
         const qint64 estimatedOldPosMs = savedPosMs + wallElapsedMs;
         const qint64 oldRemainingMs = savedLengthMs - estimatedOldPosMs;
-        if (oldRemainingMs >= -10000 && oldRemainingMs <= 3500) {
+        if (oldRemainingMs > 0 && oldRemainingMs <= 2500) {
             if (outGaplessLeadMs) {
-                *outGaplessLeadMs = kSpotifyGaplessLeadMs;
+                *outGaplessLeadMs = qMin(oldRemainingMs, kSpotifyGaplessLeadMs);
             }
             return true;
         }
@@ -1091,6 +1147,8 @@ void LrcApplet::cancelProcess()
 void LrcApplet::clearDisplay()
 {
     cancelProcess();
+    m_pipeline->cancel();
+    m_activeProviderId.clear();
     m_spicy->cancel();
     m_lrclib->cancel();
     m_expiryTimer.stop();
@@ -1229,6 +1287,8 @@ void LrcApplet::nextTrack()
     m_manualSkipPending = true;
     m_gaplessLeadMs = 0;
     cancelProcess();
+    m_pipeline->cancel();
+    m_activeProviderId.clear();
     m_spicy->cancel();
     m_lrclib->cancel();
     resetTrackPosition(true);
@@ -1245,6 +1305,8 @@ void LrcApplet::previousTrack()
     m_manualSkipPending = true;
     m_gaplessLeadMs = 0;
     cancelProcess();
+    m_pipeline->cancel();
+    m_activeProviderId.clear();
     m_spicy->cancel();
     m_lrclib->cancel();
     resetTrackPosition(true);
@@ -1464,19 +1526,26 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
                 const bool naturalEndJustDetected = m_prevTrackNaturalEndTimer.isValid()
                     && m_prevTrackNaturalEndTimer.elapsed() <= 2000;
                 bool nearEnd = false;
+                qint64 remainingMs = 0;
                 if (m_positionValid && m_trackLengthUs > 0) {
                     const qint64 currentPos = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
-                    const qint64 remainingMs = (m_trackLengthUs / 1000) - currentPos;
-                    nearEnd = (remainingMs >= -5000 && remainingMs <= 3500);
+                    remainingMs = (m_trackLengthUs / 1000) - currentPos;
+                    nearEnd = (remainingMs > 0 && remainingMs <= 2500);
                 }
                 if (naturalEndJustDetected || nearEnd) {
-                    gaplessLead = kSpotifyGaplessLeadMs;
+                    if (remainingMs > 0) {
+                        gaplessLead = qMin(remainingMs, kSpotifyGaplessLeadMs);
+                    } else if (naturalEndJustDetected) {
+                        gaplessLead = kSpotifyGaplessLeadMs;
+                    }
                 }
             }
         }
         m_manualSkipPending = false;
 
         cancelProcess();
+        m_pipeline->cancel();
+        m_activeProviderId.clear();
         m_spicy->cancel();
         m_lrclib->cancel();
         m_expiryTimer.stop();
@@ -1523,18 +1592,214 @@ void LrcApplet::requestLyrics()
         return;
     }
 
-    // 1. If Spotify and Spicy is enabled with a key, try Spicy Lyrics first
-    if (m_useSpicy && !m_spotifyTrackId.isEmpty() && !m_spicyKey.isEmpty()) {
-        m_fetchingFromSpicy = true;
-        m_fetchingLrc = false;
-        m_spicy->request(m_spotifyTrackId);
+    cancelProcess();
+    m_pipeline->cancel();
+    m_expiryTimer.stop();
+
+    TrackMetadata meta;
+    meta.title = m_trackTitle;
+    meta.artist = m_trackArtist;
+    meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
+    meta.spotifyTrackId = m_spotifyTrackId;
+    meta.mprisTrackId = m_mprisTrackId;
+    meta.isWebSession = m_webPageSession;
+
+    m_fetchingFromSpicy = false;
+    m_fetchingLrc = true;
+
+    m_pipeline->requestLyrics(meta, ++m_lookupGeneration);
+}
+
+void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId)
+{
+    if (generation != m_lookupGeneration) {
         return;
     }
 
-    // 2. Otherwise, fetch LRC via native LRCLIB client
+    m_fetchingLrc = false;
     m_fetchingFromSpicy = false;
-    m_fetchingLrc = true;
-    m_lrclibKey = m_lrclib->request(m_trackTitle, m_trackArtist, m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0, m_webPageSession);
+    m_activeProviderId = providerId;
+    m_fromSpicy = (providerId == QLatin1String("spicy"));
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool isInvalidOrExpired = m_fromSpicy && (lyrics.validUntilMs <= 0 || now >= lyrics.validUntilMs);
+
+    if (isInvalidOrExpired) {
+        m_expiryTimer.stop();
+        m_lyrics = Lyrics();
+        m_fromSpicy = false;
+        m_wordSynced = false;
+        m_lineIndex = -1;
+        m_wordCursor = 0;
+        clearWordHighlight();
+        m_word.clear();
+        m_wordStart = 0;
+        m_wordEnd = 0;
+        m_wordProgress = 0.0;
+        setText(QString());
+        setActive(false);
+        Q_EMIT wordChanged();
+        Q_EMIT lyricsChanged();
+        return;
+    }
+
+    if (!m_available) {
+        setAvailable(true);
+        setError(QString());
+    }
+
+    m_lyricsLookupDone = true;
+    m_lyrics = lyrics;
+    m_wordSynced = (lyrics.type == LyricsType::Syllable);
+    m_lineIndex = -1;
+    m_wordCursor = 0;
+    clearWordHighlight();
+
+    if (m_fromSpicy) {
+        m_expiryGeneration = m_lookupGeneration;
+        m_expiryRetryCount = 0;
+        if (m_lyrics.validUntilMs > 0) {
+            armExpiryTimer();
+        } else {
+            m_expiryTimer.stop();
+        }
+    } else {
+        m_expiryTimer.stop();
+    }
+
+    requestPosition();
+    if (m_pauseHidden) {
+        m_wordTimer.stop();
+    } else {
+        m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
+        updateWord();
+    }
+    Q_EMIT lyricsChanged();
+}
+
+void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason)
+{
+    if (generation != m_lookupGeneration) {
+        return;
+    }
+
+    m_fetchingLrc = false;
+    m_fetchingFromSpicy = false;
+    m_activeProviderId.clear();
+    m_missingReason = lastReason;
+
+    if (!QStandardPaths::findExecutable(QStringLiteral("lrc_tty")).isEmpty()) {
+        fetchLrcLyrics(false);
+    } else {
+        m_lyricsLookupDone = true;
+        if (m_playing && !m_pauseHidden) {
+            m_wordTimer.start(kIdleTickMs);
+        }
+        setText(QString());
+        setActive(false);
+        Q_EMIT lyricsChanged();
+    }
+}
+
+QStringList LrcApplet::providerOrder() const
+{
+    return m_pipeline ? m_pipeline->providerOrder() : QStringList();
+}
+
+QVariantList LrcApplet::providers() const
+{
+    QVariantList result;
+    if (!m_pipeline) {
+        return result;
+    }
+    const QStringList order = m_pipeline->providerOrder();
+    for (const QString &id : order) {
+        LyricsProvider *p = m_pipeline->provider(id);
+        if (!p) {
+            continue;
+        }
+        QVariantMap map;
+        map.insert(QStringLiteral("id"), p->id());
+        map.insert(QStringLiteral("name"), p->displayName());
+        map.insert(QStringLiteral("enabled"), p->isEnabled());
+        map.insert(QStringLiteral("isConfigured"), p->isConfigured());
+        map.insert(QStringLiteral("wordSync"), bool(p->capabilities() & LyricsProvider::Capability::WordSync));
+        map.insert(QStringLiteral("lineSync"), bool(p->capabilities() & LyricsProvider::Capability::LineSync));
+        map.insert(QStringLiteral("requiresKey"), bool(p->capabilities() & LyricsProvider::Capability::RequiresAuthKey));
+        map.insert(QStringLiteral("requiresSpotifyId"), bool(p->capabilities() & LyricsProvider::Capability::RequiresSpotifyId));
+        result.append(map);
+    }
+    return result;
+}
+
+void LrcApplet::setProviderEnabled(const QString &id, bool enabled)
+{
+    if (!m_pipeline) {
+        return;
+    }
+    m_pipeline->setProviderEnabled(id, enabled);
+    if (id == QLatin1String("spicy")) {
+        m_useSpicy = enabled;
+        config().group(s_configGroup).writeEntry(QStringLiteral("useSpicyLyrics"), enabled);
+    }
+    saveProviderConfig();
+    if (m_started && !m_trackTitle.isEmpty()) {
+        m_lyricsLookupDone = false;
+        requestLyrics();
+    }
+}
+
+void LrcApplet::moveProviderUp(int index)
+{
+    if (!m_pipeline) {
+        return;
+    }
+    QStringList order = m_pipeline->providerOrder();
+    if (index > 0 && index < order.size()) {
+        order.swapItemsAt(index, index - 1);
+        m_pipeline->setProviderOrder(order);
+        saveProviderConfig();
+        if (m_started && !m_trackTitle.isEmpty()) {
+            m_lyricsLookupDone = false;
+            requestLyrics();
+        }
+    }
+}
+
+void LrcApplet::moveProviderDown(int index)
+{
+    if (!m_pipeline) {
+        return;
+    }
+    QStringList order = m_pipeline->providerOrder();
+    if (index >= 0 && index < order.size() - 1) {
+        order.swapItemsAt(index, index + 1);
+        m_pipeline->setProviderOrder(order);
+        saveProviderConfig();
+        if (m_started && !m_trackTitle.isEmpty()) {
+            m_lyricsLookupDone = false;
+            requestLyrics();
+        }
+    }
+}
+
+void LrcApplet::saveProviderConfig()
+{
+    config().group(s_configGroup).writeEntry(QStringLiteral("providerOrder"), m_pipeline->providerOrder().join(QLatin1Char(',')));
+    QStringList disabledList;
+    for (LyricsProvider *p : m_pipeline->allProviders()) {
+        if (!p->isEnabled()) {
+            disabledList.append(p->id());
+        }
+    }
+    config().group(s_configGroup).writeEntry(QStringLiteral("disabledProviders"), disabledList.join(QLatin1Char(',')));
+    config().sync();
+    if (configuration()) {
+        configuration()->insert(QStringLiteral("providerOrder"), m_pipeline->providerOrder().join(QLatin1Char(',')));
+        configuration()->insert(QStringLiteral("disabledProviders"), disabledList.join(QLatin1Char(',')));
+    }
+    Q_EMIT providerOrderChanged();
+    Q_EMIT settingsChanged();
 }
 
 void LrcApplet::requestSpicyLyrics()
@@ -1798,7 +2063,8 @@ void LrcApplet::onPositionFetched()
     }
 
     const qint64 rttMs = m_positionFetchTimer.isValid() ? m_positionFetchTimer.elapsed() : 0;
-    const qint64 reportedMs = (positionUs / 1000) + (rttMs / 2);
+    const qint64 rttComp = qBound(0LL, rttMs / 2, 50LL);
+    const qint64 reportedMs = (positionUs / 1000) + rttComp;
 
     // Single unified stale-position guard after track change:
     // 1) reportedMs exceeds the new track's length by > 1s, OR
@@ -1808,10 +2074,8 @@ void LrcApplet::onPositionFetched()
     if (exceedsDuration || staleAfterTrackChange) {
         if (++m_trackChangeRetries <= 16) {
             QTimer::singleShot(50, this, [this] {
-                if (!m_positionValid) {
-                    m_positionRetries.invalidate();
-                    requestPosition();
-                }
+                m_positionRetries.invalidate();
+                requestPosition();
             });
             return;
         }
@@ -1879,7 +2143,6 @@ void LrcApplet::onPositionFetched()
         if (m_zeroPositionPolls <= 45) {
             m_positionBaseMs = 0;
             m_positionClock.invalidate();
-            m_trackJustChanged = false;
             m_trackChangeRetries = 0;
             m_positionValid = true;
             m_positionRetries.start();

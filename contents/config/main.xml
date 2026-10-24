@@ -41,7 +41,7 @@
 
         <entry name="showIcon" type="Bool">
             <label>Show a note icon next to the lyrics.</label>
-            <default>true</default>
+            <default>false</default>
         </entry>
 
         <entry name="showTrackInfo" type="Bool">
@@ -61,9 +61,19 @@
 
         <entry name="maxCharacters" type="Int">
             <label>Maximum amount of characters shown in the panel. 0 means no limit.</label>
-            <default>40</default>
+            <default>100</default>
             <min>0</min>
             <max>500</max>
+        </entry>
+
+        <entry name="providerOrder" type="String">
+            <label>Order of lyrics providers to query, separated by commas.</label>
+            <default>lrcred,amll,spicy,lrclib</default>
+        </entry>
+
+        <entry name="disabledProviders" type="String">
+            <label>Disabled lyric providers, separated by commas.</label>
+            <default></default>
         </entry>
 
         <entry name="useSpicyLyrics" type="Bool">
@@ -94,14 +104,14 @@
 
         <entry name="wordStyle" type="Int">
             <label>How the word being sung is marked: 0 is underline, 1 is bold, 2 is highlight color.</label>
-            <default>0</default>
+            <default>1</default>
             <min>0</min>
             <max>2</max>
         </entry>
 
         <entry name="pauseHideDelay" type="Int">
             <label>Seconds of pause before hiding lyrics. 0 means keep lyrics visible.</label>
-            <default>5</default>
+            <default>3</default>
             <min>0</min>
             <max>60</max>
         </entry>

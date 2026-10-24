@@ -29,12 +29,14 @@
 
 ## Features
 
+- **Multi-Source Lyrics Pipeline**:  
+  Modular lyrics engine with user-customizable priority ordering and toggles. Queries free, tokenless providers with Apple Music-grade TTML syllable sync (`lrc.red` and `AMLL TTML DB`), alongside `Spicy Lyrics` and `LRCLIB`. If a source has no timings or fails, it seamlessly falls back to the next active provider in the chain.
 - **Real-Time Word-by-Word Karaoke**:  
-  Highlights every sung word in real time on your Plasma panel using the Spicy Lyrics API (Spotify). Syllable groups are smoothly merged with zero stutter or text jumping.
+  Highlights every sung word in real time on your Plasma panel using syllable/word-level sync from Apple Music TTML (`lrc.red`, `AMLL TTML DB`) and `Spicy Lyrics`. Syllable groups are smoothly merged with zero stutter or text jumping.
 - **Customizable Highlight Palette**:  
   Customize your lyric highlight color with built-in presets (Spotify Green, Cyan, Purple, Yellow, Coral, White) or any custom `#RRGGBB` hex code. Choose between highlight color, bold, or underline styles.
 - **1 Fetch Per Song Architecture**:  
-  Instead of polling external tools multiple times per second, the widget fetches lyrics once on track change (native LRCLIB client / Spicy API) and runs local time interpolation using C++ `QElapsedTimer`. CPU usage drops to 0% at idle.
+  Instead of polling external tools multiple times per second, the widget fetches lyrics once on track change and runs local time interpolation using C++ `QElapsedTimer`. CPU usage drops to 0% at idle.
 - **Intelligent MPRIS Engine**:  
   Auto-detects active music players, avoids browser media tab lock-in, strips video noise from titles (`[Official Music Video]`, `4K`, etc.), and prioritizes your favorite player.
 - **Clean Instrumental Breaks**:  
@@ -64,10 +66,12 @@
 │                  LrcApplet (C++ Core)                  │
 ├────────────────────────────────────────────────────────┤
 │ 1. Track detection & active player scoring             │
-│ 2. Single-shot lyrics fetch per track:                 │
-│    ├── Spotify + API Key  ──►  Spicy Lyrics HTTP API   │
-│    └── Other players      ──►  Native LRCLIB API       │
-│ 3. LrcParser (C++): Fast in-memory [mm:ss.xx] parser   │
+│ 2. Multi-Source Lyrics Pipeline (Chain of Priority):   │
+│    ├── 1. lrc.red (Apple Music TTML syllable sync)     │
+│    ├── 2. AMLL TTML DB (jsDelivr CDN community DB)     │
+│    ├── 3. Spicy Lyrics (Spotify community word sync)   │
+│    └── 4. LRCLIB (Open-source line-synced database)    │
+│ 3. TTML & LRC Parsers (C++): Fast in-memory parsing    │
 │ 4. QElapsedTimer: Local monotonic line & word timing   │
 └───────────────────────────┬────────────────────────────┘
                             │ Text, active word, progress

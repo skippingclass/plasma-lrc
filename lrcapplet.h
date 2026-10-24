@@ -17,6 +17,11 @@
 
 #include "spicylyrics.h"
 #include "lrcparser.h"
+#include "lyricspipelinemanager.h"
+#include "spicylyricsprovider.h"
+#include "lrclibprovider.h"
+#include "amllprovider.h"
+#include "lrcredprovider.h"
 
 class QDBusPendingCallWatcher;
 class LrclibClient;
@@ -62,6 +67,8 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QVariantList contributors READ contributors NOTIFY lyricsChanged)
     Q_PROPERTY(QString attributionHtml READ attributionHtml NOTIFY lyricsChanged)
     Q_PROPERTY(bool fromSpicyLyrics READ fromSpicyLyrics NOTIFY lyricsChanged)
+    Q_PROPERTY(QString activeProviderId READ activeProviderId NOTIFY lyricsChanged)
+    Q_PROPERTY(QStringList providerOrder READ providerOrder NOTIFY providerOrderChanged)
     Q_PROPERTY(qint64 lyricsValidUntilMs READ lyricsValidUntilMs NOTIFY lyricsChanged)
     /// Whether the API source can be used at all, i.e. it is on and has a key.
     Q_PROPERTY(bool spicyConfigured READ isSpicyConfigured NOTIFY settingsChanged)
@@ -310,6 +317,12 @@ public:
     Q_INVOKABLE void addBlacklistTrack(const QString &track);
     Q_INVOKABLE void removeBlacklistTrack(const QString &track);
     Q_INVOKABLE void clearBlacklist();
+    QStringList providerOrder() const;
+    QString activeProviderId() const { return m_activeProviderId; }
+    Q_INVOKABLE QVariantList providers() const;
+    Q_INVOKABLE void setProviderEnabled(const QString &id, bool enabled);
+    Q_INVOKABLE void moveProviderUp(int index);
+    Q_INVOKABLE void moveProviderDown(int index);
 
 Q_SIGNALS:
     void textChanged();
@@ -323,6 +336,7 @@ Q_SIGNALS:
     void settingsChanged();
     void trackBlacklistChanged();
     void pauseHiddenChanged();
+    void providerOrderChanged();
 
 public Q_SLOTS:
     /// Forget everything we know and ask lrc_tty right away.
@@ -335,6 +349,8 @@ private Q_SLOTS:
     void onPlayerPropertiesFetched();
     void onPlayerListFetched();
     void onServiceOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
+    void onPipelineResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId);
+    void onPipelineAllFailed(quint64 generation, MissingReason lastReason);
     void onSpicyLoaded(const QString &trackId, const Lyrics &lyrics);
     void onSpicyMissing(const QString &trackId, MissingReason reason);
     void onLrclibLoaded(const QString &requestKey, const Lyrics &lyrics);
@@ -422,8 +438,17 @@ private:
     /// Dedicated timer for Spicy Lyrics API expiry deadline.
     QTimer m_expiryTimer;
     QProcess *m_process;
+    LyricsPipelineManager *m_pipeline;
+    SpicyLyricsProvider *m_spicyProvider;
+    LrclibProvider *m_lrclibProvider;
+    AmllProvider *m_amllProvider;
+    LrcRedProvider *m_lrcredProvider;
     SpicyLyrics *m_spicy;
     LrclibClient *m_lrclib;
+    QString m_activeProviderId;
+    QString m_providerOrderConfig;
+    QString m_disabledProvidersConfig;
+    void saveProviderConfig();
 
     QString m_text;
     QString m_error;

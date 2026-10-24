@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.6.0 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,6 +53,20 @@ add_library(${PLUGIN_ID} SHARED
     trackname.h
     playermeta.cpp
     playermeta.h
+    ttmlparser.cpp
+    ttmlparser.h
+    lyrictypes.h
+    lyricsprovider.h
+    spicylyricsprovider.cpp
+    spicylyricsprovider.h
+    lrclibprovider.cpp
+    lrclibprovider.h
+    amllprovider.cpp
+    amllprovider.h
+    lrcredprovider.cpp
+    lrcredprovider.h
+    lyricspipelinemanager.cpp
+    lyricspipelinemanager.h
 )
 
 set_target_properties(${PLUGIN_ID} PROPERTIES
@@ -109,6 +123,23 @@ if(PLASMA_LRC_TESTS)
     target_link_libraries(spicy-parser-test PRIVATE Qt6::Core Qt6::Network Qt6::DBus)
     enable_testing()
     add_test(NAME spicy-parser COMMAND spicy-parser-test)
+
+    add_executable(ttml-parser-test
+        tests/ttml-parser-test.cpp
+        ttmlparser.cpp
+        ttmlparser.h
+    )
+    target_link_libraries(ttml-parser-test PRIVATE Qt6::Core)
+    add_test(NAME ttml-parser COMMAND ttml-parser-test)
+
+    add_executable(pipeline-test
+        tests/pipeline-test.cpp
+        lyricspipelinemanager.cpp
+        lyricspipelinemanager.h
+        lyricsprovider.h
+    )
+    target_link_libraries(pipeline-test PRIVATE Qt6::Core)
+    add_test(NAME pipeline COMMAND pipeline-test)
 
     foreach(client IN ITEMS spicy lrclib)
         add_executable(${client}-client-test

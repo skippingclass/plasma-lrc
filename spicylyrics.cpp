@@ -46,7 +46,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.6.0 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.7.0 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -422,39 +422,6 @@ QString SpicyLyrics::primaryAttributionUrl(const LyricAttribution &attr)
     return QString();
 }
 
-int Lyrics::lineAt(qint64 positionMs) const
-{
-    // Lines are sorted by start time, and a good part of them overlap: the next
-    // line often begins before the previous one ends, which is normal for words
-    // that are sung across a line break. The line that started last wins, so that
-    // a line shows up when it begins instead of when the previous one lets go of
-    // the screen. A gap between lines means nobody is singing, and the caller
-    // keeps showing whatever it had.
-    //
-    // The search is a binary one: this runs fifty times a second, and a forward
-    // scan from the last match would leave the widget stuck whenever the
-    // position jumped backwards over it.
-    const auto it = std::upper_bound(lines.begin(), lines.end(), positionMs, [](qint64 value, const LyricLine &line) {
-        return value < line.startMs;
-    });
-    if (it == lines.begin()) {
-        return -1;
-    }
-    const int newest = static_cast<int>(it - lines.begin()) - 1;
-    if (positionMs < lines.at(newest).endMs) {
-        return newest;
-    }
-
-    // The newest line is over. A longer line that began earlier may still be
-    // running, and it is worth a short walk back to look for one.
-    for (int i = newest; i >= 0 && i > newest - kLineLookBack; --i) {
-        const LyricLine &line = lines.at(i);
-        if (positionMs >= line.startMs && positionMs < line.endMs) {
-            return i;
-        }
-    }
-    return -1;
-}
 
 SpicyLyrics::SpicyLyrics(QObject *parent)
     : QObject(parent)
