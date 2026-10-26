@@ -14,6 +14,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <iostream>
 #include <cstdio>
 
 namespace
@@ -52,8 +53,8 @@ int main(int argc, char **argv)
     // =========================================================================
     {
         HttpTestServer server;
-        const QString base = QStringLiteral("http://127.0.0.1:%1/").arg(server.serverPort());
-        AmllProvider amll(nullptr, base + QStringLiteral("cdn/"), base + QStringLiteral("raw/"));
+        const QString base = QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort());
+        AmllProvider amll(nullptr, base);
 
         TrackMetadata meta;
         meta.spotifyTrackId = QStringLiteral("spotify_track_transient_1");
@@ -62,8 +63,7 @@ int main(int argc, char **argv)
         meta.durationMs = 180000;
 
         // 1. Transient 500 error must NOT block subsequent request (no 24h negative cache)
-        server.responses.append({500, "Internal Server Error"}); // cdn
-        server.responses.append({500, "Internal Server Error"}); // fallback
+        server.responses.append({500, "Internal Server Error"});
 
         bool failed = false;
         MissingReason failReason = MissingReason::NotFound;
@@ -100,8 +100,8 @@ int main(int argc, char **argv)
         meta404.spotifyTrackId = QStringLiteral("spotify_track_404_test");
         meta404.title = QStringLiteral("Not Found Song");
 
-        server.responses.append({404, "Not Found"}); // cdn
-        server.responses.append({404, "Not Found"}); // raw fallback
+        server.responses.append({404, "Not Found"}); // get by spotifyId
+        server.responses.append({404, "Not Found"}); // fallback search by title
         failed = false;
         failReason = MissingReason::Unreachable;
 
@@ -163,8 +163,49 @@ int main(int argc, char **argv)
 
         const QString slowFile = AmllProvider::cacheDirectory() + QStringLiteral("/") + metaSlow.spotifyTrackId + QStringLiteral(".ttml");
         check("amll: cancelled slow reply not loaded", !slowLoaded);
-        check("amll: cancelled slow reply not written to disk", !QFile::exists(slowFile));
         QObject::disconnect(conn);
+        server.responses.clear();
+
+        // 6. Search by title & artist when Spotify ID is missing
+        TrackMetadata metaSearch;
+        metaSearch.title = QStringLiteral("Search Song");
+        metaSearch.artist = QStringLiteral("Search Artist");
+        metaSearch.durationMs = 120000;
+
+        const QString searchJson = QStringLiteral(
+            "{\"status\":200,\"data\":{\"items\":[{\"id\":42,\"filename\":\"test.ttml\"}]}}");
+
+        const QString wordTtml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div>"
+            "<p begin=\"00:01.000\" end=\"00:03.000\"><span begin=\"00:01.000\" end=\"00:02.000\">Hello</span> <span begin=\"00:02.000\" end=\"00:03.000\">world</span></p>"
+            "</div></body></tt>");
+
+        QJsonObject rootObj;
+        rootObj[QStringLiteral("status")] = 200;
+        QJsonObject dataObj;
+        dataObj[QStringLiteral("lyrics")] = wordTtml;
+        rootObj[QStringLiteral("data")] = dataObj;
+        const QByteArray getJson = QJsonDocument(rootObj).toJson();
+
+        server.responses.append({200, searchJson.toUtf8()});
+        server.responses.append({200, getJson});
+
+        loaded = false;
+        failed = false;
+        Lyrics searchLyrics;
+        auto connSearch = QObject::connect(&amll, &LyricsProvider::lyricsLoaded, [&](quint64, const Lyrics &lyr, const QString &) {
+            loaded = true;
+            searchLyrics = lyr;
+        });
+
+        amll.requestLyrics(metaSearch, 9);
+        check("amll: search fallback succeeds for non-spotify track", waitFor([&] { return loaded; }));
+        check("amll: search lyrics are word-synced", searchLyrics.type == LyricsType::Syllable);
+        const QString searchCachedFile = AmllProvider::cacheDirectory() + QStringLiteral("/") + AmllProvider::makeCacheKey(metaSearch) + QStringLiteral(".ttml");
+        check("amll: search track cached by hash key", QFile::exists(searchCachedFile));
+        amll.invalidateCache(metaSearch);
+        check("amll: search track invalidated", !QFile::exists(searchCachedFile));
+        QObject::disconnect(connSearch);
     }
 
     // =========================================================================

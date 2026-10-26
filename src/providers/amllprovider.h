@@ -21,15 +21,14 @@ class AmllProvider : public LyricsProvider
 
 public:
     explicit AmllProvider(QObject *parent = nullptr,
-                          const QString &cdnBase = QStringLiteral("https://cdn.jsdelivr.net/gh/amll-dev/amll-ttml-db@main/spotify-lyrics/"),
-                          const QString &fallbackBase = QStringLiteral("https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/spotify-lyrics/"));
+                          const QString &apiBase = QStringLiteral("https://api.amll.dev"));
     ~AmllProvider() override;
 
     QString id() const override { return QStringLiteral("amll"); }
     QString displayName() const override { return QStringLiteral("AMLL TTML DB"); }
     Capabilities capabilities() const override
     {
-        return Capability::WordSync | Capability::RequiresSpotifyId;
+        return Capability::WordSync;
     }
 
     bool canHandle(const TrackMetadata &meta) const override;
@@ -46,29 +45,42 @@ public:
         return (generation == m_diagGeneration) ? m_diagCache : QString();
     }
 
-    void setFallbackBase(const QString &fallbackBase) { m_fallbackBase = fallbackBase; }
-    QString fallbackBase() const { return m_fallbackBase; }
+    void setApiBase(const QString &apiBase) { m_apiBase = apiBase; }
+    QString apiBase() const { return m_apiBase; }
 
     static QString cacheDirectory();
+    static QString makeCacheKey(const TrackMetadata &meta);
 
 private Q_SLOTS:
     void onReplyFinished();
     void onTimeout();
 
 private:
-    void executeFetch(const QString &trackId, bool isFallback);
-    bool checkDiskCache(const QString &trackId, qint64 durationMs, Lyrics *outLyrics);
-    void writeDiskCache(const QString &trackId, const QByteArray &data);
+    enum class Step {
+        Idle,
+        GetBySpotifyId,
+        SearchByTitleArtist,
+        GetById
+    };
 
-    QString m_cdnBase;
-    QString m_fallbackBase;
+    void startGetBySpotifyId();
+    void startSearchByTitleArtist();
+    void startGetById(qint64 idVal, const QString &filename);
+    void handlePayload(const QByteArray &data, quint64 gen);
+    void failCurrent(MissingReason reason, const QString &diagReason, bool is404 = false);
+
+    bool checkDiskCache(const QString &cacheKey, qint64 durationMs, Lyrics *outLyrics);
+    void writeDiskCache(const QString &cacheKey, const QByteArray &data);
+
+    QString m_apiBase;
     QNetworkAccessManager m_network;
     QPointer<QNetworkReply> m_currentReply;
     QTimer m_watchdog;
     quint64 m_currentGeneration = 0;
-    QString m_pendingTrackId;
-    qint64 m_pendingDurationMs = 0;
-    QHash<QString, qint64> m_negativeCache; // trackId -> timestamp
+    TrackMetadata m_currentMeta;
+    QString m_currentCacheKey;
+    Step m_currentStep = Step::Idle;
+    QHash<QString, qint64> m_negativeCache; // cacheKey -> timestamp
     quint64 m_diagGeneration = 0;
     QString m_diagReason;
     QString m_diagCache;

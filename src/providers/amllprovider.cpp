@@ -7,13 +7,18 @@
 #include "amllprovider.h"
 #include "ttmlparser.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QStandardPaths>
+#include <QUrlQuery>
 #include <QXmlStreamReader>
 
 namespace
@@ -24,10 +29,9 @@ constexpr int kRequestTimeoutMs = 10000;
 const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.1 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
-AmllProvider::AmllProvider(QObject *parent, const QString &cdnBase, const QString &fallbackBase)
+AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
     : LyricsProvider(parent)
-    , m_cdnBase(cdnBase)
-    , m_fallbackBase(fallbackBase)
+    , m_apiBase(apiBase)
 {
     m_watchdog.setSingleShot(true);
     connect(&m_watchdog, &QTimer::timeout, this, &AmllProvider::onTimeout);
@@ -47,9 +51,21 @@ QString AmllProvider::cacheDirectory()
     return base + QStringLiteral("/amll");
 }
 
+QString AmllProvider::makeCacheKey(const TrackMetadata &meta)
+{
+    if (!meta.spotifyTrackId.trimmed().isEmpty()) {
+        return meta.spotifyTrackId.trimmed();
+    }
+    const QString combined = QStringLiteral("%1\t%2\t%3")
+        .arg(meta.title.trimmed().toLower(),
+             meta.artist.trimmed().toLower(),
+             QString::number(meta.durationMs > 0 ? meta.durationMs / 1000 : 0));
+    return QString::fromLatin1(QCryptographicHash::hash(combined.toUtf8(), QCryptographicHash::Sha1).toHex());
+}
+
 bool AmllProvider::canHandle(const TrackMetadata &meta) const
 {
-    return !meta.spotifyTrackId.isEmpty();
+    return !meta.spotifyTrackId.trimmed().isEmpty() || !meta.title.trimmed().isEmpty();
 }
 
 void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
@@ -60,35 +76,43 @@ void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
     m_diagGeneration = generation;
     m_diagReason.clear();
     m_diagCache = QStringLiteral("Miss");
-    m_pendingTrackId = meta.spotifyTrackId;
-    m_pendingDurationMs = meta.durationMs;
+    m_currentMeta = meta;
+    m_currentCacheKey = makeCacheKey(meta);
 
     // Check negative cache
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (m_negativeCache.contains(m_pendingTrackId)) {
-        if (now - m_negativeCache.value(m_pendingTrackId) < kNegativeCacheTtlMs) {
+    if (m_negativeCache.contains(m_currentCacheKey)) {
+        if (now - m_negativeCache.value(m_currentCacheKey) < kNegativeCacheTtlMs) {
             const quint64 gen = m_currentGeneration;
-            m_pendingTrackId.clear();
+            m_currentGeneration = 0;
             m_diagCache = QStringLiteral("Hit (negative cache)");
-            m_diagReason = QStringLiteral("Track not found in database (cached)");
+            m_diagReason = QStringLiteral("Track not found in AMLL database (cached)");
             Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
             return;
         }
-        m_negativeCache.remove(m_pendingTrackId);
+        m_negativeCache.remove(m_currentCacheKey);
     }
 
     // Check disk cache
     Lyrics cachedLyrics;
-    if (checkDiskCache(m_pendingTrackId, m_pendingDurationMs, &cachedLyrics)) {
+    if (checkDiskCache(m_currentCacheKey, meta.durationMs, &cachedLyrics)) {
         const quint64 gen = m_currentGeneration;
-        m_pendingTrackId.clear();
+        m_currentGeneration = 0;
         m_diagCache = QStringLiteral("Hit (disk)");
         m_diagReason.clear();
         Q_EMIT lyricsLoaded(gen, cachedLyrics, id());
         return;
     }
 
-    executeFetch(m_pendingTrackId, false);
+    if (!meta.spotifyTrackId.trimmed().isEmpty()) {
+        startGetBySpotifyId();
+    } else if (!meta.title.trimmed().isEmpty()) {
+        startSearchByTitleArtist();
+    } else {
+        const quint64 gen = m_currentGeneration;
+        m_currentGeneration = 0;
+        Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+    }
 }
 
 void AmllProvider::cancel()
@@ -102,52 +126,185 @@ void AmllProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-    m_pendingTrackId.clear();
+    m_currentCacheKey.clear();
     m_currentGeneration = 0;
+    m_currentStep = Step::Idle;
 }
 
 void AmllProvider::invalidateCache(const TrackMetadata &meta)
 {
-    const QString trackId = meta.spotifyTrackId.trimmed();
-    if (trackId.isEmpty()) {
+    const QString key = makeCacheKey(meta);
+    if (key.isEmpty()) {
         return;
     }
 
-    if (m_pendingTrackId == trackId) {
+    if (m_currentCacheKey == key) {
         cancel();
     }
 
-    m_negativeCache.remove(trackId);
+    m_negativeCache.remove(key);
 
-    const QString diskPath = cacheDirectory() + QStringLiteral("/") + trackId + QStringLiteral(".ttml");
+    const QString diskPath = cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".ttml");
     if (QFile::exists(diskPath)) {
         QFile::remove(diskPath);
     }
+
+    if (!meta.spotifyTrackId.trimmed().isEmpty()) {
+        m_negativeCache.remove(meta.spotifyTrackId.trimmed());
+        const QString spotifyDiskPath = cacheDirectory() + QStringLiteral("/") + meta.spotifyTrackId.trimmed() + QStringLiteral(".ttml");
+        if (QFile::exists(spotifyDiskPath)) {
+            QFile::remove(spotifyDiskPath);
+        }
+    }
 }
 
-void AmllProvider::executeFetch(const QString &trackId, bool isFallback)
+void AmllProvider::startGetBySpotifyId()
 {
-    QString urlStr = isFallback ? m_fallbackBase : m_cdnBase;
-    if (urlStr.isEmpty()) {
-        const quint64 gen = m_currentGeneration;
-        m_pendingTrackId.clear();
-        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
-        return;
+    m_currentStep = Step::GetBySpotifyId;
+    QString base = m_apiBase;
+    if (base.endsWith(QLatin1Char('/'))) {
+        base.chop(1);
     }
-    if (!urlStr.endsWith(QLatin1Char('/'))) {
-        urlStr.append(QLatin1Char('/'));
-    }
-    urlStr.append(trackId).append(QStringLiteral(".ttml"));
 
-    QNetworkRequest request{QUrl(urlStr)};
+    QUrl url(base + QStringLiteral("/v1/lyrics/get"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("spotifyId"), m_currentMeta.spotifyTrackId.trimmed());
+    url.setQuery(query);
+
+    QNetworkRequest request{url};
     request.setHeader(QNetworkRequest::UserAgentHeader, s_userAgent);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 
     m_currentReply = m_network.get(request);
-    m_currentReply->setProperty("isFallback", isFallback);
     connect(m_currentReply, &QNetworkReply::finished, this, &AmllProvider::onReplyFinished);
-
     m_watchdog.start(kRequestTimeoutMs);
+}
+
+void AmllProvider::startSearchByTitleArtist()
+{
+    m_currentStep = Step::SearchByTitleArtist;
+    QString base = m_apiBase;
+    if (base.endsWith(QLatin1Char('/'))) {
+        base.chop(1);
+    }
+
+    QUrl url(base + QStringLiteral("/v1/lyrics/search"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("musicName"), m_currentMeta.title.trimmed());
+    if (!m_currentMeta.artist.trimmed().isEmpty()) {
+        query.addQueryItem(QStringLiteral("artistName"), m_currentMeta.artist.trimmed());
+    }
+    url.setQuery(query);
+
+    QNetworkRequest request{url};
+    request.setHeader(QNetworkRequest::UserAgentHeader, s_userAgent);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    m_currentReply = m_network.get(request);
+    connect(m_currentReply, &QNetworkReply::finished, this, &AmllProvider::onReplyFinished);
+    m_watchdog.start(kRequestTimeoutMs);
+}
+
+void AmllProvider::startGetById(qint64 idVal, const QString &filename)
+{
+    m_currentStep = Step::GetById;
+    QString base = m_apiBase;
+    if (base.endsWith(QLatin1Char('/'))) {
+        base.chop(1);
+    }
+
+    QUrl url(base + QStringLiteral("/v1/lyrics/get"));
+    QUrlQuery query;
+    if (idVal > 0) {
+        query.addQueryItem(QStringLiteral("id"), QString::number(idVal));
+    } else {
+        query.addQueryItem(QStringLiteral("filename"), filename.trimmed());
+    }
+    url.setQuery(query);
+
+    QNetworkRequest request{url};
+    request.setHeader(QNetworkRequest::UserAgentHeader, s_userAgent);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    m_currentReply = m_network.get(request);
+    connect(m_currentReply, &QNetworkReply::finished, this, &AmllProvider::onReplyFinished);
+    m_watchdog.start(kRequestTimeoutMs);
+}
+
+void AmllProvider::failCurrent(MissingReason reason, const QString &diagReason, bool is404)
+{
+    m_watchdog.stop();
+    const quint64 gen = m_currentGeneration;
+    const QString cacheKey = m_currentCacheKey;
+    m_currentGeneration = 0;
+    m_currentStep = Step::Idle;
+
+    if (is404 && !cacheKey.isEmpty()) {
+        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+    }
+
+    m_diagReason = diagReason;
+    Q_EMIT lyricsFailed(gen, reason, id());
+}
+
+void AmllProvider::handlePayload(const QByteArray &data, quint64 gen)
+{
+    QString ttmlContent;
+
+    // Check if response is JSON (e.g. from api.amll.dev)
+    QJsonParseError jsonError;
+    const QJsonDocument doc = QJsonDocument::fromJson(data, &jsonError);
+    if (jsonError.error == QJsonParseError::NoError && doc.isObject()) {
+        const QJsonObject root = doc.object();
+        if (root.contains(QLatin1String("data"))) {
+            const QJsonValue dataVal = root.value(QLatin1String("data"));
+            if (dataVal.isObject()) {
+                const QJsonObject dataObj = dataVal.toObject();
+                ttmlContent = dataObj.value(QLatin1String("lyrics")).toString();
+            }
+        }
+    } else {
+        // Fallback: check if raw TTML was returned
+        const QString text = QString::fromUtf8(data).trimmed();
+        if (text.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
+            ttmlContent = text;
+        }
+    }
+
+    const QString trimmed = ttmlContent.trimmed();
+    if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("<!DOCTYPE"), Qt::CaseInsensitive)
+        || trimmed.startsWith(QLatin1String("<html"), Qt::CaseInsensitive)
+        || !trimmed.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
+        failCurrent(MissingReason::Unreachable, QStringLiteral("Malformed TTML response"));
+        return;
+    }
+
+    // Check XML well-formedness
+    QXmlStreamReader xmlReader(trimmed);
+    while (!xmlReader.atEnd()) {
+        xmlReader.readNext();
+    }
+    if (xmlReader.hasError()) {
+        failCurrent(MissingReason::Unreachable, QStringLiteral("Invalid TTML XML syntax"));
+        return;
+    }
+
+    Lyrics lyrics;
+    if (!TtmlParser::parseTtml(trimmed, &lyrics, m_currentMeta.durationMs) || !lyrics.isUsable()) {
+        failCurrent(MissingReason::Unsynced, QStringLiteral("No synchronized lyrics in TTML"), true);
+        return;
+    }
+
+    lyrics.attributionData.provider = QStringLiteral("AMLL TTML DB");
+    lyrics.attributionData.providerUrl = QStringLiteral("https://github.com/amll-dev/amll-ttml-db");
+    lyrics.attribution = QStringLiteral("AMLL TTML DB");
+    lyrics.attributionUrl = lyrics.attributionData.providerUrl;
+
+    writeDiskCache(m_currentCacheKey, trimmed.toUtf8());
+
+    m_currentGeneration = 0;
+    m_currentStep = Step::Idle;
+    Q_EMIT lyricsLoaded(gen, lyrics, id());
 }
 
 void AmllProvider::onReplyFinished()
@@ -162,138 +319,152 @@ void AmllProvider::onReplyFinished()
     reply->deleteLater();
 
     const quint64 gen = m_currentGeneration;
-    const QString trackId = m_pendingTrackId;
-    const qint64 durationMs = m_pendingDurationMs;
-    const bool isFallback = reply->property("isFallback").toBool();
-
-    if (trackId.isEmpty() || gen == 0) {
+    if (m_currentCacheKey.isEmpty() || gen == 0) {
         return;
     }
 
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QNetworkReply::NetworkError err = reply->error();
+    const Step step = m_currentStep;
 
-    if (reply->error() != QNetworkReply::NoError || statusCode != 200) {
-        if (!isFallback && !m_fallbackBase.isEmpty() && (statusCode == 404 || statusCode == 0 || statusCode >= 500)) {
-            // Try fallback mirror before failing
-            executeFetch(trackId, true);
+    if (step == Step::GetBySpotifyId) {
+        if (err == QNetworkReply::NoError && statusCode == 200) {
+            handlePayload(reply->readAll(), gen);
             return;
         }
-
-        m_pendingTrackId.clear();
-        // Negative cache ONLY on confirmed 404 Not Found!
-        // Never on transient network errors, 429, 5xx, or status 0.
-        if (statusCode == 404) {
-            m_diagReason = QStringLiteral("Track not found in database (HTTP 404)");
-            m_negativeCache.insert(trackId, QDateTime::currentMSecsSinceEpoch());
-            Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
-        } else if (statusCode == 429) {
-            m_diagReason = QStringLiteral("Rate limit reached (HTTP 429)");
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        // If 404 or 400, try fallback to search by title & artist if title is available!
+        if (statusCode == 404 || statusCode == 400) {
+            if (!m_currentMeta.title.trimmed().isEmpty()) {
+                startSearchByTitleArtist();
+                return;
+            }
+            failCurrent(MissingReason::NotFound, QStringLiteral("Track not found in AMLL database (HTTP 404)"), true);
+            return;
+        }
+        if (statusCode == 429) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("Rate limit reached (HTTP 429)"));
         } else if (statusCode >= 500) {
-            m_diagReason = QStringLiteral("HTTP server error (%1)").arg(statusCode);
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
-        } else if (reply->error() != QNetworkReply::NoError) {
-            m_diagReason = QStringLiteral("Network error (%1)").arg(reply->errorString());
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            failCurrent(MissingReason::Unreachable, QStringLiteral("HTTP server error (%1)").arg(statusCode));
+        } else if (err != QNetworkReply::NoError) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("Network error (%1)").arg(reply->errorString()));
         } else {
-            m_diagReason = QStringLiteral("HTTP error (%1)").arg(statusCode);
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            failCurrent(MissingReason::Unreachable, QStringLiteral("HTTP error (%1)").arg(statusCode));
         }
         return;
     }
 
-    const QByteArray data = reply->readAll();
-    m_pendingTrackId.clear();
-
-    const QString text = QString::fromUtf8(data);
-    const QString trimmed = text.trimmed();
-    if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("<!DOCTYPE"), Qt::CaseInsensitive)
-        || trimmed.startsWith(QLatin1String("<html"), Qt::CaseInsensitive)
-        || !trimmed.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
-        // Malformed transient response (empty, HTML error page, or not TTML)
-        m_diagReason = QStringLiteral("Malformed TTML response");
-        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+    if (step == Step::SearchByTitleArtist) {
+        if (err == QNetworkReply::NoError && statusCode == 200) {
+            const QByteArray data = reply->readAll();
+            QJsonParseError jsonError;
+            const QJsonDocument doc = QJsonDocument::fromJson(data, &jsonError);
+            if (jsonError.error == QJsonParseError::NoError && doc.isObject()) {
+                const QJsonObject root = doc.object();
+                const QJsonObject dataObj = root.value(QLatin1String("data")).toObject();
+                const QJsonArray items = dataObj.value(QLatin1String("items")).toArray();
+                if (!items.isEmpty()) {
+                    const QJsonObject firstItem = items.first().toObject();
+                    const qint64 itemId = firstItem.value(QLatin1String("id")).toVariant().toLongLong();
+                    const QString filename = firstItem.value(QLatin1String("filename")).toString();
+                    startGetById(itemId, filename);
+                    return;
+                }
+            }
+            failCurrent(MissingReason::NotFound, QStringLiteral("Track not found in AMLL database (0 results)"), true);
+            return;
+        }
+        if (statusCode == 404 || statusCode == 400) {
+            failCurrent(MissingReason::NotFound, QStringLiteral("Track not found in AMLL database (HTTP 404)"), true);
+            return;
+        }
+        if (statusCode == 429) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("Rate limit reached (HTTP 429)"));
+        } else if (statusCode >= 500) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("HTTP server error (%1)").arg(statusCode));
+        } else if (err != QNetworkReply::NoError) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("Network error (%1)").arg(reply->errorString()));
+        } else {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("HTTP error (%1)").arg(statusCode));
+        }
         return;
     }
 
-    // Check XML well-formedness
-    QXmlStreamReader xmlReader(trimmed);
-    while (!xmlReader.atEnd()) {
-        xmlReader.readNext();
-    }
-    if (xmlReader.hasError()) {
-        // Malformed / truncated XML transient response
-        m_diagReason = QStringLiteral("Invalid TTML XML syntax");
-        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+    if (step == Step::GetById) {
+        if (err == QNetworkReply::NoError && statusCode == 200) {
+            handlePayload(reply->readAll(), gen);
+            return;
+        }
+        if (statusCode == 404) {
+            failCurrent(MissingReason::NotFound, QStringLiteral("Track not found in AMLL database (HTTP 404)"), true);
+            return;
+        }
+        if (statusCode == 429) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("Rate limit reached (HTTP 429)"));
+        } else if (statusCode >= 500) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("HTTP server error (%1)").arg(statusCode));
+        } else if (err != QNetworkReply::NoError) {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("Network error (%1)").arg(reply->errorString()));
+        } else {
+            failCurrent(MissingReason::Unreachable, QStringLiteral("HTTP error (%1)").arg(statusCode));
+        }
         return;
     }
-
-    Lyrics lyrics;
-    if (!TtmlParser::parseTtml(trimmed, &lyrics, durationMs) || !lyrics.isUsable()) {
-        // Well-formed TTML document, but confirmed unsynced
-        m_diagReason = QStringLiteral("No synchronized lyrics in TTML");
-        m_negativeCache.insert(trackId, QDateTime::currentMSecsSinceEpoch());
-        Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
-        return;
-    }
-
-    lyrics.attributionData.provider = QStringLiteral("AMLL TTML DB");
-    lyrics.attributionData.providerUrl = QStringLiteral("https://github.com/amll-dev/amll-ttml-db");
-    lyrics.attribution = QStringLiteral("AMLL TTML DB");
-    lyrics.attributionUrl = lyrics.attributionData.providerUrl;
-
-    writeDiskCache(trackId, data);
-    Q_EMIT lyricsLoaded(gen, lyrics, id());
 }
 
 void AmllProvider::onTimeout()
 {
-    if (m_currentReply && m_currentReply->isRunning()) {
-        m_currentReply->abort();
-    }
+    failCurrent(MissingReason::Unreachable, QStringLiteral("Request timed out"));
 }
 
-bool AmllProvider::checkDiskCache(const QString &trackId, qint64 durationMs, Lyrics *outLyrics)
+bool AmllProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, Lyrics *outLyrics)
 {
-    if (!outLyrics || trackId.isEmpty()) {
-        return false;
-    }
-    const QString path = cacheDirectory() + QStringLiteral("/") + trackId + QStringLiteral(".ttml");
-    QFileInfo info(path);
-    if (!info.exists() || !info.isFile()) {
+    if (!outLyrics || cacheKey.isEmpty()) {
         return false;
     }
 
-    const qint64 ageMs = QDateTime::currentMSecsSinceEpoch() - info.lastModified().toMSecsSinceEpoch();
+    const QString path = cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml");
+    QFileInfo fi(path);
+    if (!fi.exists() || !fi.isFile()) {
+        return false;
+    }
+
+    const qint64 ageMs = fi.lastModified().msecsTo(QDateTime::currentDateTime());
     if (ageMs > kAmllCacheTtlMs) {
         QFile::remove(path);
         return false;
     }
 
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return false;
     }
 
-    const QString content = QString::fromUtf8(file.readAll());
-    if (TtmlParser::parseTtml(content, outLyrics, durationMs)) {
+    const QString text = QString::fromUtf8(file.readAll());
+    if (TtmlParser::parseTtml(text, outLyrics, durationMs) && outLyrics->isUsable()) {
         outLyrics->attributionData.provider = QStringLiteral("AMLL TTML DB");
         outLyrics->attributionData.providerUrl = QStringLiteral("https://github.com/amll-dev/amll-ttml-db");
         outLyrics->attribution = QStringLiteral("AMLL TTML DB");
         outLyrics->attributionUrl = outLyrics->attributionData.providerUrl;
         return true;
     }
+
     return false;
 }
 
-void AmllProvider::writeDiskCache(const QString &trackId, const QByteArray &data)
+void AmllProvider::writeDiskCache(const QString &cacheKey, const QByteArray &data)
 {
-    if (trackId.isEmpty() || data.isEmpty()) {
+    if (cacheKey.isEmpty() || data.isEmpty()) {
         return;
     }
+
     const QString dirPath = cacheDirectory();
-    QDir().mkpath(dirPath);
-    QFile file(dirPath + QStringLiteral("/") + trackId + QStringLiteral(".ttml"));
+    QDir dir;
+    if (!dir.exists(dirPath)) {
+        dir.mkpath(dirPath);
+    }
+
+    const QString filePath = dirPath + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml");
+    QFile file(filePath);
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(data);
     }
