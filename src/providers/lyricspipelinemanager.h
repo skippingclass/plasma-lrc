@@ -9,6 +9,7 @@
 #include "lyricsprovider.h"
 
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QStringList>
 
@@ -44,6 +45,23 @@ public:
 
     int maxConcurrentLookups() const { return m_maxConcurrentLookups; }
     void setMaxConcurrentLookups(int max) { m_maxConcurrentLookups = max; }
+
+    struct ProviderDiagnostic {
+        QString id;
+        QString displayName;
+        QString status;          // "disabled", "skipped", "pending", "searching", "provisional", "selected", "failed", "cancelled"
+        QString rejectionReason; // Confirmed reason e.g. "Candidate duration mismatch (>4s)", "Unsynced lyrics", etc.
+        QString cacheUsage;      // "Hit (disk)", "Hit (negative cache)", "Miss", "None"
+        QString syncQuality;     // "Syllable", "Line", "Unsynced", "None"
+        int priority = -1;
+    };
+
+    QList<ProviderDiagnostic> providerDiagnostics() const;
+    TrackMetadata currentMeta() const { return m_currentMeta; }
+    quint64 currentGeneration() const { return m_currentGeneration; }
+    bool isLookupActive() const { return m_isLookupActive; }
+    QString bestProviderId() const { return m_bestProviderId; }
+    LyricsType bestQuality() const { return m_bestQuality; }
 
 Q_SIGNALS:
     void lyricsResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId);
@@ -86,4 +104,5 @@ private:
 
     bool m_isLookupActive = false;
     bool m_pumping = false;
+    QMap<QString, ProviderDiagnostic> m_providerDiagnostics;
 };

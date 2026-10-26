@@ -422,6 +422,9 @@ public:
     Q_INVOKABLE void setProviderEnabled(const QString &id, bool enabled);
     Q_INVOKABLE void moveProviderUp(int index);
     Q_INVOKABLE void moveProviderDown(int index);
+    Q_INVOKABLE QVariantMap diagnosticData() const;
+    Q_INVOKABLE QString diagnosticReport() const;
+    Q_INVOKABLE void copyDiagnosticReport();
 
 Q_SIGNALS:
     void textChanged();

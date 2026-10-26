@@ -1506,6 +1506,364 @@ public:
                     check("regression 10: QML backingSungEnd decreased on rewind", qmlRoot->property("backingSungEnd").toInt() < secondBackingSungEnd);
                 }
             }
+
+            // Regression 11: Line switch white retention in "Sung words become white" mode
+            // Verifies that outgoing line does not flash gray during fadeTransition,
+            // and updates immediately when fadeTransition is disabled.
+            {
+                Lyrics testLyrics;
+                testLyrics.type = LyricsType::Syllable;
+                LyricLine line0;
+                line0.text = QStringLiteral("First Line Of Track");
+                line0.startMs = 0;
+                line0.endMs = 5000;
+                LyricLine line1;
+                line1.text = QStringLiteral("Second Line Arrives");
+                line1.startMs = 5000;
+                line1.endMs = 10000;
+                LyricLine line2;
+                line2.text = QStringLiteral("Third Line Instant");
+                line2.startMs = 10000;
+                line2.endMs = 15000;
+                testLyrics.lines = {line0, line1, line2};
+
+                widget.m_lyrics = testLyrics;
+                widget.m_lyricsLookupDone = true;
+                widget.m_lyricsDiscarded = false;
+                widget.m_wordStyle = 4; // "Sung words become white"
+                widget.m_fadeTransition = true;
+                widget.m_active = true;
+                widget.m_wordSynced = true;
+                widget.m_lineIndex = 0;
+                widget.setText(QStringLiteral("First Line Of Track"));
+                widget.m_sungEnd = 19;
+
+                QQmlEngine engine;
+                engine.rootContext()->setContextProperty(QStringLiteral("Plasmoid"), &widget);
+
+                QQmlComponent component(&engine);
+                component.setData(QByteArrayLiteral(R"qml(
+                    import QtQuick
+                    Item {
+                        id: root
+                        property string lyricText: Plasmoid.text
+                        property string backingText: Plasmoid.backingText
+                        property bool hasLyrics: Plasmoid.hasLyrics
+                        property string displayedLyric: ""
+                        property string displayedBacking: ""
+                        property int displayedLineIndex: -1
+                        property int sungEnd: 0
+
+                        Component.onCompleted: {
+                            root.displayedLyric = root.lyricText;
+                            root.displayedBacking = root.backingText;
+                            root.displayedLineIndex = Plasmoid.lineIndex;
+                            root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                        }
+
+                        function formatCompactLine(lineText) {
+                            var text = lineText !== undefined ? lineText : displayedLyric;
+                            if (Plasmoid.wordStyle === 4) {
+                                if (!Plasmoid.wordSynced) return "<white>" + text + "</white>";
+                                var sungBoundary = Math.max(0, Math.min(root.sungEnd, text.length));
+                                if (sungBoundary <= 0) return "<gray>" + text + "</gray>";
+                                if (sungBoundary >= text.length) return "<white>" + text + "</white>";
+                                return "<white>" + text.substring(0, sungBoundary) + "</white><gray>" + text.substring(sungBoundary) + "</gray>";
+                            }
+                            return text;
+                        }
+
+                        // Simulates lineFadeAnim ScriptAction / immediate swap
+                        function swapLine() {
+                            root.displayedLyric = root.lyricText;
+                            root.displayedBacking = root.backingText;
+                            root.displayedLineIndex = Plasmoid.lineIndex;
+                            root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                        }
+
+                        Connections {
+                            target: Plasmoid
+                            function onLineIndexChanged() {
+                                if (!Plasmoid.fadeTransition || !root.hasLyrics || root.displayedLyric.length === 0 || root.lyricText.length === 0) {
+                                    root.swapLine();
+                                }
+                            }
+
+                            function onWordChanged() {
+                                if (root.displayedLineIndex >= 0 && Plasmoid.lineIndex !== root.displayedLineIndex) {
+                                    return;
+                                }
+                                if (Plasmoid.sungEnd !== undefined) {
+                                    root.sungEnd = Plasmoid.sungEnd;
+                                } else {
+                                    root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                                }
+                            }
+                        }
+                    }
+                )qml"), QUrl());
+
+                QScopedPointer<QObject> qmlRoot(component.create());
+                check("regression 11: QML component created", !qmlRoot.isNull());
+
+                if (qmlRoot) {
+                    QVariant fmt0;
+                    QMetaObject::invokeMethod(qmlRoot.data(), "formatCompactLine", Qt::DirectConnection,
+                                              Q_RETURN_ARG(QVariant, fmt0),
+                                              Q_ARG(QVariant, qmlRoot->property("displayedLyric")));
+                    check("regression 11: line 0 initially 100% white", fmt0.toString() == QStringLiteral("<white>First Line Of Track</white>"));
+
+                    // Switch to Line 1 in C++ with fadeTransition = true
+                    widget.m_lineIndex = 1;
+                    widget.setText(QStringLiteral("Second Line Arrives"));
+                    widget.m_sungEnd = 0; // C++ resets sungEnd for new line
+                    Q_EMIT widget.lineIndexChanged();
+                    Q_EMIT widget.wordChanged();
+
+                    // Check before swap: outgoing line must retain its white highlight
+                    check("regression 11: fadeTransition displayedLineIndex remains 0 before swap", qmlRoot->property("displayedLineIndex").toInt() == 0);
+                    check("regression 11: fadeTransition displayedLyric remains line 0", qmlRoot->property("displayedLyric").toString() == QStringLiteral("First Line Of Track"));
+                    check("regression 11: fadeTransition sungEnd retained on outgoing line (19, not 0)", qmlRoot->property("sungEnd").toInt() == 19);
+
+                    QVariant fmtFade;
+                    QMetaObject::invokeMethod(qmlRoot.data(), "formatCompactLine", Qt::DirectConnection,
+                                              Q_RETURN_ARG(QVariant, fmtFade),
+                                              Q_ARG(QVariant, qmlRoot->property("displayedLyric")));
+                    check("regression 11: outgoing line stays white during fade-out (does NOT flash gray)", fmtFade.toString() == QStringLiteral("<white>First Line Of Track</white>"));
+
+                    // Execute swapLine (simulating lineFadeAnim ScriptAction firing after 60ms)
+                    QMetaObject::invokeMethod(qmlRoot.data(), "swapLine");
+                    check("regression 11: displayedLineIndex updated to 1 after swap", qmlRoot->property("displayedLineIndex").toInt() == 1);
+                    check("regression 11: displayedLyric updated to line 1 after swap", qmlRoot->property("displayedLyric").toString() == QStringLiteral("Second Line Arrives"));
+                    check("regression 11: sungEnd updated to 0 for line 1 after swap", qmlRoot->property("sungEnd").toInt() == 0);
+
+                    QVariant fmtSwapped;
+                    QMetaObject::invokeMethod(qmlRoot.data(), "formatCompactLine", Qt::DirectConnection,
+                                              Q_RETURN_ARG(QVariant, fmtSwapped),
+                                              Q_ARG(QVariant, qmlRoot->property("displayedLyric")));
+                    check("regression 11: line 1 formatted gray initially", fmtSwapped.toString() == QStringLiteral("<gray>Second Line Arrives</gray>"));
+
+                    // Now test with fadeTransition = false
+                    widget.m_fadeTransition = false;
+                    widget.m_sungEnd = 19; // Sing line 1 completely
+                    Q_EMIT widget.wordChanged();
+                    check("regression 11: line 1 sungEnd reached 19", qmlRoot->property("sungEnd").toInt() == 19);
+
+                    // Switch to Line 2 immediately
+                    widget.m_lineIndex = 2;
+                    widget.setText(QStringLiteral("Third Line Instant"));
+                    widget.m_sungEnd = 0;
+                    Q_EMIT widget.lineIndexChanged();
+                    Q_EMIT widget.wordChanged();
+
+                    // Must update immediately without waiting for any swap
+                    check("regression 11: fadeTransition false immediately updates displayedLineIndex to 2", qmlRoot->property("displayedLineIndex").toInt() == 2);
+                    check("regression 11: fadeTransition false immediately updates displayedLyric", qmlRoot->property("displayedLyric").toString() == QStringLiteral("Third Line Instant"));
+                    check("regression 11: fadeTransition false immediately resets sungEnd to 0", qmlRoot->property("sungEnd").toInt() == 0);
+
+                    QVariant fmtInstant;
+                    QMetaObject::invokeMethod(qmlRoot.data(), "formatCompactLine", Qt::DirectConnection,
+                                              Q_RETURN_ARG(QVariant, fmtInstant),
+                                              Q_ARG(QVariant, qmlRoot->property("displayedLyric")));
+                    check("regression 11: fadeTransition false formatted correctly", fmtInstant.toString() == QStringLiteral("<gray>Third Line Instant</gray>"));
+                }
+            }
+
+            // Regression 12: Search Diagnostics
+            // Verifies raw and normalized metadata, current source & sync quality,
+            // provider pipeline entries with statuses/reasons/cache, and generation binding.
+            {
+                widget.m_trackTitle = QStringLiteral("Supermarket (feat. Guest) [Music Video]");
+                widget.m_trackArtist = QStringLiteral("madk1d - Topic");
+                widget.m_trackAlbum = QStringLiteral("Single Album [Explicit]");
+                widget.m_trackLengthUs = 180000000; // 3 minutes = 180000 ms
+
+                Lyrics testLyrics;
+                testLyrics.type = LyricsType::Syllable;
+                LyricLine l1; l1.text = QStringLiteral("Supermarket text"); l1.startMs = 0; l1.endMs = 3000;
+                testLyrics.lines = {l1};
+                testLyrics.attribution = QStringLiteral("Test Attribution");
+                testLyrics.attributionData.provider = QStringLiteral("lrc.red");
+                widget.m_lyrics = testLyrics;
+                widget.m_activeProviderId = QStringLiteral("lrcred");
+                widget.m_wordSynced = true;
+
+                const QVariantMap diag = widget.diagnosticData();
+                check("regression 12: diagnosticData contains search section", diag.contains(QStringLiteral("search")));
+                check("regression 12: diagnosticData contains sync section", diag.contains(QStringLiteral("sync")));
+
+                const QVariantMap search = diag.value(QStringLiteral("search")).toMap();
+                check("regression 12: rawTitle matches", search.value(QStringLiteral("rawTitle")).toString() == QStringLiteral("Supermarket (feat. Guest) [Music Video]"));
+                check("regression 12: normalizedTitle stripped of noise", search.value(QStringLiteral("normalizedTitle")).toString() == QStringLiteral("Supermarket"));
+                check("regression 12: rawArtist matches", search.value(QStringLiteral("rawArtist")).toString() == QStringLiteral("madk1d - Topic"));
+                check("regression 12: normalizedArtist stripped of - Topic", search.value(QStringLiteral("normalizedArtist")).toString() == QStringLiteral("madk1d"));
+                check("regression 12: rawDurationMs is 180000", search.value(QStringLiteral("rawDurationMs")).toLongLong() == 180000);
+                check("regression 12: rawDurationFormatted is 3:00", search.value(QStringLiteral("rawDurationFormatted")).toString() == QStringLiteral("3:00 (180000 ms)"));
+                check("regression 12: currentProviderId is lrcred", search.value(QStringLiteral("currentProviderId")).toString() == QStringLiteral("lrcred"));
+                check("regression 12: syncQuality is Syllable-synced", search.value(QStringLiteral("syncQuality")).toString().contains(QStringLiteral("Syllable-synced")));
+                check("regression 12: searchGeneration matches lookupGeneration", search.value(QStringLiteral("searchGeneration")).toULongLong() == widget.m_lookupGeneration);
+
+                const QVariantList providers = search.value(QStringLiteral("providers")).toList();
+                check("regression 12: providers list populated", !providers.isEmpty());
+
+                bool foundLrcred = false;
+                for (const auto &pVal : providers) {
+                    const QVariantMap p = pVal.toMap();
+                    check("regression 12: provider entry has id", !p.value(QStringLiteral("id")).toString().isEmpty());
+                    check("regression 12: provider entry has name", !p.value(QStringLiteral("name")).toString().isEmpty());
+                    check("regression 12: provider entry has status", !p.value(QStringLiteral("status")).toString().isEmpty());
+                    check("regression 12: provider entry has cache field", p.contains(QStringLiteral("cache")));
+                    check("regression 12: provider entry has reason field", p.contains(QStringLiteral("reason")));
+                    if (p.value(QStringLiteral("id")).toString() == QStringLiteral("lrcred")) {
+                        foundLrcred = true;
+                    }
+                }
+                check("regression 12: lrcred provider in diagnostic list", foundLrcred);
+
+                // Generation binding: new track lookup generation does not inherit old track results
+                const quint64 gen1 = widget.m_lookupGeneration;
+                widget.resetTrackPosition(true); // increments m_lookupGeneration
+                const quint64 gen2 = widget.m_lookupGeneration;
+                check("regression 12: resetTrackPosition increments lookup generation", gen2 > gen1);
+
+                const QVariantMap search2 = widget.diagnosticData().value(QStringLiteral("search")).toMap();
+                check("regression 12: diagnosticData strictly reports current generation", search2.value(QStringLiteral("searchGeneration")).toULongLong() == gen2);
+            }
+
+            // Regression 13: Synchronization Diagnostics
+            // Verifies measurement age, gapless lead, audio lead compensation, user offset,
+            // arithmetic formula correctness, vocal cursors, and state flags.
+            {
+                widget.m_trackTitle = QStringLiteral("Supermarket");
+                widget.m_trackArtist = QStringLiteral("madk1d");
+                widget.m_player = QStringLiteral("spotify");
+                widget.m_playing = true;
+                widget.m_playingKnown = true;
+                widget.m_positionValid = true;
+                widget.m_positionBaseMs = 70000;
+                widget.m_positionClock.start();
+                widget.m_gaplessLeadMs = 1000;
+                widget.m_lyricOffset = 250;
+                widget.m_lineIndex = 2;
+                widget.m_word = QStringLiteral("testWord");
+                widget.m_wordStart = 5;
+                widget.m_wordEnd = 13;
+                widget.m_sungEnd = 13;
+                widget.m_backingText = QStringLiteral("(backing phrase)");
+                widget.m_backingWordStart = 1;
+                widget.m_backingWordEnd = 15;
+                widget.m_backingSungEnd = 15;
+                widget.m_pauseHidden = false;
+                widget.m_lyricsDiscarded = false;
+                widget.m_positionMs = widget.m_positionBaseMs + (widget.m_playing && widget.m_positionClock.isValid() ? widget.m_positionClock.elapsed() : 0) - widget.m_gaplessLeadMs - 90 - widget.m_lyricOffset;
+
+                const QVariantMap sync = widget.diagnosticData().value(QStringLiteral("sync")).toMap();
+                check("regression 13: player is spotify", sync.value(QStringLiteral("player")).toString() == QStringLiteral("spotify"));
+                check("regression 13: playbackStatus is Playing", sync.value(QStringLiteral("playbackStatus")).toString() == QStringLiteral("Playing"));
+                check("regression 13: positionValid is true", sync.value(QStringLiteral("positionValid")).toBool());
+                check("regression 13: baseMprisPositionMs is 70000", sync.value(QStringLiteral("baseMprisPositionMs")).toLongLong() == 70000);
+                check("regression 13: gaplessLeadMs is 1000", sync.value(QStringLiteral("gaplessLeadMs")).toLongLong() == 1000);
+                check("regression 13: audioLeadCompensationMs is 90", sync.value(QStringLiteral("audioLeadCompensationMs")).toLongLong() == 90);
+                check("regression 13: userOffsetMs is 250", sync.value(QStringLiteral("userOffsetMs")).toLongLong() == 250);
+
+                // Check exact arithmetic formula:
+                // positionMs = baseMs + elapsed - gaplessLead - audioLead - userOffset
+                const qint64 baseMs = sync.value(QStringLiteral("baseMprisPositionMs")).toLongLong();
+                const qint64 elapsedMs = sync.value(QStringLiteral("measurementAgeMs")).toLongLong();
+                const qint64 finalMs = sync.value(QStringLiteral("finalPositionMs")).toLongLong();
+                const qint64 expectedMs = std::max<qint64>(0, baseMs + elapsedMs - 1000 - 90 - 250);
+                check("regression 13: finalPositionMs conforms to calculation formula", std::abs(finalMs - expectedMs) <= 3);
+
+                const QString formulaStr = sync.value(QStringLiteral("calculationFormula")).toString();
+                check("regression 13: calculationFormula text contains formula elements with units", formulaStr.contains(QStringLiteral("positionMs = baseMs")) && formulaStr.contains(QStringLiteral("ms")));
+
+                // Cursors
+                check("regression 13: lineIndex is 2", sync.value(QStringLiteral("lineIndex")).toInt() == 2);
+                check("regression 13: primaryWord is testWord", sync.value(QStringLiteral("primaryWord")).toString() == QStringLiteral("testWord"));
+                check("regression 13: primarySungEnd is 13", sync.value(QStringLiteral("primarySungEnd")).toInt() == 13);
+                check("regression 13: backingText matches", sync.value(QStringLiteral("backingText")).toString() == QStringLiteral("(backing phrase)"));
+                check("regression 13: backingSungEnd is 15", sync.value(QStringLiteral("backingSungEnd")).toInt() == 15);
+
+                // State flags
+                check("regression 13: isPaused false when playing", !sync.value(QStringLiteral("isPaused")).toBool());
+                widget.applyPlayerProperties({{QStringLiteral("PlaybackStatus"), QStringLiteral("Paused")}}, {});
+                const QVariantMap syncPaused = widget.diagnosticData().value(QStringLiteral("sync")).toMap();
+                check("regression 13: isPaused true when paused", syncPaused.value(QStringLiteral("isPaused")).toBool());
+
+                widget.discardCurrentLyrics();
+                const QVariantMap syncDiscarded = widget.diagnosticData().value(QStringLiteral("sync")).toMap();
+                check("regression 13: isDiscarded true when discarded", syncDiscarded.value(QStringLiteral("isDiscarded")).toBool());
+                widget.restoreCurrentLyrics();
+
+                widget.addBlacklistTrack(QStringLiteral("madk1d - Supermarket"));
+                const QVariantMap syncBl = widget.diagnosticData().value(QStringLiteral("sync")).toMap();
+                check("regression 13: isBlacklisted true when track on blacklist", syncBl.value(QStringLiteral("isBlacklisted")).toBool());
+                widget.clearBlacklist();
+            }
+
+            // Regression 14: Diagnostic Report Plain Text & Security / Clipboard
+            // Verifies report formatting, absence of secrets/tokens/lyrics lines, and clipboard copy.
+            {
+                const QString report = widget.diagnosticReport();
+                check("regression 14: report header present", report.contains(QStringLiteral("=== PLASMA LRC DIAGNOSTIC REPORT ===")));
+                check("regression 14: report search section present", report.contains(QStringLiteral("--- 1. TRACK & SEARCH DIAGNOSTICS ---")));
+                check("regression 14: report sync section present", report.contains(QStringLiteral("--- 2. SYNCHRONIZATION DIAGNOSTICS ---")));
+                check("regression 14: report calculation formula breakdown present", report.contains(QStringLiteral("Position Calculation (milliseconds):")));
+                check("regression 14: report signs are explicit (+elapsed, -gaplessLead, -audioLeadComp, -userOffset)",
+                      report.contains(QStringLiteral("Measurement Age (elapsed):          +")) &&
+                      report.contains(QStringLiteral("Gapless Lead Buffer (gaplessLead):  -")) &&
+                      report.contains(QStringLiteral("Audio Lead Latency (audioLeadComp): -")) &&
+                      report.contains(QStringLiteral("User Lyric Offset (userOffset):     -")));
+                check("regression 14: report state flags present", report.contains(QStringLiteral("State Flags:")));
+
+                // Security / Privacy: Secret keys must NEVER be printed
+                qputenv("SPICY_LYRICS_SECRET_KEY", "sensitive-secret-token-abcdef");
+                const QString safeReport = widget.diagnosticReport();
+                check("regression 14: NO secret key leaked in report", !safeReport.contains(QStringLiteral("sensitive-secret-token-abcdef")));
+                check("regression 14: NO authorization header in report", !safeReport.contains(QStringLiteral("Bearer ")) && !safeReport.contains(QStringLiteral("Authorization")));
+                qunsetenv("SPICY_LYRICS_SECRET_KEY");
+
+                // Privacy: Full song lyric lines must NOT be dumped in report
+                check("regression 14: full lyrics body not dumped in report", !safeReport.contains(QStringLiteral("Supermarket text")));
+
+                // Clipboard copy integration
+                widget.m_positionClock.invalidate();
+                const QString finalReport = widget.diagnosticReport();
+                QClipboard *clip = QGuiApplication::clipboard();
+                clip->setText(QStringLiteral("sentinel-before-diagnostic-copy"));
+                widget.copyDiagnosticReport();
+                check("regression 14: copyDiagnosticReport writes plain text report to clipboard", clip->text() == finalReport);
+            }
+
+            // Regression 15: DiagnosticsWindow QML instantiation and data loading via plasmoidApplet
+            {
+                QQmlEngine diagEngine;
+                QQmlEngine::setObjectOwnership(&widget, QQmlEngine::CppOwnership);
+                diagEngine.rootContext()->setContextProperty(QStringLiteral("Plasmoid"), &widget);
+                QQmlComponent diagComp(&diagEngine, QUrl::fromLocalFile(QStringLiteral("/home/pirkov/plasma_lrc/contents/ui/DiagnosticsWindow.qml")));
+                check("regression 15: DiagnosticsWindow.qml component loads", !diagComp.isError(), diagComp.errorString());
+                QObject *diagObj = diagComp.create();
+                check("regression 15: DiagnosticsWindow object created", diagObj != nullptr);
+
+                if (diagObj) {
+                    QQmlEngine::setObjectOwnership(diagObj, QQmlEngine::CppOwnership);
+                    // Call openDiagnostics with &widget passed as plasmoidApplet
+                    QMetaObject::invokeMethod(diagObj, "openDiagnostics", Q_ARG(QVariant, QVariant::fromValue(static_cast<QObject*>(&widget))));
+
+                    const QVariantMap searchMap = diagObj->property("searchData").toMap();
+                    check("regression 15: searchData is not empty after openDiagnostics", !searchMap.isEmpty());
+                    check("regression 15: rawTitle populated in DiagnosticsWindow", searchMap.value(QStringLiteral("rawTitle")).toString() == QStringLiteral("Supermarket"));
+
+                    const QVariantMap syncMap = diagObj->property("syncData").toMap();
+                    check("regression 15: syncData is not empty after openDiagnostics", !syncMap.isEmpty());
+                    check("regression 15: player populated in DiagnosticsWindow", syncMap.value(QStringLiteral("player")).toString() == QStringLiteral("spotify"));
+
+                    const QVariantList pList = diagObj->property("providerList").toList();
+                    check("regression 15: providerList is populated in DiagnosticsWindow", !pList.isEmpty());
+
+                    delete diagObj;
+                }
+            }
         }
 
         widget.m_watchedService.clear();

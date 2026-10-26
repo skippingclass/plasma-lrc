@@ -33,6 +33,7 @@
 #include <QJsonObject>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QTextStream>
 
 #include <algorithm>
 
@@ -3734,6 +3735,234 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
             considerPlayerSwitch();
         }
     }
+}
+
+QVariantMap LrcApplet::diagnosticData() const
+{
+    QVariantMap data;
+
+    // 1. Search diagnostics
+    QVariantMap search;
+    search[QStringLiteral("rawTitle")] = m_trackTitle;
+    search[QStringLiteral("rawArtist")] = m_trackArtist;
+    search[QStringLiteral("rawAlbum")] = m_trackAlbum;
+    const qint64 rawDurMs = m_trackLengthUs > 0 ? (m_trackLengthUs / 1000) : 0;
+    search[QStringLiteral("rawDurationMs")] = rawDurMs;
+    search[QStringLiteral("rawDurationFormatted")] = rawDurMs > 0 ? QStringLiteral("%1:%2 (%3 ms)")
+        .arg(rawDurMs / 60000)
+        .arg((rawDurMs % 60000) / 1000, 2, 10, QLatin1Char('0'))
+        .arg(rawDurMs) : QStringLiteral("Unknown");
+
+    const QString normTitle = cleanTrackTitle(m_trackTitle);
+    const QString normArtist = cleanTrackArtist(m_trackArtist);
+    const QString normAlbum = cleanTrackTitle(m_trackAlbum).trimmed();
+    search[QStringLiteral("normalizedTitle")] = normTitle;
+    search[QStringLiteral("normalizedArtist")] = normArtist;
+    search[QStringLiteral("normalizedAlbum")] = normAlbum;
+    search[QStringLiteral("normalizedDurationMs")] = rawDurMs;
+    search[QStringLiteral("normalizedDurationFormatted")] = search[QStringLiteral("rawDurationFormatted")];
+
+    QString source = provider();
+    if (source.isEmpty()) {
+        source = attribution();
+    }
+    if (source.isEmpty()) {
+        source = hasLyrics() ? (fromSpicyLyrics() ? QStringLiteral("Spicy Lyrics") : QStringLiteral("LRCLIB")) : QStringLiteral("None");
+    }
+    search[QStringLiteral("currentSource")] = source;
+    search[QStringLiteral("currentProviderId")] = m_activeProviderId.isEmpty() ? QStringLiteral("none") : m_activeProviderId;
+
+    QString syncQuality;
+    if (m_lyrics.type == LyricsType::Syllable) {
+        syncQuality = QStringLiteral("Syllable-synced (word-by-word)");
+    } else if (m_lyrics.type == LyricsType::Line) {
+        syncQuality = QStringLiteral("Line-synced");
+    } else if (m_lyrics.type == LyricsType::Static) {
+        syncQuality = QStringLiteral("Unsynced");
+    } else {
+        syncQuality = QStringLiteral("None");
+    }
+    search[QStringLiteral("syncQuality")] = syncQuality;
+    search[QStringLiteral("searchGeneration")] = static_cast<qulonglong>(m_lookupGeneration);
+    search[QStringLiteral("isSearching")] = m_pipeline ? m_pipeline->isLookupActive() : false;
+
+    QVariantList providerList;
+    if (m_pipeline) {
+        const auto diags = m_pipeline->providerDiagnostics();
+        for (const auto &d : diags) {
+            QVariantMap pMap;
+            pMap[QStringLiteral("id")] = d.id;
+            pMap[QStringLiteral("name")] = d.displayName;
+            pMap[QStringLiteral("status")] = d.status;
+            pMap[QStringLiteral("reason")] = d.rejectionReason;
+            pMap[QStringLiteral("cache")] = d.cacheUsage;
+            pMap[QStringLiteral("quality")] = d.syncQuality;
+            pMap[QStringLiteral("priority")] = d.priority;
+            providerList.append(pMap);
+        }
+    }
+    search[QStringLiteral("providers")] = providerList;
+    data[QStringLiteral("search")] = search;
+
+    // 2. Synchronization diagnostics
+    QVariantMap sync;
+    sync[QStringLiteral("player")] = m_player.isEmpty() ? QStringLiteral("None") : m_player;
+    sync[QStringLiteral("playbackStatus")] = m_playingKnown ? (m_playing ? QStringLiteral("Playing") : QStringLiteral("Paused")) : QStringLiteral("Unknown");
+    sync[QStringLiteral("positionValid")] = m_positionValid;
+
+    const qint64 baseMs = m_positionBaseMs;
+    const qint64 elapsedMs = (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+    const qint64 extrapolatedMs = baseMs + (m_playing && m_positionClock.isValid() ? elapsedMs : 0);
+    const qint64 gaplessLead = m_gaplessLeadMs;
+    const qint64 audioLeadComp = kAudioLeadCompensationMs;
+    const qint64 userOffset = m_lyricOffset;
+    const qint64 finalMs = m_positionMs;
+
+    sync[QStringLiteral("baseMprisPositionMs")] = baseMs;
+    sync[QStringLiteral("measurementAgeMs")] = elapsedMs;
+    sync[QStringLiteral("extrapolatedPositionMs")] = extrapolatedMs;
+    sync[QStringLiteral("gaplessLeadMs")] = gaplessLead;
+    sync[QStringLiteral("audioLeadCompensationMs")] = audioLeadComp;
+    sync[QStringLiteral("userOffsetMs")] = userOffset;
+    sync[QStringLiteral("finalPositionMs")] = finalMs;
+
+    sync[QStringLiteral("calculationFormula")] = QStringLiteral("positionMs = baseMs (%1 ms) + elapsed (%2 ms) - gaplessLead (%3 ms) - audioLeadComp (%4 ms) - userOffset (%5 ms) = %6 ms")
+        .arg(baseMs)
+        .arg(m_playing && m_positionClock.isValid() ? elapsedMs : 0)
+        .arg(gaplessLead)
+        .arg(audioLeadComp)
+        .arg(userOffset)
+        .arg(finalMs);
+
+    sync[QStringLiteral("lineIndex")] = m_lineIndex;
+    sync[QStringLiteral("totalLines")] = static_cast<int>(m_lyrics.lines.size());
+
+    sync[QStringLiteral("primaryWord")] = m_word;
+    sync[QStringLiteral("primaryWordStart")] = m_wordStart;
+    sync[QStringLiteral("primaryWordEnd")] = m_wordEnd;
+    sync[QStringLiteral("primaryWordCursor")] = m_wordCursor;
+    sync[QStringLiteral("primarySungEnd")] = m_sungEnd;
+
+    sync[QStringLiteral("backingText")] = m_backingText;
+    sync[QStringLiteral("backingWordStart")] = m_backingWordStart;
+    sync[QStringLiteral("backingWordEnd")] = m_backingWordEnd;
+    sync[QStringLiteral("backingSungEnd")] = m_backingSungEnd;
+
+    sync[QStringLiteral("isPaused")] = !isPlaying();
+    sync[QStringLiteral("isPauseHidden")] = m_pauseHidden;
+    sync[QStringLiteral("isDiscarded")] = m_lyricsDiscarded;
+    sync[QStringLiteral("isBlacklisted")] = isCurrentTrackBlacklisted();
+    sync[QStringLiteral("isIntro")] = isIntro();
+    sync[QStringLiteral("isBreak")] = isBreak();
+    sync[QStringLiteral("hasLyrics")] = hasLyrics();
+    sync[QStringLiteral("wordSynced")] = m_wordSynced;
+
+    data[QStringLiteral("sync")] = sync;
+
+    return data;
+}
+
+QString LrcApplet::diagnosticReport() const
+{
+    const QVariantMap data = diagnosticData();
+    const QVariantMap s = data.value(QStringLiteral("search")).toMap();
+    const QVariantMap y = data.value(QStringLiteral("sync")).toMap();
+
+    QString out;
+    QTextStream ts(&out);
+
+    ts << QStringLiteral("=== PLASMA LRC DIAGNOSTIC REPORT ===\n");
+    ts << QStringLiteral("Search Generation: %1\n\n").arg(s.value(QStringLiteral("searchGeneration")).toULongLong());
+
+    ts << QStringLiteral("--- 1. TRACK & SEARCH DIAGNOSTICS ---\n");
+    ts << QStringLiteral("Raw Metadata:\n");
+    ts << QStringLiteral("  Title:    %1\n").arg(s.value(QStringLiteral("rawTitle")).toString());
+    ts << QStringLiteral("  Artist:   %1\n").arg(s.value(QStringLiteral("rawArtist")).toString());
+    ts << QStringLiteral("  Album:    %1\n").arg(s.value(QStringLiteral("rawAlbum")).toString());
+    ts << QStringLiteral("  Duration: %1\n\n").arg(s.value(QStringLiteral("rawDurationFormatted")).toString());
+
+    ts << QStringLiteral("Normalized Metadata:\n");
+    ts << QStringLiteral("  Title:    %1\n").arg(s.value(QStringLiteral("normalizedTitle")).toString());
+    ts << QStringLiteral("  Artist:   %1\n").arg(s.value(QStringLiteral("normalizedArtist")).toString());
+    ts << QStringLiteral("  Album:    %1\n").arg(s.value(QStringLiteral("normalizedAlbum")).toString());
+    ts << QStringLiteral("  Duration: %1\n\n").arg(s.value(QStringLiteral("normalizedDurationFormatted")).toString());
+
+    ts << QStringLiteral("Current Selection:\n");
+    ts << QStringLiteral("  Source:       %1\n").arg(s.value(QStringLiteral("currentSource")).toString());
+    ts << QStringLiteral("  Provider ID:  %1\n").arg(s.value(QStringLiteral("currentProviderId")).toString());
+    ts << QStringLiteral("  Sync Quality: %1\n\n").arg(s.value(QStringLiteral("syncQuality")).toString());
+
+    ts << QStringLiteral("Provider Pipeline:\n");
+    const QVariantList providers = s.value(QStringLiteral("providers")).toList();
+    if (providers.isEmpty()) {
+        ts << QStringLiteral("  (no providers registered)\n");
+    } else {
+        for (const auto &val : providers) {
+            const QVariantMap p = val.toMap();
+            const QString id = p.value(QStringLiteral("id")).toString().leftJustified(10, QLatin1Char(' '));
+            const QString status = p.value(QStringLiteral("status")).toString().leftJustified(11, QLatin1Char(' '));
+            const QString quality = p.value(QStringLiteral("quality")).toString().leftJustified(9, QLatin1Char(' '));
+            const QString cache = p.value(QStringLiteral("cache")).toString().leftJustified(18, QLatin1Char(' '));
+            const QString reason = p.value(QStringLiteral("reason")).toString();
+
+            ts << QStringLiteral("  * %1 | Status: %2 | Quality: %3 | Cache: %4 | Reason: %5\n")
+                .arg(id)
+                .arg(status)
+                .arg(quality)
+                .arg(cache)
+                .arg(reason.isEmpty() ? QStringLiteral("-") : reason);
+        }
+    }
+
+    ts << QStringLiteral("\n--- 2. SYNCHRONIZATION DIAGNOSTICS ---\n");
+    ts << QStringLiteral("Playback & Player:\n");
+    ts << QStringLiteral("  Player:          %1\n").arg(y.value(QStringLiteral("player")).toString());
+    ts << QStringLiteral("  Playback Status: %1\n").arg(y.value(QStringLiteral("playbackStatus")).toString());
+    ts << QStringLiteral("  Position Valid:  %1\n\n").arg(y.value(QStringLiteral("positionValid")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No (no valid position)"));
+
+    ts << QStringLiteral("Position Calculation (milliseconds):\n");
+    ts << QStringLiteral("  Base MPRIS Position (baseMs):        %1 ms\n").arg(y.value(QStringLiteral("baseMprisPositionMs")).toLongLong());
+    ts << QStringLiteral("  Measurement Age (elapsed):          +%1 ms\n").arg(y.value(QStringLiteral("measurementAgeMs")).toLongLong());
+    ts << QStringLiteral("  Gapless Lead Buffer (gaplessLead):  -%1 ms\n").arg(y.value(QStringLiteral("gaplessLeadMs")).toLongLong());
+    ts << QStringLiteral("  Audio Lead Latency (audioLeadComp): -%1 ms\n").arg(y.value(QStringLiteral("audioLeadCompensationMs")).toLongLong());
+    ts << QStringLiteral("  User Lyric Offset (userOffset):     -%1 ms\n").arg(y.value(QStringLiteral("userOffsetMs")).toLongLong());
+    ts << QStringLiteral("  -------------------------------------------\n");
+    ts << QStringLiteral("  Final Lyrics Position:               %1 ms\n").arg(y.value(QStringLiteral("finalPositionMs")).toLongLong());
+    ts << QStringLiteral("  Formula: %1\n\n").arg(y.value(QStringLiteral("calculationFormula")).toString());
+
+    ts << QStringLiteral("Vocal & Line Cursors:\n");
+    ts << QStringLiteral("  Line Index:          %1 / %2\n")
+        .arg(y.value(QStringLiteral("lineIndex")).toInt())
+        .arg(y.value(QStringLiteral("totalLines")).toInt());
+    ts << QStringLiteral("  Primary Word:        \"%1\" [start: %2, end: %3, cursor: %4, sungEnd: %5]\n")
+        .arg(y.value(QStringLiteral("primaryWord")).toString())
+        .arg(y.value(QStringLiteral("primaryWordStart")).toInt())
+        .arg(y.value(QStringLiteral("primaryWordEnd")).toInt())
+        .arg(y.value(QStringLiteral("primaryWordCursor")).toInt())
+        .arg(y.value(QStringLiteral("primarySungEnd")).toInt());
+    ts << QStringLiteral("  Backing Vocal:       \"%1\" [start: %2, end: %3, sungEnd: %4]\n\n")
+        .arg(y.value(QStringLiteral("backingText")).toString())
+        .arg(y.value(QStringLiteral("backingWordStart")).toInt())
+        .arg(y.value(QStringLiteral("backingWordEnd")).toInt())
+        .arg(y.value(QStringLiteral("backingSungEnd")).toInt());
+
+    ts << QStringLiteral("State Flags:\n");
+    ts << QStringLiteral("  Paused:       %1\n").arg(y.value(QStringLiteral("isPaused")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("  Pause Hidden: %1\n").arg(y.value(QStringLiteral("isPauseHidden")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("  Discarded:    %1\n").arg(y.value(QStringLiteral("isDiscarded")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("  Blacklisted:  %1\n").arg(y.value(QStringLiteral("isBlacklisted")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("  Intro:        %1\n").arg(y.value(QStringLiteral("isIntro")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("  Break:        %1\n").arg(y.value(QStringLiteral("isBreak")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("  Lyrics Usable:%1\n").arg(y.value(QStringLiteral("hasLyrics")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("  Word Synced:  %1\n").arg(y.value(QStringLiteral("wordSynced")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+    ts << QStringLiteral("====================================\n");
+
+    return out;
+}
+
+void LrcApplet::copyDiagnosticReport()
+{
+    QGuiApplication::clipboard()->setText(diagnosticReport());
 }
 
 K_PLUGIN_CLASS_WITH_JSON(LrcApplet, "metadata.json")

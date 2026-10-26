@@ -78,6 +78,9 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
     cancel();
 
     m_currentGeneration = generation;
+    m_diagGeneration = generation;
+    m_diagReason.clear();
+    m_diagCache = QStringLiteral("Miss");
     m_currentMeta = meta;
     m_targetDurationMs = meta.durationMs;
     m_currentCacheKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, meta.isrc);
@@ -88,6 +91,8 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
         if (now - m_negativeCache.value(m_currentCacheKey) < kNegativeCacheTtlMs) {
             const quint64 gen = m_currentGeneration;
             m_currentCacheKey.clear();
+            m_diagCache = QStringLiteral("Hit (negative cache)");
+            m_diagReason = QStringLiteral("Track not found in database (cached)");
             Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
             return;
         }
@@ -99,6 +104,8 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
     if (checkDiskCache(m_currentCacheKey, m_targetDurationMs, &cachedLyrics)) {
         const quint64 gen = m_currentGeneration;
         m_currentCacheKey.clear();
+        m_diagCache = QStringLiteral("Hit (disk)");
+        m_diagReason.clear();
         Q_EMIT lyricsLoaded(gen, cachedLyrics, id());
         return;
     }
@@ -254,9 +261,20 @@ void LrcRedProvider::onReplyFinished()
         // Negative cache ONLY on confirmed 404 Not Found!
         // Never on transient network errors, 429, 5xx, or status 0.
         if (statusCode == 404) {
+            m_diagReason = QStringLiteral("Track not found in database (HTTP 404)");
             m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
             Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+        } else if (statusCode == 429) {
+            m_diagReason = QStringLiteral("Rate limit reached (HTTP 429)");
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        } else if (statusCode >= 500) {
+            m_diagReason = QStringLiteral("HTTP server error (%1)").arg(statusCode);
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        } else if (reply->error() != QNetworkReply::NoError) {
+            m_diagReason = QStringLiteral("Network error (%1)").arg(reply->errorString());
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
         } else {
+            m_diagReason = QStringLiteral("HTTP error (%1)").arg(statusCode);
             Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
         }
         return;
@@ -299,6 +317,7 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
     const QJsonArray hits = root.value(QStringLiteral("hits")).toArray();
 
     if (hits.isEmpty()) {
+        m_diagReason = QStringLiteral("Track not found in database (empty search hits)");
         m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
         m_currentCacheKey.clear();
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
@@ -316,6 +335,10 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
     QJsonObject bestHit;
     int bestScore = -1;
     double bestDurationDiff = 999999.0;
+    bool hadTitleMismatch = false;
+    bool hadArtistMismatch = false;
+    bool hadDurationMismatch = false;
+    bool hadMissingFiles = false;
 
     for (const auto &val : hits) {
         if (!val.isObject()) {
@@ -359,11 +382,21 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
         const QString ttmlUrl = files.value(QStringLiteral("ttml")).toString();
         const QString lrcUrl = files.value(QStringLiteral("lrc")).toString();
         if (ttmlUrl.isEmpty() && lrcUrl.isEmpty() && candIsrc.isEmpty()) {
+            hadMissingFiles = true;
             continue;
         }
 
         const qint64 candDurMs = candDur > 0.0 ? static_cast<qint64>(std::round(candDur * 1000.0)) : 0;
-        if (!TrackMatch::matchCandidate(target, candTitle, candArtist, candDurMs)) {
+        if (!TrackMatch::matchTitles(candTitle, target.title)) {
+            hadTitleMismatch = true;
+            continue;
+        }
+        if (!target.artist.trimmed().isEmpty() && !TrackMatch::matchArtists(candArtist, target.artist)) {
+            hadArtistMismatch = true;
+            continue;
+        }
+        if (!TrackMatch::matchDurations(target.durationMs, candDurMs)) {
+            hadDurationMismatch = true;
             continue;
         }
 
@@ -401,6 +434,17 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
     }
 
     if (bestHit.isEmpty()) {
+        if (hadTitleMismatch && !hadArtistMismatch && !hadDurationMismatch && !hadMissingFiles) {
+            m_diagReason = QStringLiteral("Candidate title mismatch");
+        } else if (hadArtistMismatch && !hadTitleMismatch && !hadDurationMismatch && !hadMissingFiles) {
+            m_diagReason = QStringLiteral("Candidate artist mismatch");
+        } else if (hadDurationMismatch && !hadTitleMismatch && !hadArtistMismatch && !hadMissingFiles) {
+            m_diagReason = QStringLiteral("Candidate duration mismatch (>4s)");
+        } else if (hadMissingFiles && !hadTitleMismatch && !hadArtistMismatch && !hadDurationMismatch) {
+            m_diagReason = QStringLiteral("No synchronized lyrics available");
+        } else {
+            m_diagReason = QStringLiteral("Candidate metadata mismatch (title, artist, or duration)");
+        }
         m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
         m_currentCacheKey.clear();
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());

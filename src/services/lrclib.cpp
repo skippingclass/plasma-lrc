@@ -287,6 +287,8 @@ QString LrclibClient::request(const TrackMetadata &meta)
     // Check memory cache
     const auto memIt = m_memoryCache.constFind(reqKey);
     if (memIt != m_memoryCache.constEnd() && QDateTime::currentMSecsSinceEpoch() < memIt->expiresAtMs) {
+        m_lastCacheStatus = QStringLiteral("Hit (memory)");
+        m_lastRejectionReason.clear();
         QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics = memIt->lyrics] {
             if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
                 cleanupAttemptState();
@@ -311,6 +313,8 @@ QString LrclibClient::request(const TrackMetadata &meta)
             const QJsonObject diskObj = QJsonDocument::fromJson(payload).object();
             if (diskObj.value(QStringLiteral("missing")).toBool()) {
                 if (age <= kNegativeCacheTtlMs) {
+                    m_lastCacheStatus = QStringLiteral("Hit (negative cache)");
+                    m_lastRejectionReason = QStringLiteral("Track not found in database (cached)");
                     QTimer::singleShot(0, this, [this, gen, key = reqKey] {
                         if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
                             cleanupAttemptState();
@@ -324,6 +328,8 @@ QString LrclibClient::request(const TrackMetadata &meta)
                 if (validateCandidateIdentity(diskObj, m_expectedTitle, m_expectedArtist)) {
                     Lyrics lyrics;
                     if (parseCandidate(diskObj, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
+                        m_lastCacheStatus = QStringLiteral("Hit (disk)");
+                        m_lastRejectionReason.clear();
                         m_memoryCache.insert(reqKey, {lyrics, modified.toMSecsSinceEpoch() + kCacheTtlMs});
                         QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics] {
                             if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
@@ -341,6 +347,9 @@ QString LrclibClient::request(const TrackMetadata &meta)
             }
         }
     }
+
+    m_lastCacheStatus = QStringLiteral("Miss");
+    m_lastRejectionReason.clear();
 
     // Build multi-tier search attempts using normalized metadata
     const QString cleanedTitle = normMeta.title;
@@ -484,8 +493,15 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
     reply->deleteLater();
 
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    if (statusCode == 429 || statusCode == 503) {
+    if (statusCode == 429) {
         m_hadRateLimitOrNetworkError = true;
+        m_lastRejectionReason = QStringLiteral("Rate limit reached (HTTP 429)");
+        finishWithMissing(/*writeNegativeCache=*/false);
+        return;
+    }
+    if (statusCode >= 500) {
+        m_hadRateLimitOrNetworkError = true;
+        m_lastRejectionReason = QStringLiteral("HTTP server error (%1)").arg(statusCode);
         finishWithMissing(/*writeNegativeCache=*/false);
         return;
     }
@@ -493,6 +509,7 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
     if (reply->error() != QNetworkReply::NoError) {
         if (reply->error() != QNetworkReply::ContentNotFoundError) {
             m_hadRateLimitOrNetworkError = true;
+            m_lastRejectionReason = QStringLiteral("Network error (%1)").arg(reply->errorString());
         }
         startNextAttempt();
         return;
@@ -584,6 +601,10 @@ void LrclibClient::finishWithCandidate(const QJsonObject &cand)
 void LrclibClient::finishWithMissing(bool writeNegativeCache)
 {
     const QString key = m_currentKey;
+
+    if (m_lastRejectionReason.isEmpty()) {
+        m_lastRejectionReason = QStringLiteral("Track not found in database");
+    }
 
     if (writeNegativeCache && !key.isEmpty()) {
         QDir().mkpath(cacheDirectory());

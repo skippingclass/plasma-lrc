@@ -30,6 +30,15 @@ public:
     void cancel() override;
     void invalidateCache(const TrackMetadata &meta) override;
 
+    QString confirmedRejectionReason(quint64 generation) const override
+    {
+        return (generation == m_diagGeneration) ? m_diagReason : QString();
+    }
+    QString cacheUsage(quint64 generation) const override
+    {
+        return (generation == m_diagGeneration) ? m_diagCache : QString();
+    }
+
     SpicyLyrics *client() const { return m_spicy; }
 
 private Q_SLOTS:
@@ -40,4 +49,7 @@ private:
     SpicyLyrics *m_spicy;
     quint64 m_currentGeneration = 0;
     QString m_pendingTrackId;
+    quint64 m_diagGeneration = 0;
+    QString m_diagReason;
+    QString m_diagCache;
 };

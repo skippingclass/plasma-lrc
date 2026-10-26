@@ -33,25 +33,35 @@ PlasmoidItem {
     readonly property bool hasLyrics: hasPrimaryLyrics || hasBackingLyrics
     readonly property int maxCharacters: Plasmoid.maxCharacters
 
-    property string displayedLyric: lyricText
-    property string displayedBacking: backingText
+    property string displayedLyric: ""
+    property string displayedBacking: ""
+    property int displayedLineIndex: -1
     property int sungEnd: 0
     property int backingSungEnd: 0
 
-    readonly property bool isLineFadeAnimRunning: (typeof lyricContainer !== "undefined" && lyricContainer) ? lyricContainer.lineFadeAnimRunning : false
+    Component.onCompleted: {
+        root.displayedLyric = root.lyricText;
+        root.displayedBacking = root.backingText;
+        root.displayedLineIndex = Plasmoid.lineIndex;
+        root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+        root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
+    }
 
     Connections {
         target: Plasmoid
 
         function onLineIndexChanged() {
             if (!root.compactRepresentationItem) {
+                root.displayedLyric = root.lyricText;
+                root.displayedBacking = root.backingText;
+                root.displayedLineIndex = Plasmoid.lineIndex;
                 root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
                 root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
             }
         }
 
         function onWordChanged() {
-            if (root.compactRepresentationItem && root.isLineFadeAnimRunning) {
+            if (root.displayedLineIndex >= 0 && Plasmoid.lineIndex !== root.displayedLineIndex) {
                 return;
             }
             if (Plasmoid.sungEnd !== undefined) {
@@ -62,7 +72,7 @@ PlasmoidItem {
         }
 
         function onBackingChanged() {
-            if (root.compactRepresentationItem && root.isLineFadeAnimRunning) {
+            if (root.displayedLineIndex >= 0 && Plasmoid.lineIndex !== root.displayedLineIndex) {
                 return;
             }
             if (Plasmoid.backingSungEnd !== undefined) {
@@ -85,6 +95,7 @@ PlasmoidItem {
                 root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                 root.displayedLyric = root.lyricText;
                 root.displayedBacking = root.backingText;
+                root.displayedLineIndex = Plasmoid.lineIndex;
             }
         }
 
@@ -100,6 +111,7 @@ PlasmoidItem {
 
         function onHasLyricsChanged() {
             if (!root.hasLyrics) {
+                root.displayedLineIndex = -1;
                 root.sungEnd = 0;
                 root.backingSungEnd = 0;
                 if (!root.compactRepresentationItem) {
@@ -107,6 +119,7 @@ PlasmoidItem {
                     root.displayedBacking = "";
                 }
             } else {
+                root.displayedLineIndex = Plasmoid.lineIndex;
                 root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
                 root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                 if (!root.compactRepresentationItem) {
@@ -502,8 +515,18 @@ PlasmoidItem {
             icon.name: Plasmoid.isCurrentTrackBlacklisted ? "edit-undo" : "list-remove"
             enabled: Plasmoid.trackInfo.length > 0
             onTriggered: Plasmoid.toggleBlacklistCurrentTrack()
+        },
+        PlasmaCore.Action {
+            text: i18n("Diagnostics…")
+            icon.name: "dialog-information"
+            onTriggered: diagnosticsWindow.openDiagnostics(Plasmoid)
         }
     ]
+
+    DiagnosticsWindow {
+        id: diagnosticsWindow
+        plasmoidApplet: Plasmoid
+    }
 
     SongLyricsWindow {
         id: lyricsWindow
@@ -780,6 +803,7 @@ PlasmoidItem {
                         script: {
                             root.displayedLyric = root.lyricText;
                             root.displayedBacking = root.backingText;
+                            root.displayedLineIndex = Plasmoid.lineIndex;
                             root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
                             root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                         }
@@ -801,6 +825,7 @@ PlasmoidItem {
                             lineFadeAnim.stop();
                             root.displayedLyric = "";
                             root.displayedBacking = "";
+                            root.displayedLineIndex = -1;
                             root.sungEnd = 0;
                             root.backingSungEnd = 0;
                             lyricLabel.opacity = 1.0;
@@ -811,6 +836,7 @@ PlasmoidItem {
                             lineFadeAnim.stop();
                             root.displayedLyric = root.lyricText;
                             root.displayedBacking = root.backingText;
+                            root.displayedLineIndex = Plasmoid.lineIndex;
                             root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
                             root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                             lyricLabel.opacity = 1.0;
@@ -827,6 +853,7 @@ PlasmoidItem {
                     function onLyricTextChanged() {
                         if (!Plasmoid.active || !Plasmoid.fadeTransition) {
                             root.displayedLyric = root.lyricText;
+                            root.displayedLineIndex = Plasmoid.lineIndex;
                         }
                     }
 
@@ -839,12 +866,14 @@ PlasmoidItem {
                         if (!root.hasLyrics) {
                             root.displayedLyric = "";
                             root.displayedBacking = "";
+                            root.displayedLineIndex = -1;
                             root.sungEnd = 0;
                             root.backingSungEnd = 0;
                             lyricLabel.opacity = 1.0;
                         } else {
                             root.displayedLyric = root.lyricText;
                             root.displayedBacking = root.backingText;
+                            root.displayedLineIndex = Plasmoid.lineIndex;
                             root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
                             root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                             lyricLabel.opacity = 1.0;

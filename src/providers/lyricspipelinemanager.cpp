@@ -113,18 +113,69 @@ void LyricsPipelineManager::requestLyrics(const TrackMetadata &meta, quint64 gen
     m_bestPriority = -1;
     m_bestProviderId.clear();
 
-    // Build candidate list based on user priority order
+    // Build candidate list based on user priority order and initialize diagnostics
+    m_providerDiagnostics.clear();
     int priority = 0;
     for (const QString &id : m_providerOrder) {
         LyricsProvider *p = provider(id);
-        if (p && p->isEnabled() && p->canHandle(meta)) {
+        if (!p) {
+            continue;
+        }
+        ProviderDiagnostic diag;
+        diag.id = p->id();
+        diag.displayName = p->displayName();
+        diag.priority = priority;
+        diag.cacheUsage = QStringLiteral("None");
+        diag.syncQuality = QStringLiteral("None");
+
+        if (!p->isEnabled()) {
+            diag.status = QStringLiteral("disabled");
+            diag.rejectionReason = QStringLiteral("Disabled in settings");
+        } else if (!p->canHandle(meta)) {
+            diag.status = QStringLiteral("skipped");
+            if (p->capabilities().testFlag(LyricsProvider::Capability::RequiresSpotifyId) && meta.spotifyTrackId.isEmpty()) {
+                diag.rejectionReason = QStringLiteral("Missing Spotify track ID");
+            } else if (p->id() == QLatin1String("local") && meta.url.isEmpty()) {
+                diag.rejectionReason = QStringLiteral("No local file URL");
+            } else {
+                diag.rejectionReason = QStringLiteral("Cannot handle track");
+            }
+        } else {
+            diag.status = QStringLiteral("pending");
+            diag.rejectionReason.clear();
+
             CandidateEntry entry;
             entry.provider = p;
-            entry.priority = priority++;
+            entry.priority = priority;
             entry.inFlight = false;
             entry.completed = false;
             m_candidates.append(entry);
         }
+        ++priority;
+        m_providerDiagnostics.insert(p->id(), diag);
+    }
+
+    for (LyricsProvider *p : m_providers) {
+        if (!p || m_providerDiagnostics.contains(p->id())) {
+            continue;
+        }
+        ProviderDiagnostic diag;
+        diag.id = p->id();
+        diag.displayName = p->displayName();
+        diag.priority = priority++;
+        diag.cacheUsage = QStringLiteral("None");
+        diag.syncQuality = QStringLiteral("None");
+
+        if (!p->isEnabled()) {
+            diag.status = QStringLiteral("disabled");
+            diag.rejectionReason = QStringLiteral("Disabled in settings");
+        } else if (!p->canHandle(meta)) {
+            diag.status = QStringLiteral("skipped");
+            diag.rejectionReason = QStringLiteral("Cannot handle track");
+        } else {
+            diag.status = QStringLiteral("pending");
+        }
+        m_providerDiagnostics.insert(p->id(), diag);
     }
 
     if (m_candidates.isEmpty()) {
@@ -159,6 +210,18 @@ void LyricsPipelineManager::cancel()
         }
     }
 
+    for (CandidateEntry &cand : m_candidates) {
+        if (!cand.provider) continue;
+        auto &diag = m_providerDiagnostics[cand.provider->id()];
+        if (diag.status == QLatin1String("searching")) {
+            diag.status = QStringLiteral("cancelled");
+            diag.rejectionReason = QStringLiteral("Search cancelled");
+        } else if (diag.status == QLatin1String("pending")) {
+            diag.status = QStringLiteral("skipped");
+            diag.rejectionReason = QStringLiteral("Search cancelled");
+        }
+    }
+
     m_candidates.clear();
     m_hasEmittedResult = false;
     m_bestQuality = LyricsType::None;
@@ -186,19 +249,12 @@ void LyricsPipelineManager::pruneIrrelevantCandidates()
 
         if (m_hasEmittedResult) {
             if (m_bestQuality == LyricsType::Syllable) {
-                // Best quality is Syllable.
-                // Any candidate with cand.priority >= m_bestPriority is irrelevant.
-                // Any candidate with cand.priority < m_bestPriority is ONLY relevant
-                // if it is a potential word source (canWord). If !canWord, it cannot beat Syllable.
                 if (cand.priority >= m_bestPriority) {
                     irrelevant = true;
                 } else if (!canWord) {
                     irrelevant = true;
                 }
             } else if (m_bestQuality == LyricsType::Line) {
-                // Best quality is Line.
-                // Candidates with cand.priority < m_bestPriority can supersede (with Line) or upgrade (with Syllable).
-                // Candidates with cand.priority > m_bestPriority can ONLY beat Line if capable of WordSync.
                 if (cand.priority > m_bestPriority && !canWord) {
                     irrelevant = true;
                 }
@@ -209,8 +265,17 @@ void LyricsPipelineManager::pruneIrrelevantCandidates()
             if (cand.inFlight) {
                 if (cand.provider) {
                     cand.provider->cancel();
+                    auto &diag = m_providerDiagnostics[cand.provider->id()];
+                    diag.status = QStringLiteral("cancelled");
+                    diag.rejectionReason = QStringLiteral("Superseded by higher quality/priority result");
                 }
                 cand.inFlight = false;
+            } else {
+                if (cand.provider) {
+                    auto &diag = m_providerDiagnostics[cand.provider->id()];
+                    diag.status = QStringLiteral("skipped");
+                    diag.rejectionReason = QStringLiteral("Superseded before starting");
+                }
             }
             cand.completed = true;
         }
@@ -232,9 +297,24 @@ void LyricsPipelineManager::finishLookup()
     const MissingReason lastReason = m_lastReason;
 
     m_isLookupActive = false;
+
+    if (!m_bestProviderId.isEmpty() && m_providerDiagnostics.contains(m_bestProviderId)) {
+        m_providerDiagnostics[m_bestProviderId].status = QStringLiteral("selected");
+    }
+
     for (CandidateEntry &cand : m_candidates) {
-        if (cand.inFlight && cand.provider) {
+        if (!cand.provider) continue;
+        if (cand.provider->id() == m_bestProviderId) {
+            continue;
+        }
+        auto &diag = m_providerDiagnostics[cand.provider->id()];
+        if (cand.inFlight) {
             cand.provider->cancel();
+            diag.status = QStringLiteral("cancelled");
+            diag.rejectionReason = hadResult ? QStringLiteral("Superseded by selected provider") : QStringLiteral("Search deadline reached");
+        } else if (diag.status == QLatin1String("pending")) {
+            diag.status = QStringLiteral("skipped");
+            diag.rejectionReason = hadResult ? QStringLiteral("Superseded before starting") : QStringLiteral("Search deadline reached");
         }
         cand.inFlight = false;
         cand.completed = true;
@@ -286,6 +366,9 @@ void LyricsPipelineManager::pumpQueue()
         if (inFlightCount < m_maxConcurrentLookups && pendingIndex != -1) {
             CandidateEntry &cand = m_candidates[pendingIndex];
             cand.inFlight = true;
+            if (cand.provider) {
+                m_providerDiagnostics[cand.provider->id()].status = QStringLiteral("searching");
+            }
             LyricsProvider *p = cand.provider;
             const TrackMetadata meta = m_currentMeta;
 
@@ -320,7 +403,18 @@ void LyricsPipelineManager::onProviderLoaded(quint64 generation, const Lyrics &l
     foundCand->inFlight = false;
     foundCand->completed = true;
 
+    auto &diag = m_providerDiagnostics[providerId];
+    if (foundCand->provider) {
+        const QString cache = foundCand->provider->cacheUsage(generation);
+        if (!cache.isEmpty()) {
+            diag.cacheUsage = cache;
+        }
+    }
+
     if (!lyrics.isUsable()) {
+        diag.status = QStringLiteral("failed");
+        diag.syncQuality = (lyrics.type == LyricsType::Static ? QStringLiteral("Unsynced") : QStringLiteral("None"));
+        diag.rejectionReason = (lyrics.type == LyricsType::Static ? QStringLiteral("Unsynced lyrics") : QStringLiteral("Empty or invalid lyrics"));
         m_lastReason = MissingReason::NotFound;
         pumpQueue();
         return;
@@ -328,6 +422,7 @@ void LyricsPipelineManager::onProviderLoaded(quint64 generation, const Lyrics &l
 
     const LyricsType quality = lyrics.type;
     const int candPrio = foundCand->priority;
+    diag.syncQuality = (quality == LyricsType::Syllable ? QStringLiteral("Syllable") : QStringLiteral("Line"));
 
     bool accept = false;
     if (!m_hasEmittedResult) {
@@ -348,12 +443,21 @@ void LyricsPipelineManager::onProviderLoaded(quint64 generation, const Lyrics &l
         m_bestPriority = candPrio;
         m_bestProviderId = providerId;
 
+        if (quality == LyricsType::Syllable) {
+            diag.status = QStringLiteral("selected");
+        } else {
+            diag.status = QStringLiteral("provisional");
+        }
+
         const quint64 gen = m_currentGeneration;
         Q_EMIT lyricsResolved(gen, lyrics, providerId);
 
         if (gen != m_currentGeneration || !m_isLookupActive) {
             return;
         }
+    } else {
+        diag.status = QStringLiteral("skipped");
+        diag.rejectionReason = QStringLiteral("Lower quality or priority than current selection");
     }
 
     pumpQueue();
@@ -381,5 +485,44 @@ void LyricsPipelineManager::onProviderFailed(quint64 generation, MissingReason r
     foundCand->completed = true;
     m_lastReason = reason;
 
+    auto &diag = m_providerDiagnostics[providerId];
+    diag.status = QStringLiteral("failed");
+    diag.syncQuality = (reason == MissingReason::Unsynced ? QStringLiteral("Unsynced") : QStringLiteral("None"));
+    if (foundCand->provider) {
+        const QString cache = foundCand->provider->cacheUsage(generation);
+        if (!cache.isEmpty()) {
+            diag.cacheUsage = cache;
+        }
+        const QString specReason = foundCand->provider->confirmedRejectionReason(generation);
+        if (!specReason.isEmpty()) {
+            diag.rejectionReason = specReason;
+        }
+    }
+    if (diag.rejectionReason.isEmpty()) {
+        if (reason == MissingReason::Unsynced) {
+            diag.rejectionReason = QStringLiteral("Unsynced lyrics");
+        } else if (reason == MissingReason::NotFound) {
+            diag.rejectionReason = QStringLiteral("Not found in provider database");
+        } else {
+            diag.rejectionReason = QStringLiteral("Network or server error (no details available)");
+        }
+    }
+
     pumpQueue();
+}
+
+QList<LyricsPipelineManager::ProviderDiagnostic> LyricsPipelineManager::providerDiagnostics() const
+{
+    QList<ProviderDiagnostic> result;
+    for (const QString &id : m_providerOrder) {
+        if (m_providerDiagnostics.contains(id)) {
+            result.append(m_providerDiagnostics.value(id));
+        }
+    }
+    for (auto it = m_providerDiagnostics.constBegin(); it != m_providerDiagnostics.constEnd(); ++it) {
+        if (!m_providerOrder.contains(it.key())) {
+            result.append(it.value());
+        }
+    }
+    return result;
 }

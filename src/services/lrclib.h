@@ -37,6 +37,8 @@ public:
     void invalidate(const TrackMetadata &meta);
     void invalidate(const QString &title, const QString &artist, qint64 durationMs = 0, bool fromWebPage = false);
     QString currentKey() const { return m_currentKey; }
+    QString lastCacheStatus() const { return m_lastCacheStatus; }
+    QString lastRejectionReason() const { return m_lastRejectionReason; }
 
     static int scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs, const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
     static bool parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs = 0, const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
@@ -85,4 +87,6 @@ private:
 
     QJsonObject m_bestCandidate;
     int m_bestScore = -1;
+    QString m_lastCacheStatus;
+    QString m_lastRejectionReason;
 };

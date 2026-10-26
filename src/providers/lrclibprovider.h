@@ -29,6 +29,15 @@ public:
     void cancel() override;
     void invalidateCache(const TrackMetadata &meta) override;
 
+    QString confirmedRejectionReason(quint64 generation) const override
+    {
+        return (generation == m_currentGeneration && m_client) ? m_client->lastRejectionReason() : QString();
+    }
+    QString cacheUsage(quint64 generation) const override
+    {
+        return (generation == m_currentGeneration && m_client) ? m_client->lastCacheStatus() : QString();
+    }
+
     LrclibClient *client() const { return m_client; }
 
 private Q_SLOTS:

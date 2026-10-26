@@ -37,6 +37,15 @@ public:
     void cancel() override;
     void invalidateCache(const TrackMetadata &meta) override;
 
+    QString confirmedRejectionReason(quint64 generation) const override
+    {
+        return (generation == m_diagGeneration) ? m_diagReason : QString();
+    }
+    QString cacheUsage(quint64 generation) const override
+    {
+        return (generation == m_diagGeneration) ? m_diagCache : QString();
+    }
+
     static QString cacheDirectory();
     static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs, const QString &isrc);
 
@@ -61,4 +70,7 @@ private:
     TrackMetadata m_currentMeta;
     qint64 m_targetDurationMs = 0;
     QHash<QString, qint64> m_negativeCache;
+    quint64 m_diagGeneration = 0;
+    QString m_diagReason;
+    QString m_diagCache;
 };

@@ -57,6 +57,9 @@ void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
     cancel();
 
     m_currentGeneration = generation;
+    m_diagGeneration = generation;
+    m_diagReason.clear();
+    m_diagCache = QStringLiteral("Miss");
     m_pendingTrackId = meta.spotifyTrackId;
     m_pendingDurationMs = meta.durationMs;
 
@@ -66,6 +69,8 @@ void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
         if (now - m_negativeCache.value(m_pendingTrackId) < kNegativeCacheTtlMs) {
             const quint64 gen = m_currentGeneration;
             m_pendingTrackId.clear();
+            m_diagCache = QStringLiteral("Hit (negative cache)");
+            m_diagReason = QStringLiteral("Track not found in database (cached)");
             Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
             return;
         }
@@ -77,6 +82,8 @@ void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
     if (checkDiskCache(m_pendingTrackId, m_pendingDurationMs, &cachedLyrics)) {
         const quint64 gen = m_currentGeneration;
         m_pendingTrackId.clear();
+        m_diagCache = QStringLiteral("Hit (disk)");
+        m_diagReason.clear();
         Q_EMIT lyricsLoaded(gen, cachedLyrics, id());
         return;
     }
@@ -176,9 +183,20 @@ void AmllProvider::onReplyFinished()
         // Negative cache ONLY on confirmed 404 Not Found!
         // Never on transient network errors, 429, 5xx, or status 0.
         if (statusCode == 404) {
+            m_diagReason = QStringLiteral("Track not found in database (HTTP 404)");
             m_negativeCache.insert(trackId, QDateTime::currentMSecsSinceEpoch());
             Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+        } else if (statusCode == 429) {
+            m_diagReason = QStringLiteral("Rate limit reached (HTTP 429)");
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        } else if (statusCode >= 500) {
+            m_diagReason = QStringLiteral("HTTP server error (%1)").arg(statusCode);
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        } else if (reply->error() != QNetworkReply::NoError) {
+            m_diagReason = QStringLiteral("Network error (%1)").arg(reply->errorString());
+            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
         } else {
+            m_diagReason = QStringLiteral("HTTP error (%1)").arg(statusCode);
             Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
         }
         return;
@@ -193,6 +211,7 @@ void AmllProvider::onReplyFinished()
         || trimmed.startsWith(QLatin1String("<html"), Qt::CaseInsensitive)
         || !trimmed.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
         // Malformed transient response (empty, HTML error page, or not TTML)
+        m_diagReason = QStringLiteral("Malformed TTML response");
         Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
         return;
     }
@@ -204,6 +223,7 @@ void AmllProvider::onReplyFinished()
     }
     if (xmlReader.hasError()) {
         // Malformed / truncated XML transient response
+        m_diagReason = QStringLiteral("Invalid TTML XML syntax");
         Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
         return;
     }
@@ -211,6 +231,7 @@ void AmllProvider::onReplyFinished()
     Lyrics lyrics;
     if (!TtmlParser::parseTtml(trimmed, &lyrics, durationMs) || !lyrics.isUsable()) {
         // Well-formed TTML document, but confirmed unsynced
+        m_diagReason = QStringLiteral("No synchronized lyrics in TTML");
         m_negativeCache.insert(trackId, QDateTime::currentMSecsSinceEpoch());
         Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
         return;

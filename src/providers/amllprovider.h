@@ -37,6 +37,15 @@ public:
     void cancel() override;
     void invalidateCache(const TrackMetadata &meta) override;
 
+    QString confirmedRejectionReason(quint64 generation) const override
+    {
+        return (generation == m_diagGeneration) ? m_diagReason : QString();
+    }
+    QString cacheUsage(quint64 generation) const override
+    {
+        return (generation == m_diagGeneration) ? m_diagCache : QString();
+    }
+
     void setFallbackBase(const QString &fallbackBase) { m_fallbackBase = fallbackBase; }
     QString fallbackBase() const { return m_fallbackBase; }
 
@@ -60,4 +69,7 @@ private:
     QString m_pendingTrackId;
     qint64 m_pendingDurationMs = 0;
     QHash<QString, qint64> m_negativeCache; // trackId -> timestamp
+    quint64 m_diagGeneration = 0;
+    QString m_diagReason;
+    QString m_diagCache;
 };
