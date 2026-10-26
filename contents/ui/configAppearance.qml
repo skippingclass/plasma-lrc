@@ -20,6 +20,7 @@ KCM.SimpleKCM {
     property alias cfg_showIcon: showIconCheckBox.checked
     property alias cfg_showTrackInfo: showTrackInfoCheckBox.checked
     property alias cfg_placeholderText: placeholderField.text
+    property alias cfg_showNoteDuringPauses: showNoteDuringPausesCheckBox.checked
     property alias cfg_maxCharacters: maxCharactersField.value
     property alias cfg_attributionLayout: attributionLayoutBox.currentIndex
     property alias cfg_wordStyle: wordStyleBox.currentIndex
@@ -49,6 +50,15 @@ KCM.SimpleKCM {
 
             Kirigami.FormData.label: i18n("No lyrics text:")
             Layout.fillWidth: true
+        }
+
+        QQC2.CheckBox {
+            id: showNoteDuringPausesCheckBox
+
+            Kirigami.FormData.label: i18n("Pauses & intros:")
+            text: i18n("Show note symbol during intros and pauses")
+            QQC2.ToolTip.visible: hovered
+            QQC2.ToolTip.text: i18n("Display musical note symbol on the panel during track intros and instrumental pauses.")
         }
 
         QQC2.SpinBox {

@@ -425,6 +425,7 @@ void LrcApplet::readSettings()
     const bool useSpicy = boolSetting(QStringLiteral("useSpicyLyrics"), true);
     const QString spicyKey = spicyKeySetting();
     const bool showBackingVocals = boolSetting(QStringLiteral("showBackingVocals"), false);
+    const bool showNoteDuringPauses = boolSetting(QStringLiteral("showNoteDuringPauses"), false);
 
     const bool changed = player != m_configuredPlayer //
         || preferredPlayer != m_preferredPlayer //
@@ -447,7 +448,8 @@ void LrcApplet::readSettings()
         || blacklistedTracks != m_blacklistedTracks //
         || useSpicy != m_useSpicy //
         || spicyKey != m_spicyKey //
-        || showBackingVocals != m_showBackingVocals;
+        || showBackingVocals != m_showBackingVocals //
+        || showNoteDuringPauses != m_showNoteDuringPauses;
 
     const bool blacklistChanged = (blacklistedTracks != m_blacklistedTracks);
 
@@ -470,6 +472,7 @@ void LrcApplet::readSettings()
     m_textAlignment = textAlignment;
     m_customHighlightColor = customHighlightColor;
     m_blacklistedTracks = blacklistedTracks;
+    m_showNoteDuringPauses = showNoteDuringPauses;
 
     const QString defaultOrder = QStringLiteral("local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom");
     const QString providerOrderRaw = setting(QStringLiteral("providerOrder"), defaultOrder).trimmed();
@@ -1238,6 +1241,12 @@ void LrcApplet::clearDisplay()
     m_mprisTrackId.clear();
     m_lrclibKey.clear();
     m_lyricsLookupDone = false;
+    if (m_lyricsDiscarded) {
+        m_lyricsDiscarded = false;
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        Q_EMIT lyricsDiscardedChanged();
+    }
     m_lineIndex = -1;
     setText(QString());
     setActive(false);
@@ -1369,6 +1378,12 @@ void LrcApplet::nextTrack()
     m_activeProviderId.clear();
     m_spicy->cancel();
     m_lrclib->cancel();
+    if (m_lyricsDiscarded) {
+        m_lyricsDiscarded = false;
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        Q_EMIT lyricsDiscardedChanged();
+    }
     resetTrackPosition(true);
     clearLyrics();
     if (m_watchedService.isEmpty()) {
@@ -1387,6 +1402,12 @@ void LrcApplet::previousTrack()
     m_activeProviderId.clear();
     m_spicy->cancel();
     m_lrclib->cancel();
+    if (m_lyricsDiscarded) {
+        m_lyricsDiscarded = false;
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        Q_EMIT lyricsDiscardedChanged();
+    }
     resetTrackPosition(true);
     clearLyrics();
     if (m_watchedService.isEmpty()) {
@@ -1561,6 +1582,75 @@ void LrcApplet::clearBlacklist()
     requestLyrics();
 }
 
+void LrcApplet::discardCurrentLyrics()
+{
+    if (m_lyricsDiscarded) {
+        return;
+    }
+    m_lyricsDiscarded = true;
+    m_discardedLyrics = m_lyrics;
+    m_discardedFromSpicy = m_fromSpicy;
+    m_discardedActiveProviderId = m_activeProviderId;
+
+    cancelProcess();
+    m_pipeline->cancel();
+    m_activeProviderId.clear();
+    m_spicy->cancel();
+    m_lrclib->cancel();
+    m_expiryTimer.stop();
+
+    ++m_lookupGeneration;
+    clearLyrics();
+    m_lyricsLookupDone = true;
+
+    Q_EMIT lyricsDiscardedChanged();
+}
+
+void LrcApplet::restoreCurrentLyrics()
+{
+    if (!m_lyricsDiscarded) {
+        return;
+    }
+    m_lyricsDiscarded = false;
+    Q_EMIT lyricsDiscardedChanged();
+
+    if (m_discardedLyrics.isUsable()) {
+        m_lyrics = m_discardedLyrics;
+        m_fromSpicy = m_discardedFromSpicy;
+        m_activeProviderId = m_discardedActiveProviderId;
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        m_lyricsLookupDone = true;
+        m_wordSynced = (m_lyrics.type == LyricsType::Syllable);
+        m_lineIndex = -1;
+        m_wordCursor = 0;
+        clearWordHighlight();
+        clearBacking();
+
+        if (m_fromSpicy && m_lyrics.validUntilMs > 0) {
+            armExpiryTimer();
+        }
+        if (m_playing && !m_pauseHidden) {
+            m_wordTimer.start(kWordTickMs);
+        }
+        requestPosition();
+        Q_EMIT lyricsChanged();
+        updateWord();
+    } else {
+        m_lyricsLookupDone = false;
+        requestLyrics();
+    }
+}
+
+void LrcApplet::toggleDiscardCurrentLyrics()
+{
+    if (m_lyricsDiscarded) {
+        restoreCurrentLyrics();
+    } else {
+        discardCurrentLyrics();
+    }
+}
+
 void LrcApplet::applyMetadata(const QVariantMap &metadata)
 {
     const QStringList artists = trackArtists(metadata.value(QStringLiteral("xesam:artist")));
@@ -1590,6 +1680,12 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         || (!rawTrackId.isEmpty() && rawTrackId != m_mprisTrackId));
 
     if (trackChanged) {
+        if (m_lyricsDiscarded) {
+            m_lyricsDiscarded = false;
+            m_discardedLyrics = Lyrics();
+            m_discardedActiveProviderId.clear();
+            Q_EMIT lyricsDiscardedChanged();
+        }
         qint64 gaplessLead = 0;
         const bool isWebSession = looksLikeWebPageSession(rawTrackId, m_player);
         const bool isSpotifyPlayer = !isWebSession && (isSpotify() || !trackId.isEmpty());
@@ -1664,7 +1760,7 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
 
 void LrcApplet::requestLyrics()
 {
-    if (m_watchedService.isEmpty() || m_trackTitle.isEmpty() || m_lyricsLookupDone) {
+    if (m_watchedService.isEmpty() || m_trackTitle.isEmpty() || m_lyricsLookupDone || m_lyricsDiscarded) {
         return;
     }
 
@@ -1699,7 +1795,7 @@ void LrcApplet::requestLyrics()
 
 void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId)
 {
-    if (generation != m_lookupGeneration) {
+    if (generation != m_lookupGeneration || m_lyricsDiscarded) {
         return;
     }
 
@@ -1770,7 +1866,7 @@ void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, con
 
 void LrcApplet::onPipelineLookupFinished(quint64 generation)
 {
-    if (generation != m_lookupGeneration) {
+    if (generation != m_lookupGeneration || m_lyricsDiscarded) {
         return;
     }
 
@@ -1781,7 +1877,7 @@ void LrcApplet::onPipelineLookupFinished(quint64 generation)
 
 void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason)
 {
-    if (generation != m_lookupGeneration) {
+    if (generation != m_lookupGeneration || m_lyricsDiscarded) {
         return;
     }
 
@@ -2642,6 +2738,10 @@ ProjectedLine projectLineForSeparateRendering(const LyricLine &line)
 
 void LrcApplet::updateWord()
 {
+    if (m_lyricsDiscarded) {
+        return;
+    }
+
     if (m_fromSpicy && isSpicyExpired()) {
         handleLyricsExpired();
         return;

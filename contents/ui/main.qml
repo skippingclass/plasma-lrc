@@ -367,10 +367,10 @@ PlasmoidItem {
             return backingText;
         }
         if (Plasmoid.isIntro) {
-            return Plasmoid.placeholderText.length > 0 ? Plasmoid.placeholderText : "♪";
+            return Plasmoid.showNoteDuringPauses ? (Plasmoid.placeholderText.length > 0 ? Plasmoid.placeholderText : "♪") : "";
         }
         if (Plasmoid.isBreak) {
-            return Plasmoid.placeholderText.length > 0 ? Plasmoid.placeholderText : "♪";
+            return Plasmoid.showNoteDuringPauses ? (Plasmoid.placeholderText.length > 0 ? Plasmoid.placeholderText : "♪") : "";
         }
         return Plasmoid.placeholderText;
     }
@@ -483,6 +483,14 @@ PlasmoidItem {
                 Plasmoid.lyricsValidUntilMs, Plasmoid.fromSpicyLyrics)
         },
         PlasmaCore.Action {
+            text: Plasmoid.isLyricsDiscarded
+                ? i18n("Restore lyrics for this track")
+                : i18n("Discard lyrics for this track")
+            icon.name: Plasmoid.isLyricsDiscarded ? "view-visible" : "view-hidden"
+            enabled: (Plasmoid.hasLyrics || Plasmoid.isLyricsDiscarded) && Plasmoid.trackInfo.length > 0
+            onTriggered: Plasmoid.toggleDiscardCurrentLyrics()
+        },
+        PlasmaCore.Action {
             text: Plasmoid.isCurrentTrackBlacklisted
                 ? i18n("Unblacklist current track lyrics")
                 : i18n("Blacklist current track lyrics")
@@ -507,6 +515,9 @@ PlasmoidItem {
         return Plasmoid.fromSpicyLyrics ? i18n("Unknown") : i18n("LRCLIB");
     }
     readonly property string attributionHint: {
+        if (Plasmoid.isLyricsDiscarded) {
+            return i18n("Lyrics discarded for this track");
+        }
         if (Plasmoid.isCurrentTrackBlacklisted) {
             return i18n("Lyrics blacklisted for this track");
         }
@@ -677,7 +688,10 @@ PlasmoidItem {
                         const bg = root.plainLine(stripped);
                         return prim.length > 0 ? (prim + "   " + bg) : bg;
                     }
-                    return root.plainLine(root.displayedLyric);
+                    if (root.hasPrimaryLyrics) {
+                        return root.plainLine(root.displayedLyric);
+                    }
+                    return root.plainLine(root.displayText);
                 }
             }
 
@@ -901,14 +915,21 @@ PlasmoidItem {
                 return root.fullLine;
             }
             if (Plasmoid.isIntro) {
-                return "<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Intro ♪") + "</font>";
+                return Plasmoid.showNoteDuringPauses
+                    ? ("<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Intro ♪") + "</font>")
+                    : ("<font color=\"" + root.grayColorHex + "\">" + i18n("Intro") + "</font>");
             }
             if (Plasmoid.isBreak) {
-                return "<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Instrumental ♪") + "</font>";
+                return Plasmoid.showNoteDuringPauses
+                    ? ("<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Instrumental ♪") + "</font>")
+                    : ("<font color=\"" + root.grayColorHex + "\">" + i18n("Instrumental") + "</font>");
             }
             return "";
         }
         placeholder: {
+            if (Plasmoid.isLyricsDiscarded) {
+                return i18n("Lyrics discarded for this track");
+            }
             if (Plasmoid.isCurrentTrackBlacklisted) {
                 return i18n("Lyrics are blacklisted for this track");
             }
@@ -934,6 +955,8 @@ PlasmoidItem {
         showAttribution: root.hasCredit
         isBlacklisted: Plasmoid.isCurrentTrackBlacklisted
         onToggleBlacklist: Plasmoid.toggleBlacklistCurrentTrack()
+        isLyricsDiscarded: Plasmoid.isLyricsDiscarded
+        onToggleDiscardLyrics: Plasmoid.toggleDiscardCurrentLyrics()
     }
 
     // Only used to find out how wide a single character is, so that the compact

@@ -132,6 +132,10 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(bool isCurrentTrackBlacklisted READ isCurrentTrackBlacklisted NOTIFY trackBlacklistChanged)
     /// Whether lyrics are temporarily hidden because playback has been paused for pauseHideDelay seconds.
     Q_PROPERTY(bool pauseHidden READ isPauseHidden NOTIFY pauseHiddenChanged)
+    /// Whether to display note symbol during intros and instrumental pauses.
+    Q_PROPERTY(bool showNoteDuringPauses READ showNoteDuringPauses NOTIFY settingsChanged)
+    /// Whether lyrics for the current track have been discarded for this playback.
+    Q_PROPERTY(bool isLyricsDiscarded READ isLyricsDiscarded NOTIFY lyricsDiscardedChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -362,6 +366,14 @@ public:
     {
         return m_pauseHidden;
     }
+    bool showNoteDuringPauses() const
+    {
+        return m_showNoteDuringPauses;
+    }
+    bool isLyricsDiscarded() const
+    {
+        return m_lyricsDiscarded;
+    }
 
     Q_INVOKABLE void togglePlayPause();
     Q_INVOKABLE void nextTrack();
@@ -373,6 +385,9 @@ public:
     Q_INVOKABLE void addBlacklistTrack(const QString &track);
     Q_INVOKABLE void removeBlacklistTrack(const QString &track);
     Q_INVOKABLE void clearBlacklist();
+    Q_INVOKABLE void discardCurrentLyrics();
+    Q_INVOKABLE void restoreCurrentLyrics();
+    Q_INVOKABLE void toggleDiscardCurrentLyrics();
     QStringList providerOrder() const;
     QString activeProviderId() const { return m_activeProviderId; }
     Q_INVOKABLE QVariantList providers() const;
@@ -393,6 +408,7 @@ Q_SIGNALS:
     void playingChanged();
     void settingsChanged();
     void trackBlacklistChanged();
+    void lyricsDiscardedChanged();
     void pauseHiddenChanged();
     void providerOrderChanged();
 
@@ -642,4 +658,9 @@ private:
     QString m_backingText;
     int m_backingWordStart = 0;
     int m_backingWordEnd = 0;
+    bool m_showNoteDuringPauses = false;
+    bool m_lyricsDiscarded = false;
+    Lyrics m_discardedLyrics;
+    bool m_discardedFromSpicy = false;
+    QString m_discardedActiveProviderId;
 };

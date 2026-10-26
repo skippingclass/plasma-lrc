@@ -1066,6 +1066,54 @@ public:
                 check("regression 6: isBreak is false during line 2", !widget.isBreak());
                 check("regression 6: lineIndex is 1", widget.lineIndex() == 1);
             }
+
+            // Regression 7: discard lyrics this time, restore lyrics, and reset on track change
+            {
+                LyricLine lineA;
+                lineA.text = QStringLiteral("Test line for discard");
+                lineA.startMs = 5000;
+                lineA.endMs = 15000;
+
+                Lyrics trackLyrics;
+                trackLyrics.type = LyricsType::Line;
+                trackLyrics.lines = {lineA};
+
+                widget.m_trackTitle = QStringLiteral("Discard Song");
+                widget.m_lyrics = trackLyrics;
+                widget.m_positionBaseMs = 6000;
+                widget.updateWord();
+
+                check("regression 7: initial hasLyrics is true", widget.hasLyrics());
+                check("regression 7: initial isLyricsDiscarded is false", !widget.isLyricsDiscarded());
+                check("regression 7: text is active", !widget.text().isEmpty());
+
+                // Discard lyrics for current track
+                widget.discardCurrentLyrics();
+                check("regression 7: isLyricsDiscarded is true", widget.isLyricsDiscarded());
+                check("regression 7: hasLyrics is false after discard", !widget.hasLyrics());
+                check("regression 7: text is empty after discard", widget.text().isEmpty());
+
+                // Restore lyrics
+                widget.restoreCurrentLyrics();
+                check("regression 7: isLyricsDiscarded is false after restore", !widget.isLyricsDiscarded());
+                check("regression 7: hasLyrics is true after restore", widget.hasLyrics());
+                check("regression 7: text is restored", !widget.text().isEmpty());
+
+                // Toggle discard
+                widget.toggleDiscardCurrentLyrics();
+                check("regression 7: toggleDiscardCurrentLyrics sets discarded", widget.isLyricsDiscarded());
+                check("regression 7: hasLyrics is false after toggle", !widget.hasLyrics());
+
+                // Track change resets discarded state
+                QVariantMap nextMeta;
+                nextMeta.insert(QStringLiteral("xesam:title"), QStringLiteral("Next Song"));
+                nextMeta.insert(QStringLiteral("xesam:artist"), QStringList{QStringLiteral("Artist")});
+                widget.applyMetadata(nextMeta);
+                check("regression 7: track change resets isLyricsDiscarded", !widget.isLyricsDiscarded());
+
+                // showNoteDuringPauses check
+                check("regression 7: showNoteDuringPauses default is false", !widget.showNoteDuringPauses());
+            }
         }
 
         widget.m_watchedService.clear();

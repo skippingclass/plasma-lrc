@@ -59,6 +59,11 @@
             <default>♪</default>
         </entry>
 
+        <entry name="showNoteDuringPauses" type="Bool">
+            <label>Show note symbol during intro and pauses.</label>
+            <default>false</default>
+        </entry>
+
         <entry name="maxCharacters" type="Int">
             <label>Maximum amount of characters shown in the panel. 0 means no limit.</label>
             <default>100</default>

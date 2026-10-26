@@ -41,6 +41,9 @@ ColumnLayout {
     property bool isBlacklisted: false
     signal toggleBlacklist()
 
+    property bool isLyricsDiscarded: false
+    signal toggleDiscardLyrics()
+
     spacing: Kirigami.Units.smallSpacing
 
     // The popup has to hug its content: an explicit maximumWidth or minimumHeight
@@ -72,6 +75,19 @@ ColumnLayout {
         Item {
             Layout.fillWidth: true
             visible: !root.showTrackInfo
+        }
+
+        PlasmaComponents3.ToolButton {
+            id: discardBtn
+            icon.name: root.isLyricsDiscarded ? "view-visible" : "view-hidden"
+            text: root.isLyricsDiscarded ? i18n("Restore") : i18n("Discard")
+            display: PlasmaComponents3.AbstractButton.IconOnly
+            visible: (root.hasLyrics || root.isLyricsDiscarded) && root.trackInfo.length > 0
+            PlasmaComponents3.ToolTip.text: root.isLyricsDiscarded
+                ? i18n("Restore lyrics for this track")
+                : i18n("Discard lyrics for this track (this time)")
+            PlasmaComponents3.ToolTip.visible: hovered
+            onClicked: root.toggleDiscardLyrics()
         }
 
         PlasmaComponents3.ToolButton {

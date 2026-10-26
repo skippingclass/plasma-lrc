@@ -146,6 +146,7 @@ Right-click the widget on your panel → **Configure Plasma LRC...**:
 | **Credit layout** | `Right of lyrics` | Attribution placement on the panel for Spicy API sources: `Right of lyrics` (default) or `Below lyrics` (stacked two-line layout for standard 30px panels). Spicy API attribution is required across all surfaces (panel, popup, and song lyrics reader) and cannot be hidden; native LRCLIB lyrics show attribution in popup/reader only, leaving the panel to the lyric line. |
 | **Maximum length** | `40 characters` | Truncates text after N characters to preserve panel space (0 = no limit). |
 | **No lyrics text** | `♪` | Placeholder text when no track or lyrics are active. |
+| **Pauses & intros** | `Disabled` | Show musical note placeholder during track intros and instrumental pauses (when disabled, panel stays clean). |
 | **Icon** | `Enabled` | Shows music note icon next to lyrics. |
 | **Tooltip** | `Enabled` | Shows current track title, artist, player, and provider info (does not repeat uncredited lyric text). |
 
