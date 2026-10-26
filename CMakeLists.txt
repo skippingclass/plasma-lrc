@@ -254,6 +254,7 @@ if(PLASMA_LRC_TESTS)
 
     add_executable(applet-sync-test tests/applet-sync-test.cpp)
     target_include_directories(applet-sync-test PRIVATE ${LRC_PLASMA_INCLUDE_DIR} ${LRC_INCLUDE_DIRS})
+    target_compile_definitions(applet-sync-test PRIVATE SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(applet-sync-test PRIVATE ${PLUGIN_ID}
         Qt6::Widgets Qt6::Qml Qt6::DBus Qt6::Network KF6::CoreAddons KF6::ConfigCore ${LRC_PLASMA_LIBRARY})
     add_test(NAME applet-sync COMMAND applet-sync-test)

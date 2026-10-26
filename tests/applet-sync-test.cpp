@@ -1840,7 +1840,26 @@ public:
                 QQmlEngine diagEngine;
                 QQmlEngine::setObjectOwnership(&widget, QQmlEngine::CppOwnership);
                 diagEngine.rootContext()->setContextProperty(QStringLiteral("Plasmoid"), &widget);
-                QQmlComponent diagComp(&diagEngine, QUrl::fromLocalFile(QStringLiteral("/home/pirkov/plasma_lrc/contents/ui/DiagnosticsWindow.qml")));
+
+                QString diagQmlPath;
+#ifdef SOURCE_DIR
+                diagQmlPath = QStringLiteral(SOURCE_DIR "/contents/ui/DiagnosticsWindow.qml");
+#endif
+                if (diagQmlPath.isEmpty() || !QFile::exists(diagQmlPath)) {
+                    const QStringList candidates = {
+                        QDir::currentPath() + QStringLiteral("/contents/ui/DiagnosticsWindow.qml"),
+                        QCoreApplication::applicationDirPath() + QStringLiteral("/../contents/ui/DiagnosticsWindow.qml"),
+                        QCoreApplication::applicationDirPath() + QStringLiteral("/contents/ui/DiagnosticsWindow.qml")
+                    };
+                    for (const auto &c : candidates) {
+                        if (QFile::exists(c)) {
+                            diagQmlPath = c;
+                            break;
+                        }
+                    }
+                }
+
+                QQmlComponent diagComp(&diagEngine, QUrl::fromLocalFile(diagQmlPath));
                 check("regression 15: DiagnosticsWindow.qml component loads", !diagComp.isError(), diagComp.errorString());
                 QObject *diagObj = diagComp.create();
                 check("regression 15: DiagnosticsWindow object created", diagObj != nullptr);
