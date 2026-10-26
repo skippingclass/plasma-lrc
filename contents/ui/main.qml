@@ -45,8 +45,8 @@ PlasmoidItem {
 
         function onLineIndexChanged() {
             if (!root.compactRepresentationItem) {
-                root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
-                root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
             }
         }
 
@@ -54,9 +54,10 @@ PlasmoidItem {
             if (root.compactRepresentationItem && root.isLineFadeAnimRunning) {
                 return;
             }
-            const we = Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0;
-            if (we > root.sungEnd) {
-                root.sungEnd = we;
+            if (Plasmoid.sungEnd !== undefined) {
+                root.sungEnd = Plasmoid.sungEnd;
+            } else {
+                root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
             }
         }
 
@@ -64,12 +65,13 @@ PlasmoidItem {
             if (root.compactRepresentationItem && root.isLineFadeAnimRunning) {
                 return;
             }
-            const be = Plasmoid.backingWordEnd !== undefined ? Plasmoid.backingWordEnd : 0;
-            if (be > 0) {
+            if (Plasmoid.backingSungEnd !== undefined) {
+                const stripped = root.stripOuterBrackets(root.displayedBacking, 0, Plasmoid.backingSungEnd);
+                root.backingSungEnd = stripped.end;
+            } else {
+                const be = Plasmoid.backingWordEnd !== undefined ? Plasmoid.backingWordEnd : 0;
                 const stripped = root.stripOuterBrackets(root.displayedBacking, 0, be);
-                if (stripped.end > root.backingSungEnd) {
-                    root.backingSungEnd = stripped.end;
-                }
+                root.backingSungEnd = stripped.end;
             }
         }
     }
@@ -79,17 +81,20 @@ PlasmoidItem {
 
         function onLyricTextChanged() {
             if (!root.compactRepresentationItem) {
-                root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
-                root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                 root.displayedLyric = root.lyricText;
                 root.displayedBacking = root.backingText;
             }
         }
 
         function onBackingTextChanged() {
-            if (!root.compactRepresentationItem) {
+            root.displayedBacking = root.backingText;
+            if (Plasmoid.backingSungEnd !== undefined) {
+                const stripped = root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd);
+                root.backingSungEnd = stripped.end;
+            } else {
                 root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
-                root.displayedBacking = root.backingText;
             }
         }
 
@@ -102,8 +107,8 @@ PlasmoidItem {
                     root.displayedBacking = "";
                 }
             } else {
-                root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
-                root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                 if (!root.compactRepresentationItem) {
                     root.displayedLyric = root.lyricText;
                     root.displayedBacking = root.backingText;
@@ -775,8 +780,8 @@ PlasmoidItem {
                         script: {
                             root.displayedLyric = root.lyricText;
                             root.displayedBacking = root.backingText;
-                            root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
-                            root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                            root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                            root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                         }
                     }
                     NumberAnimation {
@@ -806,8 +811,8 @@ PlasmoidItem {
                             lineFadeAnim.stop();
                             root.displayedLyric = root.lyricText;
                             root.displayedBacking = root.backingText;
-                            root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
-                            root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                            root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                            root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                             lyricLabel.opacity = 1.0;
                         } else {
                             lineFadeAnim.stop();
@@ -826,9 +831,7 @@ PlasmoidItem {
                     }
 
                     function onBackingTextChanged() {
-                        if (!Plasmoid.active || !Plasmoid.fadeTransition) {
-                            root.displayedBacking = root.backingText;
-                        }
+                        root.displayedBacking = root.backingText;
                     }
 
                     function onHasLyricsChanged() {
@@ -842,8 +845,8 @@ PlasmoidItem {
                         } else {
                             root.displayedLyric = root.lyricText;
                             root.displayedBacking = root.backingText;
-                            root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
-                            root.backingSungEnd = (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0);
+                            root.sungEnd = (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0));
+                            root.backingSungEnd = (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : (Plasmoid.backingWordEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingWordEnd).end : 0));
                             lyricLabel.opacity = 1.0;
                         }
                     }

@@ -8,6 +8,9 @@
 #include <QGuiApplication>
 #include <KPluginMetaData>
 #include <QTemporaryDir>
+#include <QQmlEngine>
+#include <QQmlComponent>
+#include <QQmlContext>
 #include <cstdio>
 
 class FakeSettingsProvider : public LyricsProvider
@@ -1113,6 +1116,395 @@ public:
 
                 // showNoteDuringPauses check
                 check("regression 7: showNoteDuringPauses default is false", !widget.showNoteDuringPauses());
+            }
+
+            // Regression 8: Spicy expiry after Discard -> Restore & saved copy expiration
+            {
+                widget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.audit");
+                widget.m_player = QStringLiteral("spotify");
+                widget.m_playing = true;
+                widget.m_playingKnown = true;
+                widget.m_trackTitle = QStringLiteral("Expiry Track");
+                widget.m_trackArtist = QStringLiteral("Expiry Artist");
+                widget.m_spotifyTrackId = QStringLiteral("track_expiry_1");
+
+                Lyrics spicy;
+                spicy.type = LyricsType::Line;
+                LyricLine l1;
+                l1.text = QStringLiteral("Expiring line");
+                l1.startMs = 0;
+                l1.endMs = 10000;
+                spicy.lines.append(l1);
+                const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                spicy.validUntilMs = now + 50000;
+
+                widget.m_fetchingFromSpicy = true;
+                widget.onSpicyLoaded(widget.m_spotifyTrackId, spicy);
+                check("regression 8: spicy loaded initially", widget.fromSpicyLyrics());
+                check("regression 8: expiry timer active", widget.m_expiryTimer.isActive());
+
+                // Discard
+                widget.discardCurrentLyrics();
+                check("regression 8: lyrics discarded", widget.isLyricsDiscarded());
+                check("regression 8: m_lyrics empty after discard", !widget.hasLyrics());
+
+                // Restore
+                widget.restoreCurrentLyrics();
+                check("regression 8: lyrics restored", !widget.isLyricsDiscarded());
+                check("regression 8: hasLyrics true after restore", widget.hasLyrics());
+                check("regression 8: m_expiryGeneration synced to m_lookupGeneration", widget.m_expiryGeneration == widget.m_lookupGeneration);
+                check("regression 8: expiry timer active after restore", widget.m_expiryTimer.isActive());
+
+                // Simulate expiry trigger (reach deadline)
+                widget.m_lyrics.validUntilMs = now - 1000;
+                widget.m_watchedService.clear(); // offline isolation
+                widget.onLyricsExpired();
+                check("regression 8: onLyricsExpired drops lyrics after discard->restore", !widget.hasLyrics());
+                check("regression 8: fromSpicyLyrics is false after expiry", !widget.fromSpicyLyrics());
+
+                // Saved copy expiration before restore
+                widget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.audit");
+                spicy.validUntilMs = now + 50000;
+                widget.m_fetchingFromSpicy = true;
+                widget.onSpicyLoaded(widget.m_spotifyTrackId, spicy);
+                check("regression 8: spicy reloaded", widget.hasLyrics());
+
+                widget.discardCurrentLyrics();
+                check("regression 8: discarded again", widget.isLyricsDiscarded());
+
+                // Expire the saved discarded copy while discarded
+                widget.m_discardedLyrics.validUntilMs = now - 5000;
+                check("regression 8: isDiscardedSpicyExpired is true", widget.isDiscardedSpicyExpired());
+
+                // Restoring expired copy must not restore it, and must clear it
+                widget.restoreCurrentLyrics();
+                check("regression 8: expired saved copy not restored", !widget.hasLyrics());
+                check("regression 8: discarded copy cleared after restore attempt", !widget.m_discardedLyrics.isUsable());
+                check("regression 8: lookup requested afresh", !widget.m_lyricsLookupDone);
+
+                // Expiry cleanup clears discarded copy if expiry happens
+                widget.m_discardedFromSpicy = true;
+                widget.m_discardedLyrics = spicy;
+                widget.m_lyrics = spicy;
+                widget.m_fromSpicy = true;
+                widget.m_expiryGeneration = widget.m_lookupGeneration;
+                widget.handleLyricsExpired();
+                check("regression 8: handleLyricsExpired clears discarded copy", !widget.m_discardedLyrics.isUsable());
+                check("regression 8: handleLyricsExpired clears m_discardedFromSpicy", !widget.m_discardedFromSpicy);
+            }
+
+            // Regression 9: Blacklist & disabled provider bypass via Discard -> Blacklist / Disable -> Restore
+            {
+                widget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.audit");
+                widget.m_player = QStringLiteral("spotify");
+                widget.m_trackTitle = QStringLiteral("Blacklist Bypass Song");
+                widget.m_trackArtist = QStringLiteral("Blacklist Artist");
+
+                LyricLine blLine;
+                blLine.text = QStringLiteral("Sensitive Lyrics");
+                blLine.startMs = 0;
+                blLine.endMs = 10000;
+                Lyrics normalLyrics;
+                normalLyrics.type = LyricsType::Line;
+                normalLyrics.lines.append(blLine);
+
+                widget.m_lyrics = normalLyrics;
+                widget.m_lyricsLookupDone = true;
+                widget.m_text = blLine.text;
+                check("regression 9: lyrics loaded initially", widget.hasLyrics());
+
+                // Discard
+                widget.discardCurrentLyrics();
+                check("regression 9: discarded", widget.isLyricsDiscarded());
+
+                // Blacklist current track while discarded
+                widget.addBlacklistTrack(QStringLiteral("Blacklist Artist - Blacklist Bypass Song"));
+                check("regression 9: track is now blacklisted", widget.isCurrentTrackBlacklisted());
+                check("regression 9: discarded copy purged on blacklist", !widget.m_discardedLyrics.isUsable());
+
+                // Attempt to restore
+                widget.restoreCurrentLyrics();
+                check("regression 9: restore does not return blacklisted lyrics", !widget.hasLyrics());
+                check("regression 9: discarded lyrics remain cleared", !widget.m_discardedLyrics.isUsable());
+                check("regression 9: isLyricsDiscarded reset to false", !widget.isLyricsDiscarded());
+
+                // Clean blacklist for provider test
+                widget.clearBlacklist();
+                check("regression 9: blacklist cleared", !widget.isCurrentTrackBlacklisted());
+
+                // Test disabled provider: discarded copy from provider that gets disabled
+                widget.m_lyrics = normalLyrics;
+                widget.m_activeProviderId = QStringLiteral("custom");
+                widget.discardCurrentLyrics();
+                check("regression 9: custom provider lyrics discarded", widget.isLyricsDiscarded());
+
+                // Disable provider
+                if (widget.m_pipeline) {
+                    LyricsProvider *p = widget.m_pipeline->provider(QStringLiteral("custom"));
+                    if (p) {
+                        p->setEnabled(false);
+                    }
+                }
+                // Restore
+                widget.restoreCurrentLyrics();
+                check("regression 9: disabled provider copy not restored", !widget.hasLyrics());
+                check("regression 9: discarded copy cleared", !widget.m_discardedLyrics.isUsable());
+                check("regression 9: fresh request triggered", !widget.m_lyricsLookupDone);
+
+                // Re-enable provider
+                if (widget.m_pipeline) {
+                    LyricsProvider *p = widget.m_pipeline->provider(QStringLiteral("custom"));
+                    if (p) {
+                        p->setEnabled(true);
+                    }
+                }
+            }
+
+            // Regression 10: Frozen backing vocals with fadeTransition & Rewind within line (QML & signals)
+            {
+                QQmlEngine engine;
+                engine.rootContext()->setContextProperty(QStringLiteral("Plasmoid"), &widget);
+
+                QQmlComponent component(&engine);
+                component.setData(QByteArrayLiteral(R"qml(
+                    import QtQuick
+                    Item {
+                        id: root
+                        property string lyricText: Plasmoid.text
+                        property string backingText: Plasmoid.backingText
+                        property bool hasLyrics: Plasmoid.hasLyrics
+                        property string displayedLyric: lyricText
+                        property string displayedBacking: backingText
+                        property int sungEnd: (Plasmoid.sungEnd !== undefined ? Plasmoid.sungEnd : 0)
+                        property int backingSungEnd: (Plasmoid.backingSungEnd !== undefined ? root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd).end : 0)
+
+                        function stripOuterBrackets(str, bStart, bEnd) {
+                            if (!str || str.length === 0) return { text: "", start: 0, end: 0 };
+                            var s = 0;
+                            while (s < str.length && str.charAt(s) === ' ') s++;
+                            if (s < str.length && (str.charAt(s) === '(' || str.charAt(s) === '[')) {
+                                s++;
+                                while (s < str.length && str.charAt(s) === ' ') s++;
+                            }
+                            var trailing = str.length;
+                            while (trailing > s && str.charAt(trailing - 1) === ' ') trailing--;
+                            if (trailing > s && (str.charAt(trailing - 1) === ')' || str.charAt(trailing - 1) === ']')) {
+                                trailing--;
+                                while (trailing > s && str.charAt(trailing - 1) === ' ') trailing--;
+                            }
+                            var text = str.substring(s, trailing);
+                            var adjStart = Math.max(0, Math.min((bStart !== undefined ? bStart : 0) - s, text.length));
+                            var adjEnd = Math.max(adjStart, Math.min((bEnd !== undefined ? bEnd : 0) - s, text.length));
+                            return { text: text, start: adjStart, end: adjEnd };
+                        }
+
+                        function formatCompactLine(lineText) {
+                            var text = lineText !== undefined ? lineText : lyricText;
+                            if (Plasmoid.wordStyle === 4) {
+                                if (!Plasmoid.wordSynced) return "<white>" + text + "</white>";
+                                var sungBoundary = Math.max(0, Math.min(root.sungEnd, text.length));
+                                if (sungBoundary <= 0) return "<gray>" + text + "</gray>";
+                                if (sungBoundary >= text.length) return "<white>" + text + "</white>";
+                                return "<white>" + text.substring(0, sungBoundary) + "</white><gray>" + text.substring(sungBoundary) + "</gray>";
+                            }
+                            return text;
+                        }
+
+                        function formatBackingLine(text) {
+                            var str = text !== undefined ? text : root.displayedBacking;
+                            if (!str || str.length === 0) return "";
+                            var stripped = stripOuterBrackets(str, 0, root.backingSungEnd);
+                            var visibleText = stripped.text;
+                            if (Plasmoid.wordStyle === 4) {
+                                var bgSungBoundary = Math.max(0, Math.min(root.backingSungEnd, visibleText.length));
+                                if (bgSungBoundary <= 0) return "<faint>" + visibleText + "</faint>";
+                                if (bgSungBoundary >= visibleText.length) return "<white>" + visibleText + "</white>";
+                                return "<white>" + visibleText.substring(0, bgSungBoundary) + "</white><faint>" + visibleText.substring(bgSungBoundary) + "</faint>";
+                            }
+                            return visibleText;
+                        }
+
+                        Connections {
+                            target: Plasmoid
+                            function onWordChanged() {
+                                if (Plasmoid.sungEnd !== undefined) {
+                                    root.sungEnd = Plasmoid.sungEnd;
+                                } else {
+                                    root.sungEnd = (Plasmoid.wordEnd !== undefined ? Plasmoid.wordEnd : 0);
+                                }
+                            }
+                            function onBackingChanged() {
+                                if (Plasmoid.backingSungEnd !== undefined) {
+                                    var stripped = root.stripOuterBrackets(root.displayedBacking, 0, Plasmoid.backingSungEnd);
+                                    root.backingSungEnd = stripped.end;
+                                } else {
+                                    var be = Plasmoid.backingWordEnd !== undefined ? Plasmoid.backingWordEnd : 0;
+                                    var stripped = root.stripOuterBrackets(root.displayedBacking, 0, be);
+                                    root.backingSungEnd = stripped.end;
+                                }
+                            }
+                        }
+
+                        Connections {
+                            target: root
+                            function onBackingTextChanged() {
+                                root.displayedBacking = root.backingText;
+                                if (Plasmoid.backingSungEnd !== undefined) {
+                                    var stripped = root.stripOuterBrackets(root.backingText, 0, Plasmoid.backingSungEnd);
+                                    root.backingSungEnd = stripped.end;
+                                }
+                            }
+                            function onLyricTextChanged() {
+                                root.displayedLyric = root.lyricText;
+                            }
+                        }
+                    }
+                )qml"), QUrl());
+
+                QScopedPointer<QObject> qmlRoot(component.create());
+                check("regression 10: QML component created", !qmlRoot.isNull());
+
+                if (qmlRoot) {
+                    widget.m_showBackingVocals = true;
+                    widget.m_fadeTransition = true;
+                    widget.m_active = true;
+
+                    // A: Backing phrase changes within same main line while fadeTransition is true
+                    LyricLine lineWithPhrases;
+                    lineWithPhrases.text = QStringLiteral("Main vocal line (first backing) (second backing)");
+                    lineWithPhrases.startMs = 1000;
+                    lineWithPhrases.endMs = 20000;
+                    lineWithPhrases.isBackground = false;
+
+                    LyricWord mw1; mw1.text = QStringLiteral("Main"); mw1.startMs = 1000; mw1.endMs = 3000; mw1.textStart = 0; mw1.textEnd = 4;
+                    LyricWord mw2; mw2.text = QStringLiteral("vocal"); mw2.startMs = 3000; mw2.endMs = 5000; mw2.textStart = 5; mw2.textEnd = 10;
+                    LyricWord mw3; mw3.text = QStringLiteral("line"); mw3.startMs = 5000; mw3.endMs = 7000; mw3.textStart = 11; mw3.textEnd = 15;
+
+                    LyricWord bw1; bw1.text = QStringLiteral("(first"); bw1.startMs = 8000; bw1.endMs = 10000; bw1.textStart = 16; bw1.textEnd = 22; bw1.isBackground = true;
+                    LyricWord bw2; bw2.text = QStringLiteral("backing)"); bw2.startMs = 10000; bw2.endMs = 12000; bw2.textStart = 23; bw2.textEnd = 31; bw2.isBackground = true;
+
+                    LyricWord bw3; bw3.text = QStringLiteral("(second"); bw3.startMs = 14000; bw3.endMs = 16000; bw3.textStart = 32; bw3.textEnd = 39; bw3.isBackground = true;
+                    LyricWord bw4; bw4.text = QStringLiteral("backing)"); bw4.startMs = 16000; bw4.endMs = 18000; bw4.textStart = 40; bw4.textEnd = 48; bw4.isBackground = true;
+
+                    lineWithPhrases.words = {mw1, mw2, mw3, bw1, bw2, bw3, bw4};
+
+                    Lyrics phraseLyrics;
+                    phraseLyrics.type = LyricsType::Syllable;
+                    phraseLyrics.lines = {lineWithPhrases};
+
+                    widget.m_lyrics = phraseLyrics;
+                    widget.m_wordSynced = true;
+                    widget.m_positionBaseMs = 8500; // inside first backing phrase
+                    widget.m_positionValid = true;
+                    widget.m_positionClock.invalidate();
+
+                    int backingChangedSignalCount = 0;
+                    QObject::connect(&widget, &LrcApplet::backingChanged, [&]() {
+                        backingChangedSignalCount++;
+                    });
+
+                    widget.updateWord();
+
+                    check("regression 10: first backing text active in C++", widget.backingText().contains(QStringLiteral("first backing")));
+                    check("regression 10: displayedBacking in QML matches first backing", qmlRoot->property("displayedBacking").toString().contains(QStringLiteral("first backing")));
+                    check("regression 10: lineIndex is 0", widget.lineIndex() == 0);
+
+                    // Advance to second backing phrase inside the SAME main line (lineIndex remains 0)
+                    widget.m_positionBaseMs = 15000;
+                    backingChangedSignalCount = 0;
+                    widget.updateWord();
+
+                    check("regression 10: lineIndex still 0", widget.lineIndex() == 0);
+                    check("regression 10: backingChanged signal fired on phrase switch", backingChangedSignalCount > 0);
+                    check("regression 10: second backing text active in C++", widget.backingText().contains(QStringLiteral("second backing")));
+                    check("regression 10: displayedBacking in QML updated to second backing (NOT frozen)", qmlRoot->property("displayedBacking").toString().contains(QStringLiteral("second backing")));
+
+                    // B: Rewind within line in wordStyle 4 ("Sung words become white")
+                    widget.m_wordStyle = 4;
+                    widget.m_showBackingVocals = false;
+
+                    LyricLine rLine;
+                    rLine.text = QStringLiteral("One Two Three Four");
+                    rLine.startMs = 1000;
+                    rLine.endMs = 10000;
+
+                    LyricWord rw1; rw1.text = QStringLiteral("One"); rw1.startMs = 1200; rw1.endMs = 2500; rw1.textStart = 0; rw1.textEnd = 3;
+                    LyricWord rw2; rw2.text = QStringLiteral("Two"); rw2.startMs = 3000; rw2.endMs = 4500; rw2.textStart = 4; rw2.textEnd = 7;
+                    LyricWord rw3; rw3.text = QStringLiteral("Three"); rw3.startMs = 5000; rw3.endMs = 6500; rw3.textStart = 8; rw3.textEnd = 13;
+                    LyricWord rw4; rw4.text = QStringLiteral("Four"); rw4.startMs = 7000; rw4.endMs = 8500; rw4.textStart = 14; rw4.textEnd = 18;
+                    rLine.words = {rw1, rw2, rw3, rw4};
+
+                    Lyrics rLyrics;
+                    rLyrics.type = LyricsType::Syllable;
+                    rLyrics.lines = {rLine};
+
+                    widget.m_lyrics = rLyrics;
+                    widget.m_wordSynced = true;
+
+                    int wordChangedSignalCount = 0;
+                    QObject::connect(&widget, &LrcApplet::wordChanged, [&]() {
+                        wordChangedSignalCount++;
+                    });
+
+                    // 1. Play forward to word 3 (Three, 5500ms)
+                    widget.m_positionBaseMs = 5500;
+                    widget.updateWord();
+
+                    check("regression 10: sungEnd reaches word 3 (13 chars)", widget.sungEnd() == 13);
+                    check("regression 10: QML sungEnd matches C++ sungEnd (13)", qmlRoot->property("sungEnd").toInt() == 13);
+                    QVariant fmt1;
+                    QMetaObject::invokeMethod(qmlRoot.data(), "formatCompactLine", Qt::DirectConnection, Q_RETURN_ARG(QVariant, fmt1), Q_ARG(QVariant, QVariant(widget.text())));
+                    check("regression 10: QML formatCompactLine has 13 chars white", fmt1.toString() == QStringLiteral("<white>One Two Three</white><gray> Four</gray>"));
+
+                    // 2. REWIND within line to word 1 (One, 1500ms)
+                    wordChangedSignalCount = 0;
+                    widget.m_positionBaseMs = 1500;
+                    widget.updateWord();
+
+                    check("regression 10: wordChanged signal fired on rewind", wordChangedSignalCount > 0);
+                    check("regression 10: sungEnd decreased on rewind to 3", widget.sungEnd() == 3);
+                    check("regression 10: QML sungEnd decreased on rewind to 3 (NOT latched at 13)", qmlRoot->property("sungEnd").toInt() == 3);
+                    QVariant fmt2;
+                    QMetaObject::invokeMethod(qmlRoot.data(), "formatCompactLine", Qt::DirectConnection, Q_RETURN_ARG(QVariant, fmt2), Q_ARG(QVariant, QVariant(widget.text())));
+                    check("regression 10: QML formatCompactLine white text recalculated backwards", fmt2.toString() == QStringLiteral("<white>One</white><gray> Two Three Four</gray>"));
+
+                    // 3. REWIND to before any word (1100ms)
+                    widget.m_positionBaseMs = 1100;
+                    widget.updateWord();
+                    check("regression 10: sungEnd rewinds to 0 before first word", widget.sungEnd() == 0);
+                    check("regression 10: QML sungEnd rewinds to 0", qmlRoot->property("sungEnd").toInt() == 0);
+                    QVariant fmt3;
+                    QMetaObject::invokeMethod(qmlRoot.data(), "formatCompactLine", Qt::DirectConnection, Q_RETURN_ARG(QVariant, fmt3), Q_ARG(QVariant, QVariant(widget.text())));
+                    check("regression 10: entire line gray before first word", fmt3.toString() == QStringLiteral("<gray>One Two Three Four</gray>"));
+
+                    // 4. Backing rewind test
+                    widget.m_showBackingVocals = true;
+                    LyricLine bgLine;
+                    bgLine.text = QStringLiteral("(Yeah Alright)");
+                    bgLine.startMs = 1000;
+                    bgLine.endMs = 5000;
+                    bgLine.isBackground = true;
+                    LyricWord bgw1; bgw1.text = QStringLiteral("(Yeah"); bgw1.startMs = 1000; bgw1.endMs = 2500; bgw1.textStart = 0; bgw1.textEnd = 6;
+                    LyricWord bgw2; bgw2.text = QStringLiteral("Alright)"); bgw2.startMs = 3000; bgw2.endMs = 4500; bgw2.textStart = 7; bgw2.textEnd = 15;
+                    bgLine.words = {bgw1, bgw2};
+
+                    Lyrics bgLyrics;
+                    bgLyrics.type = LyricsType::Syllable;
+                    bgLyrics.lines = {bgLine};
+                    widget.m_lyrics = bgLyrics;
+
+                    // Play to second word (Alright)
+                    widget.m_positionBaseMs = 3500;
+                    widget.updateWord();
+                    check("regression 10: backingSungEnd at word 2", widget.backingSungEnd() > 0);
+                    const int secondBackingSungEnd = widget.backingSungEnd();
+
+                    // Rewind backing to word 1
+                    widget.m_positionBaseMs = 1500;
+                    widget.updateWord();
+                    check("regression 10: backingSungEnd decreased on rewind", widget.backingSungEnd() < secondBackingSungEnd);
+                    check("regression 10: QML backingSungEnd decreased on rewind", qmlRoot->property("backingSungEnd").toInt() < secondBackingSungEnd);
+                }
             }
         }
 

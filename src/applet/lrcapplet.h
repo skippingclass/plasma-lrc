@@ -61,6 +61,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QString word READ word NOTIFY wordChanged)
     Q_PROPERTY(int wordStart READ wordStart NOTIFY wordChanged)
     Q_PROPERTY(int wordEnd READ wordEnd NOTIFY wordChanged)
+    Q_PROPERTY(int sungEnd READ sungEnd NOTIFY wordChanged)
     // Progress inside the word being sung. No QML draws it, so it must not drag a
     // signal behind it: a binding reads it when it wants it.
     Q_PROPERTY(double wordProgress READ wordProgress)
@@ -69,6 +70,7 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(QString backingText READ backingText NOTIFY backingChanged)
     Q_PROPERTY(int backingWordStart READ backingWordStart NOTIFY backingChanged)
     Q_PROPERTY(int backingWordEnd READ backingWordEnd NOTIFY backingChanged)
+    Q_PROPERTY(int backingSungEnd READ backingSungEnd NOTIFY backingChanged)
     Q_PROPERTY(int lineIndex READ lineIndex NOTIFY lineIndexChanged)
     Q_PROPERTY(bool hasLyrics READ hasLyrics NOTIFY lyricsChanged)
     Q_PROPERTY(bool isIntro READ isIntro NOTIFY lineIndexChanged)
@@ -160,6 +162,17 @@ public:
         return QDateTime::currentMSecsSinceEpoch() >= m_lyrics.validUntilMs;
     }
 
+    bool isDiscardedSpicyExpired() const
+    {
+        if (!m_discardedFromSpicy) {
+            return false;
+        }
+        if (m_discardedLyrics.validUntilMs <= 0) {
+            return true;
+        }
+        return QDateTime::currentMSecsSinceEpoch() >= m_discardedLyrics.validUntilMs;
+    }
+
     QString text() const
     {
         if (isSpicyExpired()) {
@@ -195,6 +208,14 @@ public:
             return 0;
         }
         return m_wordEnd;
+    }
+    /// Cumulative character end offset of words sung so far within line.
+    int sungEnd() const
+    {
+        if (isSpicyExpired()) {
+            return 0;
+        }
+        return m_sungEnd;
     }
     /// How far through that word playback is, 0.0 to 1.0.
     double wordProgress() const
@@ -235,6 +256,13 @@ public:
             return 0;
         }
         return m_backingWordEnd;
+    }
+    int backingSungEnd() const
+    {
+        if (isSpicyExpired() || !m_showBackingVocals || m_pauseHidden) {
+            return 0;
+        }
+        return m_backingSungEnd;
     }
     int lineIndex() const
     {
@@ -439,7 +467,7 @@ private Q_SLOTS:
     /// Drops the word highlight, with a signal only if there was one.
     void clearWordHighlight();
     void clearBacking();
-    void setBackingState(const QString &text, int start, int end);
+    void setBackingState(const QString &text, int start, int end, int sungEnd = 0);
     void setLineIndex(int index);
 
 private:
@@ -658,6 +686,8 @@ private:
     QString m_backingText;
     int m_backingWordStart = 0;
     int m_backingWordEnd = 0;
+    int m_sungEnd = 0;
+    int m_backingSungEnd = 0;
     bool m_showNoteDuringPauses = false;
     bool m_lyricsDiscarded = false;
     Lyrics m_discardedLyrics;

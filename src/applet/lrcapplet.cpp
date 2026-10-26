@@ -1055,6 +1055,8 @@ void LrcApplet::clearLyrics()
     m_word.clear();
     m_wordStart = 0;
     m_wordEnd = 0;
+    m_sungEnd = 0;
+    m_backingSungEnd = 0;
     m_wordProgress = 0.0;
     m_wordSynced = false;
     m_fromSpicy = false;
@@ -1338,11 +1340,19 @@ void LrcApplet::handleLyricsExpired()
     m_word.clear();
     m_wordStart = 0;
     m_wordEnd = 0;
+    m_sungEnd = 0;
+    m_backingSungEnd = 0;
     m_wordProgress = 0.0;
     setText(QString());
     setActive(false);
     Q_EMIT wordChanged();
     Q_EMIT lyricsChanged();
+
+    if (m_discardedFromSpicy) {
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        m_discardedFromSpicy = false;
+    }
 
     // Refresh current track through normal source lookup or fallback without request loops
     if (m_watchedService.isEmpty() || m_trackTitle.isEmpty()) {
@@ -1488,6 +1498,9 @@ void LrcApplet::toggleBlacklistCurrentTrack()
         // Immediately drop lyrics from display
         cancelProcess();
         clearLyrics();
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        m_discardedFromSpicy = false;
         m_lyricsLookupDone = true;
     }
 }
@@ -1538,6 +1551,9 @@ void LrcApplet::addBlacklistTrack(const QString &track)
     if (isCurrentTrackBlacklisted()) {
         cancelProcess();
         clearLyrics();
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        m_discardedFromSpicy = false;
         m_lyricsLookupDone = true;
     }
 }
@@ -1614,12 +1630,39 @@ void LrcApplet::restoreCurrentLyrics()
     m_lyricsDiscarded = false;
     Q_EMIT lyricsDiscardedChanged();
 
+    if (isCurrentTrackBlacklisted()) {
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        m_discardedFromSpicy = false;
+        m_lyricsLookupDone = true;
+        clearLyrics();
+        return;
+    }
+
+    bool providerDisabled = false;
+    if (m_discardedFromSpicy) {
+        if (!m_useSpicy || !isSpicyConfigured()) {
+            providerDisabled = true;
+        }
+    } else if (m_pipeline && !m_discardedActiveProviderId.isEmpty()) {
+        if (!m_pipeline->isProviderEnabled(m_discardedActiveProviderId)) {
+            providerDisabled = true;
+        }
+    }
+
+    if (providerDisabled || isDiscardedSpicyExpired()) {
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        m_discardedFromSpicy = false;
+    }
+
     if (m_discardedLyrics.isUsable()) {
         m_lyrics = m_discardedLyrics;
         m_fromSpicy = m_discardedFromSpicy;
         m_activeProviderId = m_discardedActiveProviderId;
         m_discardedLyrics = Lyrics();
         m_discardedActiveProviderId.clear();
+        m_discardedFromSpicy = false;
         m_lyricsLookupDone = true;
         m_wordSynced = (m_lyrics.type == LyricsType::Syllable);
         m_lineIndex = -1;
@@ -1628,6 +1671,8 @@ void LrcApplet::restoreCurrentLyrics()
         clearBacking();
 
         if (m_fromSpicy && m_lyrics.validUntilMs > 0) {
+            m_expiryGeneration = m_lookupGeneration;
+            m_expiryRetryCount = 0;
             armExpiryTimer();
         }
         if (m_playing && !m_pauseHidden) {
@@ -2506,29 +2551,31 @@ bool LrcApplet::positionJumped(qint64 reportedMs) const
 
 void LrcApplet::clearWordHighlight()
 {
-    if (m_word.isEmpty() && m_wordProgress == 0.0) {
+    if (m_word.isEmpty() && m_wordStart == 0 && m_wordEnd == 0 && m_sungEnd == 0 && m_wordProgress == 0.0) {
         return;
     }
     m_word.clear();
     m_wordStart = 0;
     m_wordEnd = 0;
+    m_sungEnd = 0;
     m_wordProgress = 0.0;
     Q_EMIT wordChanged();
 }
 
-void LrcApplet::setBackingState(const QString &text, int start, int end)
+void LrcApplet::setBackingState(const QString &text, int start, int end, int sungEnd)
 {
-    if (m_backingText != text || m_backingWordStart != start || m_backingWordEnd != end) {
+    if (m_backingText != text || m_backingWordStart != start || m_backingWordEnd != end || m_backingSungEnd != sungEnd) {
         m_backingText = text;
         m_backingWordStart = start;
         m_backingWordEnd = end;
+        m_backingSungEnd = sungEnd;
         Q_EMIT backingChanged();
     }
 }
 
 void LrcApplet::clearBacking()
 {
-    setBackingState(QString(), 0, 0);
+    setBackingState(QString(), 0, 0, 0);
 }
 
 void LrcApplet::setLineIndex(int index)
@@ -2905,7 +2952,9 @@ void LrcApplet::updateWord()
         QString currentWord;
         int currentStart = 0;
         int currentEnd = 0;
+        int calculatedSungEnd = 0;
         double progress = 0.0;
+        const int prefixOffset = tsPrefix.length();
 
         // Legacy single-highlight with primary priority via selector:
         // Use SINGLE wordAt Voice::Any, hold 80; selector already prioritizes activeMain.
@@ -2916,7 +2965,6 @@ void LrcApplet::updateWord()
             const int gStart = (word.groupStart >= 0) ? word.groupStart : word.textStart;
             const int gEnd = (word.groupEnd > gStart) ? word.groupEnd : ((word.textEnd > gStart) ? word.textEnd : gStart + word.text.length());
             currentWord = line.text.mid(gStart, gEnd - gStart);
-            const int prefixOffset = tsPrefix.length();
             currentStart = gStart + prefixOffset;
             currentEnd = gEnd + prefixOffset;
             const qint64 span = word.endMs - word.startMs;
@@ -2924,10 +2972,18 @@ void LrcApplet::updateWord()
             progress = qBound(0.0, progress, 1.0);
         }
 
-        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd) {
+        for (const LyricWord &w : line.words) {
+            if (m_positionMs >= w.startMs) {
+                const int gEnd = (w.groupEnd > w.groupStart) ? w.groupEnd : ((w.textEnd > w.textStart) ? w.textEnd : (w.groupStart >= 0 ? w.groupStart : w.textStart) + w.text.length());
+                calculatedSungEnd = qMax(calculatedSungEnd, gEnd + prefixOffset);
+            }
+        }
+
+        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd || calculatedSungEnd != m_sungEnd) {
             m_word = currentWord;
             m_wordStart = currentStart;
             m_wordEnd = currentEnd;
+            m_sungEnd = calculatedSungEnd;
             m_wordProgress = progress;
             Q_EMIT wordChanged();
         } else {
@@ -2966,7 +3022,9 @@ void LrcApplet::updateWord()
         QString currentWord;
         int currentStart = 0;
         int currentEnd = 0;
+        int calculatedSungEnd = 0;
         double progress = 0.0;
+        const int prefixOffset = tsPrefix.length();
 
         if (m_wordSynced) {
             const int activeMainIdx = LyricSelection::wordAt(mainLine, m_positionMs, LyricSelection::Voice::Main, kWordGapHoldMs);
@@ -2974,7 +3032,6 @@ void LrcApplet::updateWord()
                 const auto offsets = projected.mainWordOffsets.at(activeMainIdx);
                 if (offsets.first >= 0 && offsets.second >= offsets.first) {
                     currentWord = projected.mainText.mid(offsets.first, offsets.second - offsets.first);
-                    const int prefixOffset = tsPrefix.length();
                     currentStart = offsets.first + prefixOffset;
                     currentEnd = offsets.second + prefixOffset;
                     const LyricWord &w = mainLine.words.at(activeMainIdx);
@@ -2983,12 +3040,23 @@ void LrcApplet::updateWord()
                     progress = qBound(0.0, progress, 1.0);
                 }
             }
+
+            for (int wIdx = 0; wIdx < mainLine.words.size() && wIdx < projected.mainWordOffsets.size(); ++wIdx) {
+                const LyricWord &w = mainLine.words.at(wIdx);
+                if (!w.isBackground && m_positionMs >= w.startMs) {
+                    const auto offsets = projected.mainWordOffsets.at(wIdx);
+                    if (offsets.second >= 0) {
+                        calculatedSungEnd = qMax(calculatedSungEnd, offsets.second + prefixOffset);
+                    }
+                }
+            }
         }
 
-        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd) {
+        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd || calculatedSungEnd != m_sungEnd) {
             m_word = currentWord;
             m_wordStart = currentStart;
             m_wordEnd = currentEnd;
+            m_sungEnd = calculatedSungEnd;
             m_wordProgress = progress;
             Q_EMIT wordChanged();
         } else {
@@ -2999,6 +3067,7 @@ void LrcApplet::updateWord()
         QString newBackingText;
         int newBackingStart = 0;
         int newBackingEnd = 0;
+        int calculatedBackingSungEnd = 0;
 
         if (!projected.bgPhrases.isEmpty()) {
             const int activeBgIdx = m_wordSynced ? LyricSelection::wordAt(mainLine, m_positionMs, LyricSelection::Voice::Background, kWordGapHoldMs) : -1;
@@ -3054,14 +3123,25 @@ void LrcApplet::updateWord()
                         newBackingEnd = bgOffsets.second;
                     }
                 }
+                if (m_wordSynced) {
+                    for (int wIdx = 0; wIdx < mainLine.words.size() && wIdx < chosenPhrase->wordOffsets.size(); ++wIdx) {
+                        const LyricWord &w = mainLine.words.at(wIdx);
+                        if (w.isBackground && m_positionMs >= w.startMs) {
+                            const auto bgOffsets = chosenPhrase->wordOffsets.at(wIdx);
+                            if (bgOffsets.second >= 0) {
+                                calculatedBackingSungEnd = qMax(calculatedBackingSungEnd, bgOffsets.second);
+                            }
+                        }
+                    }
+                }
             }
         }
 
         if (!newBackingText.isEmpty()) {
-            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd) {
+            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd && m_backingSungEnd == calculatedBackingSungEnd) {
                 Q_EMIT backingChanged();
             }
-            setBackingState(newBackingText, newBackingStart, newBackingEnd);
+            setBackingState(newBackingText, newBackingStart, newBackingEnd, calculatedBackingSungEnd);
         } else if (bgLineIndex >= 0) {
             // Background line alongside main line
             const LyricLine &bgLine = m_lyrics.lines.at(bgLineIndex);
@@ -3078,11 +3158,17 @@ void LrcApplet::updateWord()
                     newBackingStart = gStart;
                     newBackingEnd = gEnd;
                 }
+                for (const LyricWord &w : bgLine.words) {
+                    if (m_positionMs >= w.startMs) {
+                        const int gEnd = (w.groupEnd > w.groupStart) ? w.groupEnd : ((w.textEnd > w.textStart) ? w.textEnd : (w.groupStart >= 0 ? w.groupStart : w.textStart) + w.text.length());
+                        calculatedBackingSungEnd = qMax(calculatedBackingSungEnd, gEnd);
+                    }
+                }
             }
-            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd) {
+            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd && m_backingSungEnd == calculatedBackingSungEnd) {
                 Q_EMIT backingChanged();
             }
-            setBackingState(newBackingText, newBackingStart, newBackingEnd);
+            setBackingState(newBackingText, newBackingStart, newBackingEnd, calculatedBackingSungEnd);
         } else {
             clearBacking();
         }
@@ -3097,6 +3183,7 @@ void LrcApplet::updateWord()
         QString newBackingText = bgLine.text;
         int newBackingStart = 0;
         int newBackingEnd = 0;
+        int calculatedBackingSungEnd = 0;
 
         if (m_wordSynced) {
             int activeBgIdx = LyricSelection::wordAt(bgLine, m_positionMs, LyricSelection::Voice::Background, kWordGapHoldMs);
@@ -3110,8 +3197,14 @@ void LrcApplet::updateWord()
                 newBackingStart = gStart;
                 newBackingEnd = gEnd;
             }
+            for (const LyricWord &w : bgLine.words) {
+                if (m_positionMs >= w.startMs) {
+                    const int gEnd = (w.groupEnd > w.groupStart) ? w.groupEnd : ((w.textEnd > w.textStart) ? w.textEnd : (w.groupStart >= 0 ? w.groupStart : w.textStart) + w.text.length());
+                    calculatedBackingSungEnd = qMax(calculatedBackingSungEnd, gEnd);
+                }
+            }
         }
-        setBackingState(newBackingText, newBackingStart, newBackingEnd);
+        setBackingState(newBackingText, newBackingStart, newBackingEnd, calculatedBackingSungEnd);
     }
 
     // Set active true when bg only and experimental non-empty; QML agent adapts hasLyrics
