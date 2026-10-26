@@ -33,6 +33,70 @@ bool containsWideScript(const QString &text)
     return false;
 }
 
+bool isCjkHanziOrKana(QChar c)
+{
+    const ushort u = c.unicode();
+    return (u >= 0x3040 && u <= 0x30FF)   // Hiragana / Katakana
+        || (u >= 0x3400 && u <= 0x4DBF)   // CJK Ext A
+        || (u >= 0x4E00 && u <= 0x9FFF)   // CJK Unified
+        || (u >= 0xF900 && u <= 0xFAFF);  // CJK Compatibility
+}
+
+bool isOpenBracket(QChar c)
+{
+    return c == QLatin1Char('(') || c == QLatin1Char('[') || c == QLatin1Char('{')
+        || c == QChar(0xFF08) || c == QChar(0x3010);
+}
+
+bool isCloseBracket(QChar c)
+{
+    return c == QLatin1Char(')') || c == QLatin1Char(']') || c == QLatin1Char('}')
+        || c == QChar(0xFF09) || c == QChar(0x3011);
+}
+
+bool isClosingPunctuation(QChar c)
+{
+    return c == QLatin1Char(',') || c == QLatin1Char('.') || c == QLatin1Char('?')
+        || c == QLatin1Char('!') || c == QLatin1Char(':') || c == QLatin1Char(';')
+        || c == QChar(0xFF0C) || c == QChar(0x3002) || c == QChar(0xFF01)
+        || c == QChar(0xFF1F) || c == QChar(0xFF1A) || c == QChar(0xFF1B);
+}
+
+bool isApostrophe(QChar c)
+{
+    return c == QLatin1Char('\'') || c == QChar(0x2019);
+}
+
+bool calculateShouldInsertSpace(bool pendingSpace, int leadingWs, const QString &built, const QString &trimmed)
+{
+    if (trimmed.isEmpty()) {
+        return false;
+    }
+
+    const bool needSpaceBeforeBracket = !built.isEmpty()
+        && !built.endsWith(QLatin1Char(' '))
+        && (isOpenBracket(trimmed.front()) || isCloseBracket(built.back()));
+
+    bool shouldInsertSpace = pendingSpace || leadingWs > 0 || needSpaceBeforeBracket;
+
+    if (!built.isEmpty()) {
+        const QChar prevC = built.back();
+        const QChar nextC = trimmed.front();
+
+        if (isCjkHanziOrKana(prevC) && isCjkHanziOrKana(nextC)) {
+            shouldInsertSpace = false;
+        }
+        if (isOpenBracket(prevC) || isApostrophe(prevC)) {
+            shouldInsertSpace = false;
+        }
+        if (isCloseBracket(nextC) || isClosingPunctuation(nextC) || isApostrophe(nextC)) {
+            shouldInsertSpace = false;
+        }
+    }
+
+    return shouldInsertSpace;
+}
+
 QString getRoleAttribute(const QXmlStreamAttributes &attrs)
 {
     const QStringView metaVal = attrs.value(QLatin1String("http://www.w3.org/ns/ttml#metadata"), QLatin1String("role"));
@@ -304,16 +368,9 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                             continue;
                         }
 
-                        const bool needSpaceBeforeBracket = !built.isEmpty()
-                            && !built.endsWith(QLatin1Char(' '))
-                            && (trimmed.startsWith(QLatin1Char('('))
-                                || trimmed.startsWith(QLatin1Char('['))
-                                || trimmed.startsWith(QLatin1Char('{'))
-                                || built.endsWith(QLatin1Char(')'))
-                                || built.endsWith(QLatin1Char(']'))
-                                || built.endsWith(QLatin1Char('}')));
+                        const bool shouldInsertSpace = calculateShouldInsertSpace(pendingSpace, leadingWs, built, trimmed);
 
-                        if (pendingSpace || leadingWs > 0 || needSpaceBeforeBracket) {
+                        if (shouldInsertSpace) {
                             if (!built.isEmpty() && !built.endsWith(QLatin1Char(' '))) {
                                 built.append(QLatin1Char(' '));
                             }
@@ -338,16 +395,9 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                         pendingSpace = (trailingWs > 0);
                     } else if (!c.text.trimmed().isEmpty()) {
                         const QString trimmed = c.text.trimmed();
-                        const bool needSpaceBeforeBracket = !built.isEmpty()
-                            && !built.endsWith(QLatin1Char(' '))
-                            && (trimmed.startsWith(QLatin1Char('('))
-                                || trimmed.startsWith(QLatin1Char('['))
-                                || trimmed.startsWith(QLatin1Char('{'))
-                                || built.endsWith(QLatin1Char(')'))
-                                || built.endsWith(QLatin1Char(']'))
-                                || built.endsWith(QLatin1Char('}')));
+                        const bool shouldInsertSpace = calculateShouldInsertSpace(pendingSpace, 0, built, trimmed);
 
-                        if (pendingSpace || needSpaceBeforeBracket) {
+                        if (shouldInsertSpace) {
                             if (!built.isEmpty() && !built.endsWith(QLatin1Char(' '))) {
                                 built.append(QLatin1Char(' '));
                             }
@@ -400,7 +450,7 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                     }
                 }
 
-                if (!line.text.isEmpty()) {
+                if (!line.text.isEmpty() && !isCreditOrNotice(line.text)) {
                     parsedLines.append(line);
                 }
             }

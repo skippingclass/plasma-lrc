@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "lyricfilter.h"
 #include "lyrictypes.h"
 
 #include <QString>
@@ -32,4 +33,13 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
  * @return True if time string was valid.
  */
 bool parseTimestamp(const QString &timeStr, qint64 *outMs);
+
+/**
+ * Checks whether the text is a credit line (e.g. "作词 : xxx", "Vocals : xxx")
+ * or a placeholder/instrumental notice (e.g. "纯音乐，请欣赏", "[Instrumental]").
+ */
+inline bool isCreditOrNotice(const QString &text)
+{
+    return LyricFilter::isCreditOrNotice(text);
+}
 }

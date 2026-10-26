@@ -5,6 +5,7 @@
  */
 
 #include "lrcparser.h"
+#include "ttmlparser.h"
 
 #include <QRegularExpression>
 #include <QStringList>
@@ -101,6 +102,9 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
         }
 
         const QString lyricText = line.mid(lastTagEnd).trimmed();
+        if (TtmlParser::isCreditOrNotice(lyricText)) {
+            continue;
+        }
         for (qint64 timeMs : timestamps) {
             rawLines.append({timeMs, lyricText});
         }

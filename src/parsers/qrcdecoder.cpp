@@ -299,18 +299,34 @@ QString toTtml(const QString &qrcText)
         const qint64 duration = lm.captured(2).toLongLong();
         const QString rest = lm.captured(3);
 
-        QStringList spans;
+        QString fullText;
+        struct QrcTok {
+            qint64 start;
+            qint64 dur;
+            QString text;
+        };
+        QVector<QrcTok> tokens;
+
         QRegularExpressionMatchIterator it = tokenRe.globalMatch(rest);
         while (it.hasNext()) {
             const QRegularExpressionMatch tm = it.next();
             const QString text = tm.captured(1);
-            if (text.isEmpty()) {
-                continue;
+            if (!text.trimmed().isEmpty()) {
+                const qint64 wordStart = qMax<qint64>(0, tm.captured(2).toLongLong() + offset);
+                const qint64 wordDur = tm.captured(3).toLongLong();
+                tokens.append({wordStart, wordDur, text});
+                fullText.append(text);
             }
-            const qint64 wordStart = qMax<qint64>(0, tm.captured(2).toLongLong() + offset);
-            const qint64 wordDur = tm.captured(3).toLongLong();
+        }
+
+        if (tokens.isEmpty() || TtmlParser::isCreditOrNotice(fullText)) {
+            continue;
+        }
+
+        QStringList spans;
+        for (const auto &tok : tokens) {
             spans.append(QStringLiteral("<span begin=\"%1\" end=\"%2\">%3</span>")
-                             .arg(formatSeconds(wordStart), formatSeconds(wordStart + wordDur), escapeXml(text)));
+                             .arg(formatSeconds(tok.start), formatSeconds(tok.start + tok.dur), escapeXml(tok.text)));
         }
 
         if (!spans.isEmpty()) {
@@ -324,6 +340,7 @@ QString toTtml(const QString &qrcText)
     }
 
     return QStringLiteral("<tt xmlns=\"http://www.w3.org/ns/ttml\" "
+                          "xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\" "
                           "xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" "
                           "itunes:timing=\"word\"><body><div>%1</div></body></tt>")
         .arg(paragraphs.join(QString()));

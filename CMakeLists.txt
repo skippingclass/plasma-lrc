@@ -178,10 +178,12 @@ if(PLASMA_LRC_TESTS)
         src/parsers/yrcparser.h
         src/parsers/qrcdecoder.cpp
         src/parsers/qrcdecoder.h
+        src/parsers/lrcparser.cpp
+        src/parsers/lrcparser.h
         src/parsers/ttmlparser.cpp
         src/parsers/ttmlparser.h
     )
-    target_link_libraries(codecs-test PRIVATE Qt6::Core ZLIB::ZLIB)
+    target_link_libraries(codecs-test PRIVATE Qt6::Core Qt6::Network ZLIB::ZLIB)
     add_test(NAME codecs COMMAND codecs-test)
 
     add_executable(pipeline-test

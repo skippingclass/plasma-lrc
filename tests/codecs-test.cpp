@@ -7,6 +7,8 @@
 #include "krcparser.h"
 #include "yrcparser.h"
 #include "qrcdecoder.h"
+#include "lrcparser.h"
+#include "lyricfilter.h"
 #include "zlibcodec.h"
 
 #include <iostream>
@@ -142,6 +144,125 @@ int main()
             check("qrc: word 0 text", lyrics.lines[0].words[0].text == QStringLiteral("Testing"));
             check("qrc: word 0 start with offset", lyrics.lines[0].words[0].startMs == 2100);
         }
+    }
+
+    // 5. YRC CJK Spacing & Pause Tokens (Regression: NetEase pause tokens creating extra spaces)
+    {
+        const QString yrc = QStringLiteral(
+            "[7350,3000](7350,210,0)海(7560,240,0)屿(7800,240,0)你 (8040,150,0)我(8190,210,0)的(8400,300,0)心(8700,1650,0)事\n"
+            "[13010,4780](13010,660,0)从(13670,670,0)不(14340,30,0) (14370,480,0)主(14850,610,0)动(15460,30,0) (15490,330,0)示(15820,1070,0)弱(16890,900,0) \n");
+
+        Lyrics lyrics;
+        const bool ok = YrcParser::parse(yrc, &lyrics);
+        check("yrc cjk: parse ok", ok);
+        check("yrc cjk: 2 lines", lyrics.lines.size() == 2, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 2) {
+            check("yrc cjk: line 0 no extra spaces", lyrics.lines[0].text == QStringLiteral("海屿你我的心事"), lyrics.lines[0].text);
+            check("yrc cjk: line 1 no extra spaces", lyrics.lines[1].text == QStringLiteral("从不主动示弱"), lyrics.lines[1].text);
+        }
+    }
+
+    // 6. YRC English Glued Words & Punctuation
+    {
+        const QString yrc = QStringLiteral(
+            "[17100,2760](17100,30,0)I (17130,180,0)can(17970,30,0)’(18000,150,0)t (18150,270,0)find (18420,540,0)nobody\n"
+            "[38430,2130](38430,240,0)I'm(38670,300,0)going (38970,180,0)through (39150,1410,0)withdrawals\n"
+            "[41370,2430](41370,240,0)have(42420,240,0)to (42660,270,0)do\n");
+
+        Lyrics lyrics;
+        const bool ok = YrcParser::parse(yrc, &lyrics);
+        check("yrc en: parse ok", ok);
+        check("yrc en: 3 lines", lyrics.lines.size() == 3, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 3) {
+            check("yrc en: can’t find", lyrics.lines[0].text == QStringLiteral("I can’t find nobody"), lyrics.lines[0].text);
+            check("yrc en: I'm going separated", lyrics.lines[1].text == QStringLiteral("I'm going through withdrawals"), lyrics.lines[1].text);
+            check("yrc en: have to separated", lyrics.lines[2].text == QStringLiteral("have to do"), lyrics.lines[2].text);
+        }
+    }
+
+    // 7. YRC Fullwidth Parentheses Backing Vocals
+    {
+        const QString yrc = QStringLiteral(
+            "[0,11460](0,10860,0)（(10860,60,0)The (10920,240,0)Kid (11160,300,0)LAROI(11460,0,0)）\n"
+            "[50760,2880](50760,420,0)Sin (51180,540,0)city's (51720,480,0)cold (52200,330,0)and (52530,870,0)empty (53400,0,0)（(53400,240,0)Oh(53640,0,0)）\n");
+
+        Lyrics lyrics;
+        const bool ok = YrcParser::parse(yrc, &lyrics);
+        check("yrc bg: parse ok", ok);
+        check("yrc bg: 2 lines", lyrics.lines.size() == 2, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 2) {
+            check("yrc bg: line 0 text", lyrics.lines[0].text == QStringLiteral("（The Kid LAROI）"), lyrics.lines[0].text);
+            check("yrc bg: line 0 is whole line background", lyrics.lines[0].isBackground);
+
+            check("yrc bg: line 1 text", lyrics.lines[1].text == QStringLiteral("Sin city's cold and empty （Oh）"), lyrics.lines[1].text);
+            check("yrc bg: line 1 not whole line bg", !lyrics.lines[1].isBackground);
+            // Check that words inside （Oh） are background
+            bool foundBgWord = false;
+            for (const auto &w : lyrics.lines[1].words) {
+                if (w.text.contains(QStringLiteral("Oh"))) {
+                    foundBgWord = true;
+                    check("yrc bg: Oh marked as background", w.isBackground && w.backgroundGroup >= 0);
+                }
+            }
+            check("yrc bg: found Oh word", foundBgWord);
+        }
+    }
+
+    // 8. Credit Lines & Notice Filtering
+    {
+        const QString yrcWithCredits = QStringLiteral(
+            "[0,1000](0,1000,0) 作词 : Billie Eilish/FINNEAS\n"
+            "[1000,1000](1000,1000,0) 作曲 : Billie Eilish/FINNEAS\n"
+            "[2000,1000](2000,1000,0) 制作人 : FINNEAS\n"
+            "[3000,1000](3000,1000,0) 吉他 : 高飞\n"
+            "[4000,1000](4000,1000,0) 混音 : 周天澈\n"
+            "[5000,1000](5000,1000,0) Mastering Engineer : John Greenham\n"
+            "[6000,1000](6000,1000,0) Vocals : Billie Eilish\n"
+            "[7000,3000](7000,1500,0)Real (8500,1500,0)Lyrics\n");
+
+        Lyrics lyrics;
+        const bool ok = YrcParser::parse(yrcWithCredits, &lyrics);
+        check("yrc credits: parse ok", ok);
+        check("yrc credits: only real line remains", lyrics.lines.size() == 1, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 1) {
+            check("yrc credits: real line text", lyrics.lines[0].text == QStringLiteral("Real Lyrics"), lyrics.lines[0].text);
+        }
+    }
+
+    // 9. Pure Music (纯音乐，请欣赏) Instrumental Notices
+    {
+        // 9a. LRC Pure Music
+        const QString lrcPure = QStringLiteral(
+            "[id:$00000000]\n"
+            "[ar:Artist]\n"
+            "[ti:Canon in D]\n"
+            "[00:01.58]纯音乐，请欣赏\n");
+
+        Lyrics lrcLyrics;
+        const bool lrcParsed = LrcParser::parseLrc(lrcPure, &lrcLyrics);
+        check("notice lrc: pure music rejected", !lrcParsed || !lrcLyrics.isUsable());
+
+        // 9b. KRC Pure Music (Kugou)
+        const QString krcPure = QStringLiteral(
+            "[id:$00000000]\n"
+            "[1589,320317]<0,354,0>纯<354,505,0>音<859,406,0>乐<1265,304,0>，<1569,252,0>请<1821,405,0>欣<2226,303,0>赏\n");
+        const QString ttmlKrc = KrcParser::toTtml(krcPure);
+        check("notice krc: pure music rejected in toTtml", ttmlKrc.isEmpty());
+
+        // 9c. YRC Pure Music
+        const QString yrcPure = QStringLiteral("[0,1000](0,1000,0)纯音乐，请欣赏\n");
+        Lyrics yrcLyrics;
+        const bool yrcParsed = YrcParser::parse(yrcPure, &yrcLyrics);
+        check("notice yrc: pure music rejected", !yrcParsed || !yrcLyrics.isUsable());
+
+        // 9d. Detailed LyricFilter checks
+        check("filter: 纯音乐，请欣赏", LyricFilter::isCreditOrNotice(QStringLiteral("纯音乐，请欣赏")));
+        check("filter: 此歌曲为没有填词的纯音乐，请您欣赏", LyricFilter::isCreditOrNotice(QStringLiteral("此歌曲为没有填词的纯音乐，请您欣赏")));
+        check("filter: [Instrumental]", LyricFilter::isCreditOrNotice(QStringLiteral("[Instrumental]")));
+        check("filter: Vocals : Artist", LyricFilter::isCreditOrNotice(QStringLiteral("Vocals : Artist")));
+        check("filter: 吉他 : 孔朝晖", LyricFilter::isCreditOrNotice(QStringLiteral("吉他 : 孔朝晖")));
+        check("filter: real lyric is not notice", !LyricFilter::isCreditOrNotice(QStringLiteral("从不主动示弱")));
+        check("filter: real lyric with 制作", !LyricFilter::isCreditOrNotice(QStringLiteral("制作属于我们的回忆")));
     }
 
     if (s_failed > 0) {

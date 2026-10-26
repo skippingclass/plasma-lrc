@@ -95,21 +95,36 @@ QString toTtml(const QString &krcText)
         const qint64 lineDur = m.captured(2).toLongLong();
         const QString rest = m.captured(3);
 
-        QStringList spans;
+        QString fullText;
+        struct WordTok {
+            qint64 off;
+            qint64 len;
+            QString text;
+        };
+        QVector<WordTok> tokens;
+
         QRegularExpressionMatchIterator it = wordRe.globalMatch(rest);
         while (it.hasNext()) {
             const QRegularExpressionMatch wm = it.next();
             const qint64 off = wm.captured(1).toLongLong();
             const qint64 len = wm.captured(2).toLongLong();
             const QString wordText = wm.captured(3);
-            if (wordText.isEmpty()) {
-                continue;
+            if (!wordText.trimmed().isEmpty()) {
+                tokens.append({off, len, wordText});
+                fullText.append(wordText);
             }
+        }
 
-            const qint64 wordStart = lineStart + off;
-            const qint64 wordEnd = wordStart + len;
+        if (tokens.isEmpty() || TtmlParser::isCreditOrNotice(fullText)) {
+            continue;
+        }
+
+        QStringList spans;
+        for (const auto &tok : tokens) {
+            const qint64 wordStart = lineStart + tok.off;
+            const qint64 wordEnd = wordStart + tok.len;
             spans.append(QStringLiteral("<span begin=\"%1\" end=\"%2\">%3</span>")
-                             .arg(formatSeconds(wordStart), formatSeconds(wordEnd), escapeXml(wordText)));
+                             .arg(formatSeconds(wordStart), formatSeconds(wordEnd), escapeXml(tok.text)));
         }
 
         if (!spans.isEmpty()) {
@@ -123,6 +138,7 @@ QString toTtml(const QString &krcText)
     }
 
     return QStringLiteral("<tt xmlns=\"http://www.w3.org/ns/ttml\" "
+                          "xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\" "
                           "xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" "
                           "itunes:timing=\"word\"><body><div>%1</div></body></tt>")
         .arg(paragraphs.join(QString()));
