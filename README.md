@@ -32,27 +32,27 @@
 - **Multi-Source Lyrics Pipeline**:  
   Modular lyrics engine with user-customizable priority ordering and toggles. Queries free, tokenless providers with Apple Music-grade TTML syllable sync (`lrc.red` and `AMLL TTML DB`), alongside `Spicy Lyrics` and `LRCLIB`. If a source has no timings or fails, it seamlessly falls back to the next active provider in the chain.
 - **Real-Time Word-by-Word Karaoke**:  
-  Highlights every sung word in real time on your Plasma panel using syllable/word-level sync from Apple Music TTML (`lrc.red`, `AMLL TTML DB`) and `Spicy Lyrics`. Syllable groups are smoothly merged with zero stutter or text jumping.
+  Highlights every sung word in real time on your Plasma panel using syllable/word-level sync from Apple Music TTML (`lrc.red`, `AMLL TTML DB`) and `Spicy Lyrics`. Syllable groups are smoothly merged with zero stutter or text jumping. Choose from multiple highlight styles: Underlined, Bold, Custom Highlight Color, None (pure line-by-line reading), or **Sung words become white** (dimmed unplayed lyrics lighting up word by word).
+- **Secondary Backing Vocals**:  
+  Optional secondary line for backing vocal tracks in parentheses with independent word-level synchronization, smooth dim-to-bright white color ramp, and automatic layout adaptation for compact panels.
+- **Search & Synchronization Diagnostics**:  
+  Built-in diagnostics window (**Diagnostics…**) providing complete visibility into the lyrics search and playback pipeline. Inspect normalized search metadata, active provider states (`selected`, `provisional`, `skipped`, `failed`), verified candidate rejection reasons (e.g. duration mismatch, missing sync, HTTP errors), cache hits (`disk`, `memory`, `negative cache`), live MPRIS latency extrapolation formula (`Base + Elapsed - Lead - 90ms audioLead - Offset = Final`), vocal cursors, and playback flags, with safe one-click clipboard report copying.
+- **Temporary Lyrics Discard & Restore**:  
+  Right-click context menu action (**Discard lyrics for this track** / **Restore lyrics for this track**) allows dismissing lyrics for the current song in one click without altering permanent blacklists, with instant cached restoration.
+- **Intelligent MPRIS & Clean Instrumental Breaks**:  
+  Auto-detects active players, strips YouTube video noise, detects song intros (`♪ Intro ♪`) and instrumental solos (`♪ Instrumental ♪`), and keeps the panel clean or shows a musical note placeholder according to your preferences.
 - **Customizable Highlight Palette**:  
-  Customize your lyric highlight color with built-in presets (Spotify Green, Cyan, Purple, Yellow, Coral, White) or any custom `#RRGGBB` hex code. Choose between highlight color, bold, or underline styles.
+  Customize your lyric highlight color with built-in presets (Spotify Green, Cyan, Purple, Yellow, Coral, White) or any custom `#RRGGBB` hex code.
 - **1 Fetch Per Song Architecture**:  
   Instead of polling external tools multiple times per second, the widget fetches lyrics once on track change and runs local time interpolation using C++ `QElapsedTimer`. CPU usage drops to 0% at idle.
-- **Intelligent MPRIS Engine**:  
-  Auto-detects active music players, avoids browser media tab lock-in, strips video noise from titles (`[Official Music Video]`, `4K`, etc.), and prioritizes your favorite player.
-- **Clean Instrumental Breaks**:  
-  During musical solos and song intros, the panel stays clean instead of displaying outdated phantom lines. Configurable pause hide delay gently hides text when playback is paused.
-- **Customizable Mouse Actions**:  
-  Configure Left-click (Popup / Play-Pause) and Middle-click (None / Play-Pause / Next Track) right from your panel.
-- **Song Lyrics Reader & Manual Copy**:
+- **Song Lyrics Reader & Manual Copy**:  
   The full song lyrics window (**Open song lyrics…**) supports all lyric sources without timestamps or karaoke markup. For API tracks, ordinary on-screen text selection and manual keyboard copy (Ctrl+C) remain functional, while dedicated copy buttons (**Copy all lyrics**, **Copy selection**, and context menu **Copy current lyric line**) are reserved exclusively for native LRCLIB lyrics. The widget provides no file download, export, or raw API response endpoints.
-- **Always-Visible Complete Attribution**:
-  Provider attribution is mandatory and cannot be hidden across all surfaces (panel, popup, and song lyrics reader). The provider name is always displayed, and individual clickable links for sync makers and uploaders are shown whenever provided by the community synchronization source (`source=spicy_lyrics`, Spotify and Apple Music providers only). The panel tooltip shows track metadata, player, and provider info without repeating uncredited lyric lines. For native LRCLIB lyrics, attribution is displayed in the popup and reader only, keeping the panel dedicated solely to the lyric line. Panel placement for API credits offers two layouts: **Right of lyrics** (default) or **Below lyrics** (stacked two-line layout designed for standard ~30px panels).
-- **Strict Cache Expiration & Data Retention**:
-  All cached API payloads have a hard deadline of 30 days maximum, and payloads with unknown or non-positive expiration times are rejected. Stored responses are automatically purged on startup, on access, and during periodic maintenance passes while the widget runs (in-memory cache entries and open-reader snapshots expire under the same policy; no background deletion occurs while the application or computer is stopped). Line-synced fallbacks are refreshed after 2 days to discover newly added community syllable syncs.
+- **Always-Visible Complete Attribution**:  
+  Provider attribution is mandatory and cannot be hidden across all surfaces (panel, popup, and song lyrics reader). The provider name is always displayed, and individual clickable links for sync makers and uploaders are shown whenever provided by the community synchronization source (`source=spicy_lyrics`, Spotify and Apple Music providers only). The panel tooltip shows track metadata, player, and provider info without repeating uncredited lyric lines.
+- **Strict Cache Expiration & Data Retention**:  
+  All cached API payloads have a hard deadline of 30 days maximum, and payloads with unknown or non-positive expiration times are rejected. Stored responses are automatically purged on startup, on access, and during periodic maintenance passes while the widget runs.
 - **Smooth Visual Transitions**:  
-  Subtle fade animations between lyric lines without any flickering during word-to-word singing.
-- **Experimental Backing Vocals**:
-  Optional secondary line for backing vocal tracks with independent word-level sync, automatic 30px panel layout adaptation, and support in popup representations.
+  Subtle fade animations between lyric lines with highlight retention on outgoing lines.
 
 ---
 
@@ -131,6 +131,21 @@ systemctl --user restart plasma-plasmashell.service
 
 ---
 
+## Context Menu Actions
+
+Right-click the widget on your panel:
+
+| Action | Description |
+|---|---|
+| **Copy current lyric line** | Copies the active lyric line to clipboard (native LRCLIB / local sources). |
+| **Open song lyrics…** | Opens full song lyrics reader window without timestamps or karaoke markup. |
+| **Discard lyrics for this track** / **Restore lyrics for this track** | Temporarily dismisses or restores lyrics for the current song without editing the blacklist. |
+| **Blacklist current track lyrics** / **Unblacklist current track lyrics** | Adds or removes the current track from the persistent blacklist. |
+| **Diagnostics…** | Opens the Search & Synchronization diagnostics window. |
+| **Configure Plasma LRC…** | Opens the widget settings dialog. |
+
+---
+
 ## Settings Reference
 
 Right-click the widget on your panel → **Configure Plasma LRC...**:
@@ -139,9 +154,10 @@ Right-click the widget on your panel → **Configure Plasma LRC...**:
 
 | Setting | Default | Description |
 |---|---|---|
-| **Sung word** | `Underlined` | Karaoke highlight style: `Underlined`, `Bold`, or `Highlight color`. |
+| **Sung word** | `Underlined` | Karaoke highlight style: `Underlined`, `Bold`, `Highlight color`, `None` (line-by-line reading), or `Sung words become white` (dimmed text lighting up word by word). |
 | **Highlight color** | *(System accent)* | Custom color for active word. Presets: Spotify (`#1ed760`), Cyan (`#00d4ff`), Purple (`#b342f5`), Yellow (`#ffd600`), Coral (`#ff4d4d`), White (`#ffffff`). |
-| **Transitions** | `Enabled` | Smooth fade animation when switching lines. |
+| **Transitions** | `Enabled` | Smooth fade animation when switching lines with highlight retention. |
+| **Backing vocals** | `Disabled` | Show secondary backing vocals in parentheses with independent word-level sync. |
 | **Alignment** | `Center` | Text alignment on the panel: `Center` or `Left`. |
 | **Credit layout** | `Right of lyrics` | Attribution placement on the panel for Spicy API sources: `Right of lyrics` (default) or `Below lyrics` (stacked two-line layout for standard 30px panels). Spicy API attribution is required across all surfaces (panel, popup, and song lyrics reader) and cannot be hidden; native LRCLIB lyrics show attribution in popup/reader only, leaving the panel to the lyric line. |
 | **Maximum length** | `40 characters` | Truncates text after N characters to preserve panel space (0 = no limit). |
@@ -175,8 +191,10 @@ Right-click the widget on your panel → **Configure Plasma LRC...**:
 
 | Setting | Default | Description |
 |---|---|---|
-| **Spicy Lyrics** | `Enabled` | Enables community word-level sync for Spotify tracks. |
-| **API key** | *(empty)* | Personal client key `sl_pk_…` obtained through an application template in the catalog. |
+| **Provider Pipeline** | `lrc.red → AMLL → Spicy → LRCLIB` | Drag-and-drop priority ordering and individual enable/disable checkboxes for all supported providers (`lrc.red`, `AMLL TTML DB`, `Spicy Lyrics`, `LRCLIB`, `KuGou`, `NetEase`, `QQ Music`, `Unison`, `Local Files`, `Custom URL`). |
+| **Spicy Lyrics API key** | *(empty)* | Personal client key `sl_pk_…` obtained through an application template in the catalog. |
+| **Local lyrics folder** | *(empty)* | Custom local folder searched for `.lrc` and `.ttml` files alongside track directory, `~/.lyrics/`, and `~/Music/lyrics/`. |
+| **Custom lyrics URL** | *(empty)* | Custom HTTP endpoint with `{title}`, `{artist}`, `{album}`, `{durationMs}`, and `{spotifyId}` macros and custom headers. |
 
 ---
 
