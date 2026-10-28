@@ -62,11 +62,6 @@ bool isClosingPunctuation(QChar c)
         || c == QChar(0xFF1F) || c == QChar(0xFF1A) || c == QChar(0xFF1B);
 }
 
-bool isApostrophe(QChar c)
-{
-    return c == QLatin1Char('\'') || c == QChar(0x2019);
-}
-
 bool calculateShouldInsertSpace(bool pendingSpace, int leadingWs, const QString &built, const QString &trimmed)
 {
     if (trimmed.isEmpty()) {
@@ -86,10 +81,10 @@ bool calculateShouldInsertSpace(bool pendingSpace, int leadingWs, const QString 
         if (isCjkHanziOrKana(prevC) && isCjkHanziOrKana(nextC)) {
             shouldInsertSpace = false;
         }
-        if (isOpenBracket(prevC) || isApostrophe(prevC)) {
+        if (isOpenBracket(prevC)) {
             shouldInsertSpace = false;
         }
-        if (isCloseBracket(nextC) || isClosingPunctuation(nextC) || isApostrophe(nextC)) {
+        if (isCloseBracket(nextC) || isClosingPunctuation(nextC)) {
             shouldInsertSpace = false;
         }
     }
@@ -465,6 +460,10 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
     std::stable_sort(parsedLines.begin(), parsedLines.end(), [](const LyricLine &a, const LyricLine &b) {
         return a.startMs < b.startMs;
     });
+
+    if (trackDurationMs > 0 && parsedLines.last().startMs > (trackDurationMs * 115) / 100) {
+        return false;
+    }
 
     // Ensure each line has a valid endMs
     for (int i = 0; i < parsedLines.size(); ++i) {

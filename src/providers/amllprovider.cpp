@@ -5,6 +5,7 @@
  */
 
 #include "amllprovider.h"
+#include "trackmatch.h"
 #include "ttmlparser.h"
 
 #include <QCryptographicHash>
@@ -26,7 +27,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.2 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.3 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
@@ -234,6 +235,14 @@ void AmllProvider::startGetById(qint64 idVal, const QString &filename)
 void AmllProvider::failCurrent(MissingReason reason, const QString &diagReason, bool is404)
 {
     m_watchdog.stop();
+    if (m_currentReply) {
+        m_currentReply->disconnect(this);
+        if (m_currentReply->isRunning()) {
+            m_currentReply->abort();
+        }
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
     const quint64 gen = m_currentGeneration;
     const QString cacheKey = m_currentCacheKey;
     m_currentGeneration = 0;
@@ -362,11 +371,65 @@ void AmllProvider::onReplyFinished()
                 const QJsonObject root = doc.object();
                 const QJsonObject dataObj = root.value(QLatin1String("data")).toObject();
                 const QJsonArray items = dataObj.value(QLatin1String("items")).toArray();
-                if (!items.isEmpty()) {
-                    const QJsonObject firstItem = items.first().toObject();
-                    const qint64 itemId = firstItem.value(QLatin1String("id")).toVariant().toLongLong();
-                    const QString filename = firstItem.value(QLatin1String("filename")).toString();
+                bool hadCandidatesWithMeta = false;
+                for (const QJsonValue &val : items) {
+                    if (!val.isObject()) {
+                        continue;
+                    }
+                    const QJsonObject item = val.toObject();
+                    const qint64 itemId = item.value(QLatin1String("id")).toVariant().toLongLong();
+                    const QString filename = item.value(QLatin1String("filename")).toString();
+                    if (itemId <= 0 && filename.trimmed().isEmpty()) {
+                        continue;
+                    }
+
+                    QString candTitle = item.value(QLatin1String("title")).toString().trimmed();
+                    if (candTitle.isEmpty()) {
+                        candTitle = item.value(QLatin1String("name")).toString().trimmed();
+                    }
+                    if (candTitle.isEmpty()) {
+                        candTitle = item.value(QLatin1String("musicName")).toString().trimmed();
+                    }
+
+                    QStringList candArtists;
+                    const QJsonValue artistsVal = item.value(QLatin1String("artists"));
+                    if (artistsVal.isArray()) {
+                        for (const QJsonValue &aVal : artistsVal.toArray()) {
+                            if (aVal.isString()) {
+                                candArtists.append(aVal.toString());
+                            } else if (aVal.isObject()) {
+                                candArtists.append(aVal.toObject().value(QLatin1String("name")).toString());
+                            }
+                        }
+                    } else if (artistsVal.isString() && !artistsVal.toString().trimmed().isEmpty()) {
+                        candArtists.append(artistsVal.toString());
+                    }
+                    if (candArtists.isEmpty()) {
+                        const QString singleArtist = item.value(QLatin1String("artist")).toString().trimmed();
+                        if (!singleArtist.isEmpty()) {
+                            candArtists.append(singleArtist);
+                        } else {
+                            const QString artistName = item.value(QLatin1String("artistName")).toString().trimmed();
+                            if (!artistName.isEmpty()) {
+                                candArtists.append(artistName);
+                            }
+                        }
+                    }
+
+                    const qint64 candDurationMs = item.value(QLatin1String("duration")).toVariant().toLongLong();
+
+                    if (!candTitle.isEmpty()) {
+                        hadCandidatesWithMeta = true;
+                        if (!TrackMatch::matchCandidate(m_currentMeta, candTitle, candArtists, candDurationMs)) {
+                            continue;
+                        }
+                    }
+
                     startGetById(itemId, filename);
+                    return;
+                }
+                if (hadCandidatesWithMeta) {
+                    failCurrent(MissingReason::NotFound, QStringLiteral("Candidate metadata mismatch in AMLL search"), true);
                     return;
                 }
             }

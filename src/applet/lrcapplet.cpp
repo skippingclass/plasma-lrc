@@ -299,6 +299,9 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
 
 LrcApplet::~LrcApplet()
 {
+    if (m_positionValid) {
+        saveSyncState();
+    }
     cancelProcess();
     m_pipeline->cancel();
 }
@@ -977,7 +980,7 @@ void LrcApplet::setPlaying(bool playing, bool known)
     }
 
     if (wasPlaying && !playing && m_positionValid && m_positionClock.isValid()) {
-        m_positionBaseMs += m_positionClock.elapsed();
+        m_positionBaseMs += currentClockElapsedMs();
         m_positionClock.invalidate();
     } else if (!wasPlaying && playing && m_positionValid) {
         m_positionClock.start();
@@ -1053,6 +1056,10 @@ void LrcApplet::clearLyrics()
 {
     m_expiryTimer.stop();
     m_lyrics = Lyrics();
+    m_cachedProjectedLineIndex = -1;
+    m_cachedProjectedLineText.clear();
+    m_cachedProjectedWordCount = -1;
+    m_cachedProjectedStartMs = -1;
     m_word.clear();
     m_wordStart = 0;
     m_wordEnd = 0;
@@ -1095,6 +1102,7 @@ void LrcApplet::resetTrackPosition(bool isTrackTransition)
     m_positionClock.invalidate();
     m_positionRetries.invalidate();
     m_positionChecks.invalidate();
+    m_lastSyncStateSaveTimer.invalidate();
     m_positionFetchTimer.invalidate();
     m_prevTrackNaturalEndTimer.invalidate();
     m_trackJustChanged = isTrackTransition;
@@ -1121,7 +1129,7 @@ void LrcApplet::saveSyncState() const
         return;
     }
     const qint64 currentPos = m_positionValid
-        ? (m_positionBaseMs + (m_playing && m_positionClock.isValid() ? m_positionClock.elapsed() : 0))
+        ? (m_positionBaseMs + currentClockElapsedMs())
         : -1;
 
     QJsonObject obj;
@@ -1748,7 +1756,7 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
                 bool nearEnd = false;
                 qint64 remainingMs = 0;
                 if (m_positionValid && m_trackLengthUs > 0) {
-                    const qint64 currentPos = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+                    const qint64 currentPos = m_positionBaseMs + currentClockElapsedMs();
                     remainingMs = (m_trackLengthUs / 1000) - currentPos;
                     nearEnd = (remainingMs > 0 && remainingMs <= 2500);
                 }
@@ -2352,7 +2360,7 @@ void LrcApplet::onPositionFetched()
     // at the end of a finishing track a few milliseconds BEFORE PropertiesChanged(Metadata)
     // for the next track arrives on D-Bus.
     if (!m_trackJustChanged && m_playing && m_positionValid && m_trackLengthUs > 0) {
-        const qint64 expected = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+        const qint64 expected = m_positionBaseMs + currentClockElapsedMs();
         const qint64 remainingMs = (m_trackLengthUs / 1000) - expected;
         const bool recentSeek = m_recentSeekTimer.isValid() && m_recentSeekTimer.elapsed() < 500;
         if (!recentSeek && remainingMs >= -5000 && remainingMs <= 3500 && reportedMs < 2000 && expected > 5000) {
@@ -2382,6 +2390,7 @@ void LrcApplet::onPositionFetched()
                 clearWordHighlight();
                 m_positionRetries.start();
                 m_positionChecks.start();
+                m_lastSyncStateSaveTimer.start();
                 saveSyncState();
                 if (m_lyrics.isUsable() && !m_pauseHidden) {
                     updateWord();
@@ -2405,13 +2414,17 @@ void LrcApplet::onPositionFetched()
             m_gaplessLeadMs = 0;
         }
         if (m_zeroPositionPolls <= 45) {
+            const bool wasInvalidZero = !m_positionValid;
             m_positionBaseMs = 0;
             m_positionClock.invalidate();
             m_trackChangeRetries = 0;
             m_positionValid = true;
             m_positionRetries.start();
             m_positionChecks.start();
-            saveSyncState();
+            if (wasInvalidZero || m_zeroPositionPolls == 3) {
+                m_lastSyncStateSaveTimer.start();
+                saveSyncState();
+            }
             if (m_lyrics.isUsable() && !m_pauseHidden) {
                 updateWord();
             }
@@ -2426,11 +2439,15 @@ void LrcApplet::onPositionFetched()
     }
     m_zeroPositionPolls = 0;
 
+    const bool wasInvalid = !m_positionValid;
+    const qint64 expectedMs = m_positionBaseMs + currentClockElapsedMs();
     const bool jumped = positionJumped(reportedMs);
     if (jumped) {
         m_gaplessLeadMs = 0;
         m_wordCursor = 0;
-        clearWordHighlight();
+        if (!m_lyrics.isUsable() || m_pauseHidden) {
+            clearWordHighlight();
+        }
         if (m_pauseHidden) {
             m_pauseHidden = false;
             Q_EMIT pauseHiddenChanged();
@@ -2440,18 +2457,33 @@ void LrcApplet::onPositionFetched()
         }
     }
 
-    m_positionBaseMs = reportedMs;
-    if (m_playing) {
-        m_positionClock.start();
+    if (wasInvalid || !m_playing || jumped || !m_positionClock.isValid()) {
+        m_positionBaseMs = reportedMs;
+        if (m_playing) {
+            m_positionClock.start();
+        } else {
+            m_positionClock.invalidate();
+        }
     } else {
-        m_positionClock.invalidate();
+        const qint64 signedDrift = reportedMs - expectedMs;
+        // Deadband of 45ms suppresses D-Bus quantization jitter from disturbing 50 FPS karaoke interpolation;
+        // moderate drift (45..500ms) is smoothly phase-locked by 25% per poll without a hard step.
+        if (qAbs(signedDrift) > 45) {
+            m_positionBaseMs = expectedMs + (signedDrift / 4);
+            m_positionClock.start();
+        }
     }
+
     m_trackJustChanged = false;
     m_trackChangeRetries = 0;
     m_positionValid = true;
     m_positionRetries.start();
     m_positionChecks.start();
-    saveSyncState();
+
+    if (wasInvalid || jumped || !m_lastSyncStateSaveTimer.isValid() || m_lastSyncStateSaveTimer.elapsed() >= 15000) {
+        m_lastSyncStateSaveTimer.start();
+        saveSyncState();
+    }
 
     if (m_lyrics.isUsable() && !m_pauseHidden) {
         updateWord();
@@ -2474,7 +2506,7 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
 
     // Check if this is a Repeat-One natural wrap at the end of a track
     if (m_repeatTrack && !m_trackJustChanged && m_playing && m_positionValid && m_trackLengthUs > 0) {
-        const qint64 expected = m_positionBaseMs + (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+        const qint64 expected = m_positionBaseMs + currentClockElapsedMs();
         const qint64 remainingMs = (m_trackLengthUs / 1000) - expected;
         // A seek near the end alone is not evidence of repeat-one. Require the
         // player's loop setting and an actual end boundary before compensating.
@@ -2489,6 +2521,7 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
             clearWordHighlight();
             m_positionRetries.start();
             m_positionChecks.start();
+            m_lastSyncStateSaveTimer.start();
             saveSyncState();
             if (m_lyrics.isUsable() && !m_pauseHidden) {
                 updateWord();
@@ -2508,7 +2541,9 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
         m_prevTrackNaturalEndTimer.invalidate();
         m_gaplessLeadMs = 0;
         m_wordCursor = 0;
-        clearWordHighlight();
+        if (!m_lyrics.isUsable() || m_pauseHidden) {
+            clearWordHighlight();
+        }
     }
 
     m_positionBaseMs = seekMs;
@@ -2531,6 +2566,7 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
         }
     }
 
+    m_lastSyncStateSaveTimer.start();
     saveSyncState();
     if (m_lyrics.isUsable() && !m_pauseHidden) {
         updateWord();
@@ -2546,7 +2582,7 @@ bool LrcApplet::positionJumped(qint64 reportedMs) const
         return false;
     }
 
-    const qint64 expected = m_positionBaseMs + (m_playing && m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
+    const qint64 expected = m_positionBaseMs + currentClockElapsedMs();
     return qAbs(reportedMs - expected) > kPositionSnapToleranceMs;
 }
 
@@ -2587,25 +2623,7 @@ void LrcApplet::setLineIndex(int index)
     }
 }
 
-namespace
-{
-struct ProjectedLine
-{
-    QString mainText;
-    // Map main word index in line.words to (projectedGroupStart, projectedGroupEnd) in mainText
-    QVector<QPair<int, int>> mainWordOffsets;
-
-    struct BgPhrase {
-        QString text;
-        qint64 startMs = 0;
-        qint64 endMs = 0;
-        // Map word index in line.words to (phraseWordStart, phraseWordEnd) in BgPhrase::text
-        QVector<QPair<int, int>> wordOffsets;
-    };
-    QVector<BgPhrase> bgPhrases;
-};
-
-ProjectedLine projectLineForSeparateRendering(const LyricLine &line)
+LrcApplet::ProjectedLine LrcApplet::projectLineForSeparateRendering(const LyricLine &line)
 {
     ProjectedLine result;
     const int numWords = line.words.size();
@@ -2782,7 +2800,6 @@ ProjectedLine projectLineForSeparateRendering(const LyricLine &line)
 
     return result;
 }
-} // namespace
 
 void LrcApplet::updateWord()
 {
@@ -2811,7 +2828,23 @@ void LrcApplet::updateWord()
         return;
     }
 
-    m_positionMs = m_positionBaseMs + (m_playing && m_positionClock.isValid() ? m_positionClock.elapsed() : 0) - m_gaplessLeadMs - kAudioLeadCompensationMs - m_lyricOffset;
+    const bool wasIntro = isIntro();
+    const bool wasBreak = isBreak();
+    const int prevLineIdx = m_lineIndex;
+    struct StateNotifyGuard {
+        LrcApplet *self;
+        bool oldIntro;
+        bool oldBreak;
+        int oldLineIdx;
+        ~StateNotifyGuard()
+        {
+            if (self->m_lineIndex == oldLineIdx && (self->isIntro() != oldIntro || self->isBreak() != oldBreak)) {
+                Q_EMIT self->lineIndexChanged();
+            }
+        }
+    } notifyGuard{this, wasIntro, wasBreak, prevLineIdx};
+
+    m_positionMs = m_positionBaseMs + currentClockElapsedMs() - m_gaplessLeadMs - kAudioLeadCompensationMs - m_lyricOffset;
 
     // Before the first line of the track (intro), clear any stale or phantom text.
     if (!m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs) {
@@ -2873,50 +2906,70 @@ void LrcApplet::updateWord()
 
     // Check if both main and background are inactive
     if (mainLineIndex < 0 && (!m_showBackingVocals || bgLineIndex < 0)) {
-        clearWordHighlight();
-
         if (m_text.isEmpty()) {
-            clearBacking();
             setLineIndex(-1);
+            clearWordHighlight();
+            clearBacking();
             setActive(false);
             return;
         }
 
+        auto clearDisplayAndHighlights = [this]() {
+            setLineIndex(-1);
+            clearWordHighlight();
+            clearBacking();
+            setText(QString());
+            setActive(false);
+        };
+
         // Check if playback is past the last line (outro)
         if (!m_lyrics.lines.isEmpty() && m_positionMs > m_lyrics.lines.last().endMs) {
             if (m_positionMs > m_lyrics.lines.last().endMs + kTailGraceMs) {
-                setText(QString());
-                clearBacking();
-                setLineIndex(-1);
-                setActive(false);
-            }
-            return;
-        }
-
-        // Between lines: during an instrumental break (gap >= 2.5s), clear the display
-        // after a 1.2s grace period so nothing is shown during the musical pause.
-        if (nextLineIdx > 0 && nextLineIdx < m_lyrics.lines.size()) {
-            const LyricLine &prevLine = m_lyrics.lines.at(nextLineIdx - 1);
-            const LyricLine &nextLine = m_lyrics.lines.at(nextLineIdx);
-            const qint64 gapDuration = nextLine.startMs - prevLine.endMs;
-
-            if (gapDuration >= 2500) {
-                if (m_positionMs >= prevLine.endMs + 1200) {
-                    setText(QString());
-                    clearBacking();
-                    setLineIndex(-1);
-                    setActive(false);
-                }
+                clearDisplayAndHighlights();
                 return;
             }
+        } else if (nextLineIdx > 0 && nextLineIdx < m_lyrics.lines.size()) {
+            // Between lines: during an instrumental break (gap >= 2.5s), clear the display
+            // after a 1.2s grace period so nothing is shown during the musical pause.
+            qint64 latestPrevEndMs = m_lyrics.lines.at(nextLineIdx - 1).endMs;
+            const int lookbackFloor = qMax(0, nextLineIdx - 8);
+            for (int i = nextLineIdx - 2; i >= lookbackFloor; --i) {
+                latestPrevEndMs = qMax(latestPrevEndMs, m_lyrics.lines.at(i).endMs);
+            }
+            const LyricLine &nextLine = m_lyrics.lines.at(nextLineIdx);
+            const qint64 gapDuration = nextLine.startMs - latestPrevEndMs;
+
+            if (gapDuration >= 2500 && m_positionMs >= latestPrevEndMs + 1200) {
+                clearDisplayAndHighlights();
+                return;
+            }
+        }
+
+        // Line is still held on screen during the inter-line gap or grace period:
+        // clear only the active word cursor while keeping the completed line 100% sung (white).
+        const int heldSungEnd = m_wordSynced ? static_cast<int>(m_text.length()) : 0;
+        if (!m_word.isEmpty() || m_wordStart != 0 || m_wordEnd != 0 || m_sungEnd != heldSungEnd) {
+            m_word.clear();
+            m_wordStart = 0;
+            m_wordEnd = 0;
+            m_sungEnd = heldSungEnd;
+            m_wordProgress = 0.0;
+            Q_EMIT wordChanged();
+        } else {
+            m_wordProgress = 0.0;
+        }
+
+        if (m_showBackingVocals && !m_backingText.isEmpty()) {
+            const int heldBackingSungEnd = m_wordSynced ? static_cast<int>(m_backingText.length()) : 0;
+            setBackingState(m_backingText, 0, 0, heldBackingSungEnd);
         }
         return;
     }
 
     if (!m_showBackingVocals) {
-        clearBacking();
         const int activeLineIdx = (mainLineIndex >= 0) ? mainLineIndex : rawLineIndex;
         if (activeLineIdx < 0 || activeLineIdx >= m_lyrics.lines.size()) {
+            clearBacking();
             clearWordHighlight();
             return;
         }
@@ -2930,25 +2983,6 @@ void LrcApplet::updateWord()
             tsPrefix = QStringLiteral("[%1:%2] ").arg(mins, 2, 10, QLatin1Char('0')).arg(secs, 2, 10, QLatin1Char('0'));
         }
         const QString displayLine = tsPrefix + line.text;
-        const bool lineChanged = (activeLineIdx != m_lineIndex);
-        if (displayLine != m_text) {
-            setActive(true);
-            setText(displayLine);
-        } else if (lineChanged) {
-            setActive(true);
-            Q_EMIT textChanged();
-        }
-
-        if (lineChanged) {
-            setLineIndex(activeLineIdx);
-            m_wordCursor = 0;
-            clearWordHighlight();
-        }
-
-        if (!m_wordSynced || line.words.isEmpty()) {
-            clearWordHighlight();
-            return;
-        }
 
         QString currentWord;
         int currentStart = 0;
@@ -2957,38 +2991,72 @@ void LrcApplet::updateWord()
         double progress = 0.0;
         const int prefixOffset = tsPrefix.length();
 
-        // Legacy single-highlight with primary priority via selector:
-        // Use SINGLE wordAt Voice::Any, hold 80; selector already prioritizes activeMain.
-        const int activeWordIdx = LyricSelection::wordAt(line, m_positionMs, LyricSelection::Voice::Any, kWordGapHoldMs);
+        if (m_wordSynced && !line.words.isEmpty()) {
+            // Legacy single-highlight with primary priority via selector:
+            // Use SINGLE wordAt Voice::Any, hold 80; selector already prioritizes activeMain.
+            const int activeWordIdx = LyricSelection::wordAt(line, m_positionMs, LyricSelection::Voice::Any, kWordGapHoldMs);
 
-        if (activeWordIdx >= 0 && activeWordIdx < line.words.size()) {
-            const LyricWord &word = line.words.at(activeWordIdx);
-            const int gStart = (word.groupStart >= 0) ? word.groupStart : word.textStart;
-            const int gEnd = (word.groupEnd > gStart) ? word.groupEnd : ((word.textEnd > gStart) ? word.textEnd : gStart + word.text.length());
-            currentWord = line.text.mid(gStart, gEnd - gStart);
-            currentStart = gStart + prefixOffset;
-            currentEnd = gEnd + prefixOffset;
-            const qint64 span = word.endMs - word.startMs;
-            progress = span > 0 ? static_cast<double>(m_positionMs - word.startMs) / static_cast<double>(span) : 0.0;
-            progress = qBound(0.0, progress, 1.0);
-        }
+            if (activeWordIdx >= 0 && activeWordIdx < line.words.size()) {
+                const LyricWord &word = line.words.at(activeWordIdx);
+                const int gStart = (word.groupStart >= 0) ? word.groupStart : word.textStart;
+                const int gEnd = (word.groupEnd > gStart) ? word.groupEnd : ((word.textEnd > gStart) ? word.textEnd : gStart + word.text.length());
+                currentWord = line.text.mid(gStart, gEnd - gStart);
+                currentStart = gStart + prefixOffset;
+                currentEnd = gEnd + prefixOffset;
+                const qint64 span = word.endMs - word.startMs;
+                progress = span > 0 ? static_cast<double>(m_positionMs - word.startMs) / static_cast<double>(span) : 0.0;
+                progress = qBound(0.0, progress, 1.0);
+            }
 
-        for (const LyricWord &w : line.words) {
-            if (m_positionMs >= w.startMs) {
-                const int gEnd = (w.groupEnd > w.groupStart) ? w.groupEnd : ((w.textEnd > w.textStart) ? w.textEnd : (w.groupStart >= 0 ? w.groupStart : w.textStart) + w.text.length());
-                calculatedSungEnd = qMax(calculatedSungEnd, gEnd + prefixOffset);
+            qint64 maxWordEndMs = -1;
+            for (const LyricWord &w : line.words) {
+                maxWordEndMs = qMax(maxWordEndMs, w.endMs);
+                if (m_positionMs >= w.startMs) {
+                    const int gEnd = (w.groupEnd > w.groupStart) ? w.groupEnd : ((w.textEnd > w.textStart) ? w.textEnd : (w.groupStart >= 0 ? w.groupStart : w.textStart) + w.text.length());
+                    calculatedSungEnd = qMax(calculatedSungEnd, gEnd + prefixOffset);
+                }
+            }
+            if (maxWordEndMs > 0 && m_positionMs >= maxWordEndMs) {
+                calculatedSungEnd = qMax(calculatedSungEnd, static_cast<int>(displayLine.length()));
             }
         }
 
-        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd || calculatedSungEnd != m_sungEnd) {
-            m_word = currentWord;
-            m_wordStart = currentStart;
-            m_wordEnd = currentEnd;
-            m_sungEnd = calculatedSungEnd;
-            m_wordProgress = progress;
+        const bool lineChanged = (activeLineIdx != m_lineIndex);
+        const bool textDiff = (displayLine != m_text);
+        const bool wordDiff = (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd || calculatedSungEnd != m_sungEnd);
+        const bool backingDiff = (!m_backingText.isEmpty() || m_backingWordStart != 0 || m_backingWordEnd != 0 || m_backingSungEnd != 0);
+        const bool activeDiff = !m_active;
+
+        if (lineChanged) {
+            m_wordCursor = 0;
+        }
+        m_active = true;
+        m_lineIndex = activeLineIdx;
+        m_text = displayLine;
+        m_word = currentWord;
+        m_wordStart = currentStart;
+        m_wordEnd = currentEnd;
+        m_sungEnd = calculatedSungEnd;
+        m_wordProgress = progress;
+        m_backingText.clear();
+        m_backingWordStart = 0;
+        m_backingWordEnd = 0;
+        m_backingSungEnd = 0;
+
+        if (activeDiff) {
+            Q_EMIT activeChanged();
+        }
+        if (backingDiff) {
+            Q_EMIT backingChanged();
+        }
+        if (textDiff || lineChanged) {
+            Q_EMIT textChanged();
+        }
+        if (wordDiff || lineChanged) {
             Q_EMIT wordChanged();
-        } else {
-            m_wordProgress = progress;
+        }
+        if (lineChanged) {
+            Q_EMIT lineIndexChanged();
         }
         return;
     }
@@ -2997,12 +3065,18 @@ void LrcApplet::updateWord()
     // MAIN and BACK highlight SIMULTANEOUSLY and independently with independent cursors/properties per voice.
     if (mainLineIndex >= 0) {
         const bool lineChanged = (m_lineIndex != mainLineIndex);
-        if (lineChanged) {
-            m_wordCursor = 0;
-            clearWordHighlight();
-        }
         const LyricLine &mainLine = m_lyrics.lines.at(mainLineIndex);
-        ProjectedLine projected = projectLineForSeparateRendering(mainLine);
+        if (m_cachedProjectedLineIndex != mainLineIndex
+            || m_cachedProjectedLineText != mainLine.text
+            || m_cachedProjectedWordCount != mainLine.words.size()
+            || m_cachedProjectedStartMs != mainLine.startMs) {
+            m_cachedProjectedLine = projectLineForSeparateRendering(mainLine);
+            m_cachedProjectedLineIndex = mainLineIndex;
+            m_cachedProjectedLineText = mainLine.text;
+            m_cachedProjectedWordCount = mainLine.words.size();
+            m_cachedProjectedStartMs = mainLine.startMs;
+        }
+        const ProjectedLine &projected = m_cachedProjectedLine;
 
         QString tsPrefix;
         if (m_showTimestamp && !projected.mainText.isEmpty()) {
@@ -3013,11 +3087,6 @@ void LrcApplet::updateWord()
         }
 
         const QString displayLine = projected.mainText.isEmpty() ? QString() : (tsPrefix + projected.mainText);
-        if (displayLine != m_text) {
-            setText(displayLine);
-        } else if (lineChanged) {
-            Q_EMIT textChanged();
-        }
 
         // Main highlight independently timed for Voice::Main
         QString currentWord;
@@ -3042,26 +3111,22 @@ void LrcApplet::updateWord()
                 }
             }
 
+            qint64 maxMainWordEndMs = -1;
             for (int wIdx = 0; wIdx < mainLine.words.size() && wIdx < projected.mainWordOffsets.size(); ++wIdx) {
                 const LyricWord &w = mainLine.words.at(wIdx);
-                if (!w.isBackground && m_positionMs >= w.startMs) {
-                    const auto offsets = projected.mainWordOffsets.at(wIdx);
-                    if (offsets.second >= 0) {
-                        calculatedSungEnd = qMax(calculatedSungEnd, offsets.second + prefixOffset);
+                if (!w.isBackground) {
+                    maxMainWordEndMs = qMax(maxMainWordEndMs, w.endMs);
+                    if (m_positionMs >= w.startMs) {
+                        const auto offsets = projected.mainWordOffsets.at(wIdx);
+                        if (offsets.second >= 0) {
+                            calculatedSungEnd = qMax(calculatedSungEnd, offsets.second + prefixOffset);
+                        }
                     }
                 }
             }
-        }
-
-        if (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd || calculatedSungEnd != m_sungEnd) {
-            m_word = currentWord;
-            m_wordStart = currentStart;
-            m_wordEnd = currentEnd;
-            m_sungEnd = calculatedSungEnd;
-            m_wordProgress = progress;
-            Q_EMIT wordChanged();
-        } else {
-            m_wordProgress = progress;
+            if (maxMainWordEndMs > 0 && m_positionMs >= maxMainWordEndMs && !displayLine.isEmpty()) {
+                calculatedSungEnd = qMax(calculatedSungEnd, static_cast<int>(displayLine.length()));
+            }
         }
 
         // Backing vocal independently timed for Voice::Background
@@ -3138,12 +3203,7 @@ void LrcApplet::updateWord()
             }
         }
 
-        if (!newBackingText.isEmpty()) {
-            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd && m_backingSungEnd == calculatedBackingSungEnd) {
-                Q_EMIT backingChanged();
-            }
-            setBackingState(newBackingText, newBackingStart, newBackingEnd, calculatedBackingSungEnd);
-        } else if (bgLineIndex >= 0) {
+        if (newBackingText.isEmpty() && bgLineIndex >= 0) {
             // Background line alongside main line
             const LyricLine &bgLine = m_lyrics.lines.at(bgLineIndex);
             newBackingText = bgLine.text;
@@ -3166,20 +3226,47 @@ void LrcApplet::updateWord()
                     }
                 }
             }
-            if (lineChanged && m_backingText == newBackingText && m_backingWordStart == newBackingStart && m_backingWordEnd == newBackingEnd && m_backingSungEnd == calculatedBackingSungEnd) {
-                Q_EMIT backingChanged();
-            }
-            setBackingState(newBackingText, newBackingStart, newBackingEnd, calculatedBackingSungEnd);
-        } else {
-            clearBacking();
         }
-        setLineIndex(mainLineIndex);
-    } else if (bgLineIndex >= 0) {
-        // Bg only line (no main line active)
-        setLineIndex(bgLineIndex);
-        setText(QString());
-        clearWordHighlight();
 
+        const bool textDiff = (displayLine != m_text);
+        const bool wordDiff = (currentWord != m_word || currentStart != m_wordStart || currentEnd != m_wordEnd || calculatedSungEnd != m_sungEnd);
+        const bool backingDiff = (m_backingText != newBackingText || m_backingWordStart != newBackingStart || m_backingWordEnd != newBackingEnd || m_backingSungEnd != calculatedBackingSungEnd);
+        const bool newActive = (!displayLine.isEmpty() || !newBackingText.isEmpty());
+        const bool activeDiff = (m_active != newActive);
+
+        if (lineChanged) {
+            m_wordCursor = 0;
+        }
+        m_active = newActive;
+        m_lineIndex = mainLineIndex;
+        m_text = displayLine;
+        m_word = currentWord;
+        m_wordStart = currentStart;
+        m_wordEnd = currentEnd;
+        m_sungEnd = calculatedSungEnd;
+        m_wordProgress = progress;
+        m_backingText = newBackingText;
+        m_backingWordStart = newBackingStart;
+        m_backingWordEnd = newBackingEnd;
+        m_backingSungEnd = calculatedBackingSungEnd;
+
+        if (activeDiff) {
+            Q_EMIT activeChanged();
+        }
+        if (textDiff || lineChanged) {
+            Q_EMIT textChanged();
+        }
+        if (backingDiff || (lineChanged && !newBackingText.isEmpty())) {
+            Q_EMIT backingChanged();
+        }
+        if (wordDiff || lineChanged) {
+            Q_EMIT wordChanged();
+        }
+        if (lineChanged) {
+            Q_EMIT lineIndexChanged();
+        }
+        return;
+    } else if (bgLineIndex >= 0) {
         const LyricLine &bgLine = m_lyrics.lines.at(bgLineIndex);
         QString newBackingText = bgLine.text;
         int newBackingStart = 0;
@@ -3205,7 +3292,74 @@ void LrcApplet::updateWord()
                 }
             }
         }
-        setBackingState(newBackingText, newBackingStart, newBackingEnd, calculatedBackingSungEnd);
+
+        // If bgLine started while the previous main line was still active, keep holding
+        // the completed main line text during the short inter-line gap instead of blinking it out.
+        bool holdPrevMain = !m_text.isEmpty()
+            && m_lineIndex >= 0 && m_lineIndex < m_lyrics.lines.size()
+            && !m_lyrics.lines.at(m_lineIndex).isBackground
+            && bgLine.startMs < m_lyrics.lines.at(m_lineIndex).endMs;
+        if (holdPrevMain && nextLineIdx > 0 && nextLineIdx < m_lyrics.lines.size()) {
+            const qint64 prevMainEndMs = m_lyrics.lines.at(m_lineIndex).endMs;
+            const qint64 gapDuration = m_lyrics.lines.at(nextLineIdx).startMs - prevMainEndMs;
+            if (gapDuration >= 2500 && m_positionMs >= prevMainEndMs + 1200) {
+                holdPrevMain = false;
+            }
+        }
+
+        if (holdPrevMain) {
+            const int heldSungEnd = m_wordSynced ? static_cast<int>(m_text.length()) : 0;
+            const bool wordDiff = (!m_word.isEmpty() || m_wordStart != 0 || m_wordEnd != 0 || m_sungEnd != heldSungEnd);
+            m_word.clear();
+            m_wordStart = 0;
+            m_wordEnd = 0;
+            m_sungEnd = heldSungEnd;
+            m_wordProgress = 0.0;
+            if (wordDiff) {
+                Q_EMIT wordChanged();
+            }
+            setBackingState(newBackingText, newBackingStart, newBackingEnd, calculatedBackingSungEnd);
+            setActive(true);
+            return;
+        }
+
+        // Standalone Bg-only line (no main line active)
+        const bool lineChanged = (m_lineIndex != bgLineIndex);
+        const bool textDiff = !m_text.isEmpty();
+        const bool wordDiff = (!m_word.isEmpty() || m_wordStart != 0 || m_wordEnd != 0 || m_sungEnd != 0 || m_wordProgress != 0.0);
+        const bool backingDiff = (m_backingText != newBackingText || m_backingWordStart != newBackingStart || m_backingWordEnd != newBackingEnd || m_backingSungEnd != calculatedBackingSungEnd);
+        const bool newActive = !newBackingText.isEmpty();
+        const bool activeDiff = (m_active != newActive);
+
+        m_lineIndex = bgLineIndex;
+        m_text.clear();
+        m_word.clear();
+        m_wordStart = 0;
+        m_wordEnd = 0;
+        m_sungEnd = 0;
+        m_wordProgress = 0.0;
+        m_backingText = newBackingText;
+        m_backingWordStart = newBackingStart;
+        m_backingWordEnd = newBackingEnd;
+        m_backingSungEnd = calculatedBackingSungEnd;
+        m_active = newActive;
+
+        if (activeDiff) {
+            Q_EMIT activeChanged();
+        }
+        if (textDiff) {
+            Q_EMIT textChanged();
+        }
+        if (wordDiff) {
+            Q_EMIT wordChanged();
+        }
+        if (backingDiff || (lineChanged && !newBackingText.isEmpty())) {
+            Q_EMIT backingChanged();
+        }
+        if (lineChanged) {
+            Q_EMIT lineIndexChanged();
+        }
+        return;
     }
 
     // Set active true when bg only and experimental non-empty; QML agent adapts hasLyrics
@@ -3489,6 +3643,7 @@ void LrcApplet::sortCandidatesByScore()
 void LrcApplet::unwatchPlayer()
 {
     m_repeatTrack = false;
+    m_playbackRate = 1.0;
     delete m_propertyWatcher;
     m_propertyWatcher = nullptr;
 
@@ -3676,6 +3831,27 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
         m_repeatTrack = loopIt.value().toString() == QLatin1String("Track");
     }
 
+    if (invalidated.contains(QStringLiteral("Rate"))) {
+        if (m_playing && m_positionValid && m_positionClock.isValid()) {
+            m_positionBaseMs += currentClockElapsedMs();
+            m_positionClock.start();
+        }
+        m_playbackRate = 1.0;
+    }
+    const auto rateIt = properties.constFind(QStringLiteral("Rate"));
+    if (rateIt != properties.constEnd()) {
+        bool ok = false;
+        const double rawRate = rateIt.value().toDouble(&ok);
+        const double clampedRate = (ok && rawRate > 0.05) ? qBound(0.1, rawRate, 4.0) : 1.0;
+        if (qAbs(clampedRate - m_playbackRate) > 1e-4) {
+            if (m_playing && m_positionValid && m_positionClock.isValid()) {
+                m_positionBaseMs += currentClockElapsedMs();
+                m_positionClock.start();
+            }
+            m_playbackRate = clampedRate;
+        }
+    }
+
     if (invalidated.contains(QStringLiteral("PlaybackStatus"))) {
         setPlaying(false, false);
         return;
@@ -3811,8 +3987,8 @@ QVariantMap LrcApplet::diagnosticData() const
     sync[QStringLiteral("positionValid")] = m_positionValid;
 
     const qint64 baseMs = m_positionBaseMs;
-    const qint64 elapsedMs = (m_positionClock.isValid() ? m_positionClock.elapsed() : 0);
-    const qint64 extrapolatedMs = baseMs + (m_playing && m_positionClock.isValid() ? elapsedMs : 0);
+    const qint64 elapsedMs = currentClockElapsedMs();
+    const qint64 extrapolatedMs = baseMs + elapsedMs;
     const qint64 gaplessLead = m_gaplessLeadMs;
     const qint64 audioLeadComp = kAudioLeadCompensationMs;
     const qint64 userOffset = m_lyricOffset;

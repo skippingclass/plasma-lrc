@@ -229,7 +229,7 @@ void NeteaseProvider::handleLyricsReply(const QByteArray &data)
     bool parsed = false;
 
     if (!yrc.trimmed().isEmpty()) {
-        parsed = YrcParser::parse(yrc, &lyrics);
+        parsed = YrcParser::parse(yrc, &lyrics, m_meta.durationMs);
     }
 
     if (!parsed || !lyrics.isUsable()) {

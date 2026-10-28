@@ -249,7 +249,7 @@ void QqMusicProvider::handleQrcReply(const QByteArray &data)
                               .value(QStringLiteral("lyric")).toString();
 
     Lyrics lyrics;
-    if (!lyric.isEmpty() && QrcDecoder::parse(lyric, &lyrics) && lyrics.isUsable()) {
+    if (!lyric.isEmpty() && QrcDecoder::parse(lyric, &lyrics, m_meta.durationMs) && lyrics.isUsable()) {
         lyrics.attribution = QStringLiteral("QQ Music (QQ音乐)");
         lyrics.attributionData.provider = QStringLiteral("QQ Music");
         lyrics.attributionData.providerUrl = QStringLiteral("https://y.qq.com");

@@ -46,7 +46,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.2 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.3 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -204,17 +204,22 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 
     // Whitespace at the edges is noise: it would show up as a gap between the
     // lyric and the credit in the panel.
+    int leadingSpaces = 0;
+    while (leadingSpaces < built.size() && built.at(leadingSpaces).isSpace()) {
+        ++leadingSpaces;
+    }
     built = built.trimmed();
     QVector<LyricWord> words;
     QVector<bool> trimmedStarts;
     words.reserve(line->words.size());
     for (int i = 0; i < line->words.size(); ++i) {
         const LyricWord &word = line->words.at(i);
-        if (word.textStart >= built.size()) {
+        LyricWord trimmed = word;
+        trimmed.textStart = qMax(0, trimmed.textStart - leadingSpaces);
+        trimmed.textEnd = qMin(static_cast<int>(built.size()), trimmed.textEnd - leadingSpaces);
+        if (trimmed.textStart >= built.size() || trimmed.textEnd <= trimmed.textStart) {
             continue;
         }
-        LyricWord trimmed = word;
-        trimmed.textEnd = qMin(trimmed.textEnd, static_cast<int>(built.size()));
         words.append(trimmed);
         // The flags travel with the words, or the grouping below would read the
         // flag of a word that is no longer there.
@@ -483,7 +488,8 @@ void SpicyLyrics::invalidate(const QString &trackId)
 {
     cancel();
     m_memoryCache.remove(trackId);
-    if (QRegularExpression(QStringLiteral("^[A-Za-z0-9]{22}$")).match(trackId).hasMatch()) {
+    static const QRegularExpression kTrackIdRe(QStringLiteral("^[A-Za-z0-9]{22}$"));
+    if (kTrackIdRe.match(trackId).hasMatch()) {
         QFile::remove(cacheDirectory() + QLatin1Char('/') + trackId + QStringLiteral(".json"));
     }
     m_retryClock.invalidate();
@@ -684,7 +690,12 @@ void SpicyLyrics::write(const QString &trackId, const QByteArray &payload)
         file.close();
     }
 
-    pruneCache();
+    if (m_cleanupTimer) {
+        const int clampedDelay = static_cast<int>(qBound(0LL, kNegativeCacheTtlMs, static_cast<qint64>(std::numeric_limits<int>::max())));
+        if (!m_cleanupTimer->isActive() || clampedDelay < m_cleanupTimer->remainingTime()) {
+            m_cleanupTimer->start(clampedDelay);
+        }
+    }
 }
 
 void SpicyLyrics::pruneCache()
@@ -813,7 +824,8 @@ void SpicyLyrics::fetch(const QString &trackId)
             const QString code = QJsonDocument::fromJson(payload).object()
                 .value(QStringLiteral("Body")).toObject().value(QStringLiteral("error")).toString();
             // Only retain the machine-readable code, never response text or credentials.
-            if (QRegularExpression(QStringLiteral("^[a-z0-9_]{1,64}$")).match(code).hasMatch()) {
+            static const QRegularExpression kErrorCodeRe(QStringLiteral("^[a-z0-9_]{1,64}$"));
+            if (kErrorCodeRe.match(code).hasMatch()) {
                 m_lastErrorCode = code;
             }
             if (isSuspensionCode(code)) {

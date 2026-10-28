@@ -265,7 +265,7 @@ void KugouProvider::handleDownloadReply(const QByteArray &data, bool isKrc)
     bool parsed = false;
 
     if (isKrc) {
-        parsed = KrcParser::parse(content.toUtf8(), &lyrics);
+        parsed = KrcParser::parse(content.toUtf8(), &lyrics, m_meta.durationMs);
     } else {
         const QByteArray lrcBytes = QByteArray::fromBase64(content.toUtf8());
         parsed = LrcParser::parseLrc(QString::fromUtf8(lrcBytes), &lyrics, m_meta.durationMs);

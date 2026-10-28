@@ -365,6 +365,58 @@ int main()
         }
     }
 
+    // 12. Apostrophe spacing regression (fuckin' God, "Fuck 'em", can’t)
+    {
+        const QString ttml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p begin=\"00:00.000\" end=\"00:05.000\">\n"
+            "        <span begin=\"00:00.000\" end=\"00:00.500\">Wa,</span> <span begin=\"00:00.500\" end=\"00:01.000\">slayr,</span> <span begin=\"00:01.000\" end=\"00:01.200\">oh</span> <span begin=\"00:01.200\" end=\"00:01.400\">my</span> <span begin=\"00:01.400\" end=\"00:01.800\">fuckin'</span> <span begin=\"00:01.800\" end=\"00:02.000\">God</span>\n"
+            "      </p>\n"
+            "      <p begin=\"00:05.000\" end=\"00:10.000\">\n"
+            "        <span begin=\"00:05.000\" end=\"00:05.500\">\"Fuck</span> <span begin=\"00:05.500\" end=\"00:06.000\">'em\"</span>\n"
+            "      </p>\n"
+            "      <p begin=\"00:10.000\" end=\"00:15.000\">\n"
+            "        <span begin=\"00:10.000\" end=\"00:10.500\">can</span><span begin=\"00:10.500\" end=\"00:11.000\">’t</span> <span begin=\"00:11.000\" end=\"00:11.500\">stop</span>\n"
+            "      </p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics;
+        const bool ok = TtmlParser::parseTtml(ttml, &lyrics, 20000);
+        check("apostrophe: parsed", ok);
+        check("apostrophe: 3 lines", lyrics.lines.size() == 3, QString::number(lyrics.lines.size()));
+        if (lyrics.lines.size() == 3) {
+            // Line 1: Word ending with apostrophe followed by space
+            const LyricLine &line1 = lyrics.lines.at(0);
+            check("apostrophe: fuckin' God has space", line1.text == QStringLiteral("Wa, slayr, oh my fuckin' God"), line1.text);
+            check("apostrophe: line 1 has 6 words", line1.words.size() == 6, QString::number(line1.words.size()));
+            if (line1.words.size() == 6) {
+                check("apostrophe: word 4 is fuckin'", line1.words.at(4).text == QStringLiteral("fuckin'"));
+                check("apostrophe: word 5 is God", line1.words.at(5).text == QStringLiteral("God"));
+                // Ensure distinct word group bounds
+                check("apostrophe: fuckin' groupEnd != God groupStart", line1.words.at(4).groupEnd < line1.words.at(5).groupStart,
+                      QStringLiteral("%1 vs %2").arg(line1.words.at(4).groupEnd).arg(line1.words.at(5).groupStart));
+            }
+
+            // Line 2: Word followed by space and leading apostrophe
+            const LyricLine &line2 = lyrics.lines.at(1);
+            check("apostrophe: Fuck 'em has space", line2.text == QStringLiteral("\"Fuck 'em\""), line2.text);
+            check("apostrophe: line 2 has 2 words", line2.words.size() == 2, QString::number(line2.words.size()));
+
+            // Line 3: Syllable spans for contraction without space remain joined
+            const LyricLine &line3 = lyrics.lines.at(2);
+            check("apostrophe: can’t remains joined", line3.text == QStringLiteral("can’t stop"), line3.text);
+            check("apostrophe: line 3 has 3 words", line3.words.size() == 3, QString::number(line3.words.size()));
+            if (line3.words.size() == 3) {
+                check("apostrophe: can and ’t share same word group",
+                      line3.words.at(0).groupStart == line3.words.at(1).groupStart && line3.words.at(0).groupEnd == line3.words.at(1).groupEnd);
+            }
+        }
+    }
+
     if (s_failed == 0) {
         std::cout << "\nAll TTML parser tests passed successfully.\n";
         return 0;

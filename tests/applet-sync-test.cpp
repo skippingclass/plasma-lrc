@@ -1883,6 +1883,218 @@ public:
                     delete diagObj;
                 }
             }
+
+            // Regression 16: Audit fixes (SYNC-01 Rate, SYNC-05 Overlapping x-bg break, SYNC-06 Intro->Break signal)
+            {
+                widget.m_fromSpicy = false;
+                widget.m_lyricsDiscarded = false;
+                widget.m_pauseHidden = false;
+                widget.m_positionValid = true;
+                widget.m_gaplessLeadMs = 0;
+                widget.m_lyricOffset = 0;
+                widget.m_positionClock.invalidate();
+
+                // SYNC-01: MPRIS Rate property tracking
+                widget.applyPlayerProperties({{QStringLiteral("Rate"), 1.5}}, {});
+                check("regression 16 (SYNC-01): Rate 1.5 applied to m_playbackRate",
+                      qFuzzyCompare(widget.m_playbackRate, 1.5), QString::number(widget.m_playbackRate));
+                widget.applyPlayerProperties({{QStringLiteral("Rate"), 1.0}}, {});
+                check("regression 16 (SYNC-01): Rate 1.0 restored",
+                      qFuzzyCompare(widget.m_playbackRate, 1.0), QString::number(widget.m_playbackRate));
+
+                // SYNC-05: Overlapping short x-bg line inside long main line must not trigger false instrumental break
+                LyricLine mainLong;
+                mainLong.text = QStringLiteral("Long main vocal");
+                mainLong.startMs = 1000;
+                mainLong.endMs = 8000;
+                mainLong.isBackground = false;
+
+                LyricLine bgShort;
+                bgShort.text = QStringLiteral("(Short bg)");
+                bgShort.startMs = 1500;
+                bgShort.endMs = 2000;
+                bgShort.isBackground = true;
+
+                LyricLine nextMain;
+                nextMain.text = QStringLiteral("Next main vocal");
+                nextMain.startMs = 10000;
+                nextMain.endMs = 12000;
+                nextMain.isBackground = false;
+
+                Lyrics overlapLyrics;
+                overlapLyrics.type = LyricsType::Line;
+                overlapLyrics.lines = {mainLong, bgShort, nextMain};
+
+                widget.m_lyrics = overlapLyrics;
+                widget.m_wordSynced = false;
+                widget.m_showNoteDuringPauses = true;
+                widget.m_positionBaseMs = 5000; // First activate mainLong so m_text is populated
+                widget.updateWord();
+                check("regression 16 (SYNC-05): mainLong active at 5000ms", widget.m_lineIndex == 0);
+
+                widget.m_positionBaseMs = 8500; // In the 2s gap (8000..10000) after mainLong ends; true gap is 2000ms < 5000ms
+                widget.updateWord();
+                check("regression 16 (SYNC-05): short overlapping bg does not cause false isBreak", !widget.isBreak());
+                check("regression 16 (SYNC-05): mainLong held across 2s gap", widget.m_lineIndex == 0, QString::number(widget.m_lineIndex));
+
+                // SYNC-06: Transition from non-intro to isIntro while m_lineIndex remains -1 emits lineIndexChanged
+                LyricLine introFirst;
+                introFirst.text = QStringLiteral("After long intro");
+                introFirst.startMs = 10000;
+                introFirst.endMs = 12000;
+
+                Lyrics shortIntroLyrics;
+                shortIntroLyrics.type = LyricsType::Line;
+                LyricLine earlyFirst = introFirst;
+                earlyFirst.startMs = 2000;
+                shortIntroLyrics.lines = {earlyFirst};
+
+                widget.m_lyrics = shortIntroLyrics;
+                widget.m_positionBaseMs = 3000; // Active line at 3000ms -> isIntro() is false
+                widget.updateWord();
+                widget.m_lineIndex = -1; // Force lineIndex to -1 while m_positionMs is still ~2910 >= 2000 (not intro!)
+                check("regression 16 (SYNC-06): initial isIntro is false when m_positionMs >= startMs", !widget.isIntro() && widget.m_lineIndex == -1);
+
+                Lyrics introLyrics;
+                introLyrics.type = LyricsType::Line;
+                introLyrics.lines = {introFirst};
+                widget.m_lyrics = introLyrics;
+                widget.m_positionMs = 15000; // Ensure wasIntro is false and wasBreak is false (> last.endMs 12000) before updateWord()
+
+                int lineIndexSignals = 0;
+                QMetaObject::Connection conn = QObject::connect(&widget, &LrcApplet::lineIndexChanged, [&]() {
+                    ++lineIndexSignals;
+                });
+
+                widget.m_positionBaseMs = 2000; // isIntro becomes true (m_positionMs ~1910 < 10000) while m_lineIndex stays -1
+                widget.updateWord();
+                check("regression 16 (SYNC-06): isIntro true at 2000ms", widget.isIntro());
+                check("regression 16 (SYNC-06): lineIndexChanged emitted when isIntro changes with lineIndex -1",
+                      lineIndexSignals == 1, QString::number(lineIndexSignals));
+                QObject::disconnect(conn);
+            }
+
+            // Regression 17: Inter-line gap hold and updateWord() atomic signal ordering in wordStyle 4 ("Sung words become white")
+            // Verifies that:
+            // 1) During the gap between line 0 (endMs=3000) and line 1 (startMs=3800), updateWord() keeps sungEnd == line0.length() (NOT 0!)
+            // 2) When line 1 starts at 3800ms with showBackingVocals=true, updateWord() updates lineIndex BEFORE emitting wordChanged(),
+            //    so QML's outgoing line 0 remains 100% white during fadeTransition instead of flashing gray.
+            // 3) When an overlapping background line trails past mainLine.endMs during a short inter-line gap, main text and sungEnd remain held.
+            {
+                LyricLine l0;
+                l0.text = QStringLiteral("First Line Of Track");
+                l0.startMs = 1000;
+                l0.endMs = 3000;
+                LyricWord l0w;
+                l0w.text = l0.text;
+                l0w.startMs = 1000;
+                l0w.endMs = 2900;
+                l0w.textStart = 0;
+                l0w.textEnd = 19;
+                l0w.groupStart = 0;
+                l0w.groupEnd = 19;
+                l0.words = {l0w};
+
+                LyricLine l1;
+                l1.text = QStringLiteral("Second Line Arrives");
+                l1.startMs = 3800;
+                l1.endMs = 6000;
+                LyricWord l1w;
+                l1w.text = l1.text;
+                l1w.startMs = 4200; // First word starts 400ms after line start
+                l1w.endMs = 5800;
+                l1w.textStart = 0;
+                l1w.textEnd = 19;
+                l1w.groupStart = 0;
+                l1w.groupEnd = 19;
+                l1.words = {l1w};
+
+                Lyrics gapLyrics;
+                gapLyrics.type = LyricsType::Syllable;
+                gapLyrics.lines = {l0, l1};
+
+                widget.m_lyrics = gapLyrics;
+                widget.m_wordSynced = true;
+                widget.m_wordStyle = 4;
+                widget.m_fadeTransition = true;
+                widget.m_showBackingVocals = true;
+                widget.m_positionValid = true;
+                widget.m_pauseHidden = false;
+                widget.m_fromSpicy = false;
+                widget.m_positionClock.invalidate();
+                widget.m_gaplessLeadMs = 0;
+                widget.m_lyricOffset = 0;
+
+                QQmlEngine engine;
+                engine.rootContext()->setContextProperty(QStringLiteral("Plasmoid"), &widget);
+                QQmlComponent component(&engine);
+                component.setData(QByteArrayLiteral(R"qml(
+                    import QtQuick
+                    Item {
+                        id: root
+                        property string lyricText: Plasmoid.text
+                        property string displayedLyric: ""
+                        property int displayedLineIndex: -1
+                        property int sungEnd: 0
+
+                        function syncDisplayedState() {
+                            root.displayedLyric = root.lyricText;
+                            root.displayedLineIndex = Plasmoid.lineIndex;
+                            root.sungEnd = Plasmoid.sungEnd;
+                        }
+
+                        Component.onCompleted: root.syncDisplayedState()
+
+                        Connections {
+                            target: Plasmoid
+                            function onWordChanged() {
+                                if (root.displayedLineIndex >= 0 && Plasmoid.lineIndex !== root.displayedLineIndex) {
+                                    return;
+                                }
+                                root.sungEnd = Plasmoid.sungEnd;
+                            }
+                            function onLineIndexChanged() {
+                                if (!Plasmoid.fadeTransition || root.displayedLyric.length === 0) {
+                                    root.syncDisplayedState();
+                                }
+                            }
+                        }
+                    }
+                )qml"), QUrl());
+                QScopedPointer<QObject> qmlRoot(component.create());
+                check("regression 17: QML component created", !qmlRoot.isNull());
+
+                if (qmlRoot) {
+                    // 1) Play during line 0 (effective 2500ms -> base 2590ms)
+                    widget.m_positionBaseMs = 2590;
+                    widget.updateWord();
+                    QMetaObject::invokeMethod(qmlRoot.data(), "syncDisplayedState");
+                    check("regression 17: line 0 sungEnd is 19 while active", widget.sungEnd() == 19, QString::number(widget.sungEnd()));
+                    check("regression 17: QML sungEnd is 19 while active", qmlRoot->property("sungEnd").toInt() == 19);
+
+                    // 2) Advance into inter-line gap (effective 3400ms -> base 3490ms, between 3000ms and 3800ms)
+                    widget.m_positionBaseMs = 3490;
+                    widget.updateWord();
+                    check("regression 17: line 0 text held during 800ms inter-line gap", widget.text() == QStringLiteral("First Line Of Track"));
+                    check("regression 17: C++ sungEnd remains 19 (NOT reset to 0) during inter-line gap",
+                          widget.sungEnd() == 19, QString::number(widget.sungEnd()));
+                    check("regression 17: QML sungEnd remains 19 (does NOT turn gray) during inter-line gap",
+                          qmlRoot->property("sungEnd").toInt() == 19, QString::number(qmlRoot->property("sungEnd").toInt()));
+
+                    // 3) Advance to start of line 1 before first word (effective 3900ms -> base 3990ms)
+                    widget.m_positionBaseMs = 3990;
+                    widget.updateWord();
+                    check("regression 17: C++ advanced to line 1", widget.lineIndex() == 1);
+                    check("regression 17: C++ sungEnd is 0 for new line 1 before its first word", widget.sungEnd() == 0);
+                    check("regression 17: QML outgoing line 0 keeps sungEnd=19 during fadeTransition (atomic signal order)",
+                          qmlRoot->property("sungEnd").toInt() == 19, QString::number(qmlRoot->property("sungEnd").toInt()));
+
+                    // Complete fade swap
+                    QMetaObject::invokeMethod(qmlRoot.data(), "syncDisplayedState");
+                    check("regression 17: QML swapped to line 1 with sungEnd=0",
+                          qmlRoot->property("displayedLineIndex").toInt() == 1 && qmlRoot->property("sungEnd").toInt() == 0);
+                }
+            }
         }
 
         widget.m_watchedService.clear();

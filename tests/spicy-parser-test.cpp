@@ -1124,6 +1124,27 @@ int main(int argc, char **argv)
         }
     }
 
+    // --- Ведущие пробелы в первом слоге: сдвиг индексов после built.trimmed() (SYNC-04) ---
+    {
+        const QByteArray json = R"({"Body":{"source":"spicy_lyrics","Type":"Syllable","Content":[
+          {"Type":"Vocal","Lead":{"Syllables":[
+            {"Text":"  Hello","StartTime":1.0,"EndTime":1.5},
+            {"Text":"world","StartTime":1.5,"EndTime":2.0}],
+            "StartTime":1.0,"EndTime":2.0}}]}})";
+        Lyrics lyrics;
+        QString error;
+        check("leading spaces: парсится", SpicyLyrics::parse(json, &lyrics, &error), error);
+        check("leading spaces: текст обрезан до 'Hello world'",
+              lyrics.lines.value(0).text == QStringLiteral("Hello world"), lyrics.lines.value(0).text);
+        if (!lyrics.lines.isEmpty() && lyrics.lines.at(0).words.size() == 2) {
+            const auto &line = lyrics.lines.at(0);
+            const QString slice0 = line.text.mid(line.words.at(0).groupStart, line.words.at(0).groupEnd - line.words.at(0).groupStart);
+            const QString slice1 = line.text.mid(line.words.at(1).groupStart, line.words.at(1).groupEnd - line.words.at(1).groupStart);
+            check("leading spaces: срез слова 0 == 'Hello'", slice0 == QStringLiteral("Hello"), slice0);
+            check("leading spaces: срез слова 1 == 'world'", slice1 == QStringLiteral("world"), slice1);
+        }
+    }
+
     printf("\n%s\n", failures == 0 ? "все проверки прошли" : "ЕСТЬ ПРОВАЛЫ");
     return failures == 0 ? 0 : 1;
 }

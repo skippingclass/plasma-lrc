@@ -660,11 +660,20 @@ private:
     qint64 m_positionMs;
     qint64 m_positionBaseMs;
     qint64 m_gaplessLeadMs = 0;
+    double m_playbackRate = 1.0;
     QElapsedTimer m_positionClock;
+    qint64 currentClockElapsedMs() const
+    {
+        return (m_playing && m_positionClock.isValid())
+            ? qRound64(static_cast<double>(m_positionClock.elapsed()) * m_playbackRate)
+            : 0LL;
+    }
     /// Rate limits asking the player for its position again.
     QElapsedTimer m_positionRetries;
     /// Rate limits checking a known position against the player.
     QElapsedTimer m_positionChecks;
+    /// Rate limits periodic sync-state disk writes during steady playback.
+    QElapsedTimer m_lastSyncStateSaveTimer;
     /// Measures D-Bus IPC round-trip latency to compensate transit delay.
     QElapsedTimer m_positionFetchTimer;
     /// Tracks when an explicit MPRIS Seeked signal was last received.
@@ -696,4 +705,24 @@ private:
     Lyrics m_discardedLyrics;
     bool m_discardedFromSpicy = false;
     QString m_discardedActiveProviderId;
+
+    struct ProjectedLine
+    {
+        QString mainText;
+        QVector<QPair<int, int>> mainWordOffsets;
+
+        struct BgPhrase {
+            QString text;
+            qint64 startMs = 0;
+            qint64 endMs = 0;
+            QVector<QPair<int, int>> wordOffsets;
+        };
+        QVector<BgPhrase> bgPhrases;
+    };
+    static ProjectedLine projectLineForSeparateRendering(const LyricLine &line);
+    ProjectedLine m_cachedProjectedLine;
+    int m_cachedProjectedLineIndex = -1;
+    QString m_cachedProjectedLineText;
+    int m_cachedProjectedWordCount = -1;
+    qint64 m_cachedProjectedStartMs = -1;
 };

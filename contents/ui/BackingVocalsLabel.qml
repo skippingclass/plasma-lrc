@@ -76,7 +76,7 @@ PlasmaComponents3.Label {
 
         if (inlineMode) {
             const trimmed = visibleText.trim();
-            if (trimmed.startsWith("(") || trimmed.startsWith("[")) {
+            if (trimmed.startsWith("(") || trimmed.startsWith("[") || trimmed.startsWith("（") || trimmed.startsWith("【")) {
                 return formatted;
             }
             return "(" + formatted + ")";

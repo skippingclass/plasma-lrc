@@ -31,7 +31,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.2 (https://github.com/skippingclass/plasma-lrc; contact: skippingclass@github)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.3 (https://github.com/skippingclass/plasma-lrc; contact: skippingclass@github)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -562,8 +562,21 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
 
 void LrcRedProvider::onTimeout()
 {
-    if (m_currentReply && m_currentReply->isRunning()) {
-        m_currentReply->abort();
+    if (m_currentReply) {
+        m_currentReply->disconnect(this);
+        if (m_currentReply->isRunning()) {
+            m_currentReply->abort();
+        }
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+
+    const quint64 gen = m_currentGeneration;
+    const QString cacheKey = m_currentCacheKey;
+    m_currentCacheKey.clear();
+    if (!cacheKey.isEmpty() && gen != 0) {
+        m_diagReason = QStringLiteral("Request timed out");
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
     }
 }
 
@@ -581,13 +594,15 @@ bool LrcRedProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, 
             QFile file(ttmlPath);
             if (file.open(QIODevice::ReadOnly)) {
                 const QString content = QString::fromUtf8(file.readAll());
-                if (TtmlParser::parseTtml(content, outLyrics, durationMs)) {
+                file.close();
+                if (TtmlParser::parseTtml(content, outLyrics, durationMs) && outLyrics->isUsable()) {
                     outLyrics->attributionData.provider = QStringLiteral("lrc.red");
                     outLyrics->attributionData.providerUrl = QStringLiteral("https://lrc.red");
                     outLyrics->attribution = QStringLiteral("lrc.red");
                     outLyrics->attributionUrl = outLyrics->attributionData.providerUrl;
                     return true;
                 }
+                QFile::remove(ttmlPath);
             }
         } else {
             QFile::remove(ttmlPath);
@@ -602,13 +617,15 @@ bool LrcRedProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, 
             QFile file(lrcPath);
             if (file.open(QIODevice::ReadOnly)) {
                 const QString content = QString::fromUtf8(file.readAll());
-                if (LrcParser::parseLrc(content, outLyrics, durationMs)) {
+                file.close();
+                if (LrcParser::parseLrc(content, outLyrics, durationMs) && outLyrics->isUsable()) {
                     outLyrics->attributionData.provider = QStringLiteral("lrc.red");
                     outLyrics->attributionData.providerUrl = QStringLiteral("https://lrc.red");
                     outLyrics->attribution = QStringLiteral("lrc.red");
                     outLyrics->attributionUrl = outLyrics->attributionData.providerUrl;
                     return true;
                 }
+                QFile::remove(lrcPath);
             }
         } else {
             QFile::remove(lrcPath);

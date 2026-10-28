@@ -162,13 +162,13 @@ QString toTtml(const QString &yrcText)
         .arg(paragraphs.join(QString()));
 }
 
-bool parse(const QString &yrcText, Lyrics *outLyrics)
+bool parse(const QString &yrcText, Lyrics *outLyrics, qint64 trackDurationMs)
 {
     const QString ttml = toTtml(yrcText);
     if (ttml.isEmpty()) {
         return false;
     }
-    return TtmlParser::parseTtml(ttml, outLyrics);
+    return TtmlParser::parseTtml(ttml, outLyrics, trackDurationMs);
 }
 
 } // namespace YrcParser

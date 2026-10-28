@@ -119,17 +119,70 @@ QString toTtml(const QString &krcText)
             continue;
         }
 
+        // Ensure adjacent Latin words in KRC have a space if omitted by KuGou
+        for (int i = 0; i < tokens.size() - 1; ++i) {
+            auto &tok = tokens[i];
+            const auto &nextTok = tokens[i + 1];
+            if (!tok.text.isEmpty() && !nextTok.text.isEmpty()) {
+                const QChar lastC = tok.text.at(tok.text.length() - 1);
+                const QChar firstC = nextTok.text.at(0);
+                if (lastC.isLetterOrNumber() && firstC.isLetterOrNumber()) {
+                    const ushort u1 = lastC.unicode();
+                    const ushort u2 = firstC.unicode();
+                    const bool isCjk1 = (u1 >= 0x3040 && u1 <= 0x30FF) || (u1 >= 0x3400 && u1 <= 0x4DBF)
+                        || (u1 >= 0x4E00 && u1 <= 0x9FFF) || (u1 >= 0xF900 && u1 <= 0xFAFF);
+                    const bool isCjk2 = (u2 >= 0x3040 && u2 <= 0x30FF) || (u2 >= 0x3400 && u2 <= 0x4DBF)
+                        || (u2 >= 0x4E00 && u2 <= 0x9FFF) || (u2 >= 0xF900 && u2 <= 0xFAFF);
+                    if (!isCjk1 && !isCjk2) {
+                        tok.text.append(QLatin1Char(' '));
+                    }
+                }
+            }
+        }
+
+        const bool wholeLineBg = (tokens.size() > 0)
+            && (tokens.first().text.trimmed().startsWith(QLatin1Char('('))
+                || tokens.first().text.trimmed().startsWith(QChar(0xFF08)))
+            && (tokens.last().text.trimmed().endsWith(QLatin1Char(')'))
+                || tokens.last().text.trimmed().endsWith(QChar(0xFF09)));
+
         QStringList spans;
+        bool inBgSpan = false;
         for (const auto &tok : tokens) {
             const qint64 wordStart = lineStart + tok.off;
             const qint64 wordEnd = wordStart + tok.len;
+            const QString tokTrimmed = tok.text.trimmed();
+
+            const bool openBg = !wholeLineBg && !inBgSpan
+                && (tokTrimmed.startsWith(QLatin1Char('(')) || tokTrimmed.startsWith(QChar(0xFF08)));
+
+            if (openBg) {
+                inBgSpan = true;
+                spans.append(QStringLiteral("<span ttm:role=\"x-bg\">"));
+            }
+
             spans.append(QStringLiteral("<span begin=\"%1\" end=\"%2\">%3</span>")
                              .arg(formatSeconds(wordStart), formatSeconds(wordEnd), escapeXml(tok.text)));
+
+            const bool closeBg = inBgSpan
+                && (tokTrimmed.endsWith(QLatin1Char(')')) || tokTrimmed.endsWith(QChar(0xFF09)));
+            if (closeBg) {
+                inBgSpan = false;
+                spans.append(QStringLiteral("</span>"));
+            }
+        }
+        if (inBgSpan) {
+            spans.append(QStringLiteral("</span>"));
         }
 
         if (!spans.isEmpty()) {
-            paragraphs.append(QStringLiteral("<p begin=\"%1\" end=\"%2\">%3</p>")
-                                  .arg(formatSeconds(lineStart), formatSeconds(lineStart + lineDur), spans.join(QString())));
+            if (wholeLineBg) {
+                paragraphs.append(QStringLiteral("<p ttm:role=\"x-bg\" begin=\"%1\" end=\"%2\">%3</p>")
+                                      .arg(formatSeconds(lineStart), formatSeconds(lineStart + lineDur), spans.join(QString())));
+            } else {
+                paragraphs.append(QStringLiteral("<p begin=\"%1\" end=\"%2\">%3</p>")
+                                      .arg(formatSeconds(lineStart), formatSeconds(lineStart + lineDur), spans.join(QString())));
+            }
         }
     }
 
@@ -144,7 +197,7 @@ QString toTtml(const QString &krcText)
         .arg(paragraphs.join(QString()));
 }
 
-bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics)
+bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics, qint64 trackDurationMs)
 {
     const QString decoded = decode(rawOrBase64Data);
     if (decoded.isEmpty()) {
@@ -154,7 +207,7 @@ bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics)
     if (ttml.isEmpty()) {
         return false;
     }
-    return TtmlParser::parseTtml(ttml, outLyrics);
+    return TtmlParser::parseTtml(ttml, outLyrics, trackDurationMs);
 }
 
 } // namespace KrcParser

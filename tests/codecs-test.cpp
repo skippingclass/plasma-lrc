@@ -8,6 +8,7 @@
 #include "yrcparser.h"
 #include "qrcdecoder.h"
 #include "lrcparser.h"
+#include "ttmlparser.h"
 #include "lyricfilter.h"
 #include "zlibcodec.h"
 
@@ -263,6 +264,52 @@ int main()
         check("filter: 吉他 : 孔朝晖", LyricFilter::isCreditOrNotice(QStringLiteral("吉他 : 孔朝晖")));
         check("filter: real lyric is not notice", !LyricFilter::isCreditOrNotice(QStringLiteral("从不主动示弱")));
         check("filter: real lyric with 制作", !LyricFilter::isCreditOrNotice(QStringLiteral("制作属于我们的回忆")));
+    }
+
+    // 10. KRC & QRC Latin Spacing, Backing Vocals (x-bg), and trackDurationMs Validation
+    {
+        const QString krcGluedAndBg = QStringLiteral(
+            "[1000,3000]<0,500,0>Hello<500,500,0>world<1000,1000,0>（<2000,500,0>Oh<2500,500,0>）\n"
+            "[5000,2000]<0,500,0>(Backing<500,1500,0>only)\n");
+        const QString krcTtml = KrcParser::toTtml(krcGluedAndBg);
+        Lyrics krcLyrics;
+        const bool krcOk = TtmlParser::parseTtml(krcTtml, &krcLyrics);
+        check("krc spacing & bg: parse ok", krcOk && krcLyrics.lines.size() == 2);
+        if (krcLyrics.lines.size() == 2) {
+            check("krc spacing & bg: line 0 glued words separated",
+                  krcLyrics.lines[0].text == QStringLiteral("Hello world （Oh）"), krcLyrics.lines[0].text);
+            bool foundKrcBg = false;
+            for (const auto &w : krcLyrics.lines[0].words) {
+                if (w.text.contains(QStringLiteral("Oh"))) {
+                    foundKrcBg = w.isBackground;
+                }
+            }
+            check("krc spacing & bg: inline Oh marked as background", foundKrcBg);
+            check("krc spacing & bg: line 1 whole-line background", krcLyrics.lines[1].isBackground);
+        }
+
+        const QString qrcGluedAndBg = QStringLiteral(
+            "[1000,3000]Hello(1000,500)world(1500,500)(Yeah)(2000,1000)\n");
+        Lyrics qrcLyrics;
+        const bool qrcOk = QrcDecoder::parse(qrcGluedAndBg, &qrcLyrics);
+        check("qrc spacing & bg: parse ok", qrcOk && qrcLyrics.lines.size() == 1);
+        if (qrcLyrics.lines.size() == 1) {
+            check("qrc spacing & bg: line 0 glued words separated",
+                  qrcLyrics.lines[0].text == QStringLiteral("Hello world (Yeah)"), qrcLyrics.lines[0].text);
+            check("qrc spacing & bg: (Yeah) marked as background",
+                  qrcLyrics.lines[0].words.last().isBackground);
+        }
+
+        // Duration bounds validation (> 1.15x trackDurationMs rejected)
+        const QString yrcOverDur = QStringLiteral("[300000,2000](300000,2000,0)Too late\n");
+        Lyrics yrcDurLyrics;
+        check("duration check: YrcParser rejects >1.15x trackDurationMs",
+              !YrcParser::parse(yrcOverDur, &yrcDurLyrics, 180000));
+
+        const QString qrcOverDur = QStringLiteral("[300000,2000]Too late(300000,2000)\n");
+        Lyrics qrcDurLyrics;
+        check("duration check: QrcDecoder rejects >1.15x trackDurationMs",
+              !QrcDecoder::parse(qrcOverDur, &qrcDurLyrics, 180000));
     }
 
     if (s_failed > 0) {

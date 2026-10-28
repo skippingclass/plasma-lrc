@@ -26,6 +26,6 @@ QString toTtml(const QString &qrcText);
 /**
  * Convenience method: decrypt and parse into Lyrics structure (LyricsType::Syllable).
  */
-bool parse(const QString &hexOrQrcText, Lyrics *outLyrics);
+bool parse(const QString &hexOrQrcText, Lyrics *outLyrics, qint64 trackDurationMs = 0);
 
 } // namespace QrcDecoder

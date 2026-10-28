@@ -26,6 +26,6 @@ QString toTtml(const QString &krcText);
 /**
  * Convenience method: decode and parse into Lyrics structure (LyricsType::Syllable).
  */
-bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics);
+bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics, qint64 trackDurationMs = 0);
 
 } // namespace KrcParser
