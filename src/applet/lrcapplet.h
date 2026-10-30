@@ -425,6 +425,8 @@ public:
     Q_INVOKABLE QVariantMap diagnosticData() const;
     Q_INVOKABLE QString diagnosticReport() const;
     Q_INVOKABLE void copyDiagnosticReport();
+    Q_INVOKABLE void clearCache();
+    Q_INVOKABLE void retryLyricsSearch();
 
 Q_SIGNALS:
     void textChanged();

@@ -375,6 +375,52 @@ void LrcApplet::refresh()
     }
 }
 
+void LrcApplet::clearCache()
+{
+    if (m_pipeline) {
+        m_pipeline->clearAllCaches();
+    }
+}
+
+void LrcApplet::retryLyricsSearch()
+{
+    TrackMetadata meta;
+    meta.title = m_trackTitle;
+    meta.artist = m_trackArtist;
+    meta.album = m_trackAlbum;
+    meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
+    meta.spotifyTrackId = m_spotifyTrackId;
+    meta.mprisTrackId = m_mprisTrackId;
+    meta.url = m_trackUrl;
+    meta.isWebSession = m_webPageSession;
+
+    TrackMetadata searchMeta = meta;
+    normalizeTrackMetadata(&searchMeta);
+
+    if (m_pipeline) {
+        m_pipeline->invalidateCaches(searchMeta);
+    }
+
+    if (m_lyricsDiscarded) {
+        m_lyricsDiscarded = false;
+        m_discardedLyrics = Lyrics();
+        m_discardedActiveProviderId.clear();
+        Q_EMIT lyricsDiscardedChanged();
+    }
+
+    m_lyricsLookupDone = false;
+    clearLyrics();
+    clearBacking();
+    clearWordHighlight();
+    m_activeProviderId.clear();
+
+    if (!m_watchedService.isEmpty() && !m_trackTitle.isEmpty()) {
+        requestLyrics();
+    } else {
+        refresh();
+    }
+}
+
 QString LrcApplet::setting(const QString &key, const QString &defaultValue) const
 {
     return config().group(s_configGroup).readEntry(key, defaultValue);

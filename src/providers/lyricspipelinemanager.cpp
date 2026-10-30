@@ -6,6 +6,8 @@
 
 #include "lyricspipelinemanager.h"
 
+#include <QDir>
+#include <QStandardPaths>
 #include <QTimer>
 
 LyricsPipelineManager::LyricsPipelineManager(QObject *parent)
@@ -97,6 +99,35 @@ void LyricsPipelineManager::invalidateCaches(const TrackMetadata &meta)
     for (LyricsProvider *p : m_providers) {
         if (p) {
             p->invalidateCache(meta);
+        }
+    }
+}
+
+void LyricsPipelineManager::clearAllCaches()
+{
+    for (LyricsProvider *p : m_providers) {
+        if (p) {
+            p->clearAllCaches();
+        }
+    }
+
+    // Sweep root applet cache directory
+    const QString commonCacheDir = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/plasma-lrc");
+    if (QDir(commonCacheDir).exists()) {
+        QDir(commonCacheDir).removeRecursively();
+        QDir().mkpath(commonCacheDir);
+    }
+
+    // Sweep legacy plasmashell locations if any remain
+    const QString legacyBase = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!legacyBase.isEmpty()) {
+        const QString legacyAmll = legacyBase + QStringLiteral("/amll");
+        if (QDir(legacyAmll).exists()) {
+            QDir(legacyAmll).removeRecursively();
+        }
+        const QString legacyLrcRed = legacyBase + QStringLiteral("/lrcred");
+        if (QDir(legacyLrcRed).exists()) {
+            QDir(legacyLrcRed).removeRecursively();
         }
     }
 }

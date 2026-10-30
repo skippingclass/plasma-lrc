@@ -9,6 +9,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 
+import org.kde.plasma.plasmoid
 import org.kde.kcmutils as KCM
 import org.kde.kirigami as Kirigami
 
@@ -16,6 +17,16 @@ import org.kde.kirigami as Kirigami
 // dialog sets `title` on it, and it brings its own scrolling and padding.
 KCM.SimpleKCM {
     id: root
+
+    readonly property var targetApplet: {
+        if (typeof Plasmoid !== "undefined" && Plasmoid) {
+            if (Plasmoid.applet) {
+                return Plasmoid.applet;
+            }
+            return Plasmoid;
+        }
+        return null;
+    }
 
     property alias cfg_player: playerField.text
     property alias cfg_preferredPlayer: preferredField.text
@@ -167,6 +178,51 @@ KCM.SimpleKCM {
 
             Kirigami.FormData.label: i18n("Middle click:")
             model: [i18n("None"), i18n("Play / Pause"), i18n("Next track")]
+        }
+
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Cache")
+        }
+
+        RowLayout {
+            Kirigami.FormData.label: i18n("Lyric cache:")
+            spacing: Kirigami.Units.smallSpacing
+
+            QQC2.Button {
+                id: clearCacheBtn
+                text: i18n("Clear cache")
+                icon.name: "edit-clear-history"
+                onClicked: {
+                    if (root.targetApplet && root.targetApplet.clearCache) {
+                        root.targetApplet.clearCache();
+                        cacheFeedbackLabel.visible = true;
+                        cacheFeedbackTimer.restart();
+                    }
+                }
+            }
+
+            QQC2.Label {
+                id: cacheFeedbackLabel
+                text: i18n("Cache cleared")
+                visible: false
+                color: Kirigami.Theme.positiveTextColor
+            }
+
+            Timer {
+                id: cacheFeedbackTimer
+                interval: 2500
+                onTriggered: cacheFeedbackLabel.visible = false
+            }
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Deletes cached lyrics and negative lookup results on disk and in memory.")
         }
     }
 }

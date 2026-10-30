@@ -50,6 +50,14 @@ void SpicyLyricsProvider::invalidateCache(const TrackMetadata &meta)
     }
 }
 
+void SpicyLyricsProvider::clearAllCaches()
+{
+    cancel();
+    if (m_spicy) {
+        m_spicy->clearCache();
+    }
+}
+
 void SpicyLyricsProvider::onLoaded(const QString &trackId, const Lyrics &lyrics)
 {
     if (trackId != m_pendingTrackId) {

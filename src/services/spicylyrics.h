@@ -76,6 +76,7 @@ public:
 
     /// Directory used for the response cache.
     static QString cacheDirectory();
+    void clearCache();
 
 Q_SIGNALS:
     /// The response for @p trackId arrived and has usable timings.

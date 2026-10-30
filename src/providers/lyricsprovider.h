@@ -45,6 +45,7 @@ public:
     virtual void requestLyrics(const TrackMetadata &meta, quint64 generation) = 0;
     virtual void cancel() = 0;
     virtual void invalidateCache(const TrackMetadata &meta) { Q_UNUSED(meta); }
+    virtual void clearAllCaches() {}
     virtual QString confirmedRejectionReason(quint64 generation) const { Q_UNUSED(generation); return QString(); }
     virtual QString cacheUsage(quint64 generation) const { Q_UNUSED(generation); return QString(); }
 

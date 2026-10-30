@@ -111,7 +111,22 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
     }
 
     if (rawLines.isEmpty()) {
+        lyrics->type = LyricsType::Static;
         return false;
+    }
+
+    if (rawLines.size() > 1) {
+        bool hasAdvancingTimestamps = false;
+        for (const auto &l : rawLines) {
+            if (l.startMs > 0) {
+                hasAdvancingTimestamps = true;
+                break;
+            }
+        }
+        if (!hasAdvancingTimestamps) {
+            lyrics->type = LyricsType::Static;
+            return false;
+        }
     }
 
     // Sort by timestamp stably to preserve original file order for identical timestamps

@@ -46,7 +46,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.4 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.5 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -514,6 +514,17 @@ bool SpicyLyrics::isEnabled() const
 QString SpicyLyrics::cacheDirectory()
 {
     return QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/plasma-lrc/spicy");
+}
+
+void SpicyLyrics::clearCache()
+{
+    cancel();
+    m_memoryCache.clear();
+    const QString dir = cacheDirectory();
+    if (QDir(dir).exists()) {
+        QDir(dir).removeRecursively();
+        QDir().mkpath(dir);
+    }
 }
 
 QString SpicyLyrics::trackIdFromMpris(const QString &trackId)

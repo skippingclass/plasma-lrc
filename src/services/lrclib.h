@@ -48,6 +48,7 @@ public:
 
     static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs);
     static QString cacheDirectory();
+    void clearCache();
     static QByteArray userAgent();
 
 Q_SIGNALS:

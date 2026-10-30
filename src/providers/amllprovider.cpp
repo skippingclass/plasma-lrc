@@ -27,7 +27,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.4 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.5 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
@@ -45,11 +45,11 @@ AmllProvider::~AmllProvider()
 
 QString AmllProvider::cacheDirectory()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation);
     if (base.isEmpty()) {
-        base = QDir::tempPath() + QStringLiteral("/plasma-lrc");
+        base = QDir::tempPath();
     }
-    return base + QStringLiteral("/amll");
+    return base + QStringLiteral("/plasma-lrc/amll");
 }
 
 QString AmllProvider::makeCacheKey(const TrackMetadata &meta)
@@ -155,6 +155,24 @@ void AmllProvider::invalidateCache(const TrackMetadata &meta)
         const QString spotifyDiskPath = cacheDirectory() + QStringLiteral("/") + meta.spotifyTrackId.trimmed() + QStringLiteral(".ttml");
         if (QFile::exists(spotifyDiskPath)) {
             QFile::remove(spotifyDiskPath);
+        }
+    }
+}
+
+void AmllProvider::clearAllCaches()
+{
+    cancel();
+    m_negativeCache.clear();
+    const QString dir = cacheDirectory();
+    if (QDir(dir).exists()) {
+        QDir(dir).removeRecursively();
+        QDir().mkpath(dir);
+    }
+    const QString legacyBase = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!legacyBase.isEmpty()) {
+        const QString legacyPath = legacyBase + QStringLiteral("/amll");
+        if (QDir(legacyPath).exists()) {
+            QDir(legacyPath).removeRecursively();
         }
     }
 }

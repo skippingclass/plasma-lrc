@@ -39,6 +39,7 @@ public:
     QString currentProviderId() const;
 
     void invalidateCaches(const TrackMetadata &meta);
+    void clearAllCaches();
 
     int lookupTimeoutMs() const { return m_lookupTimeoutMs; }
     void setLookupTimeoutMs(int timeoutMs) { m_lookupTimeoutMs = timeoutMs; }

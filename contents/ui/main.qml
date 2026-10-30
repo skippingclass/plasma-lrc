@@ -537,6 +537,12 @@ PlasmoidItem {
 
     Plasmoid.contextualActions: [
         PlasmaCore.Action {
+            text: i18n("Try searching again")
+            icon.name: "view-refresh"
+            enabled: Plasmoid.trackInfo.length > 0
+            onTriggered: Plasmoid.retryLyricsSearch()
+        },
+        PlasmaCore.Action {
             text: i18n("Copy current lyric line")
             icon.name: "edit-copy"
             visible: !Plasmoid.fromSpicyLyrics
@@ -1036,6 +1042,7 @@ PlasmoidItem {
         onToggleBlacklist: Plasmoid.toggleBlacklistCurrentTrack()
         isLyricsDiscarded: Plasmoid.isLyricsDiscarded
         onToggleDiscardLyrics: Plasmoid.toggleDiscardCurrentLyrics()
+        onRetryLyrics: Plasmoid.retryLyricsSearch()
     }
 
     // Only used to find out how wide a single character is, so that the compact

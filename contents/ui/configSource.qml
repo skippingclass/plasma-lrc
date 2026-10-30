@@ -545,5 +545,50 @@ KCM.SimpleKCM {
             opacity: 0.75
             text: i18n("Supported placeholders: {title}, {artist}, {album}, {duration} (seconds), {durationMs}, {spotifyId}.")
         }
+
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Cache")
+        }
+
+        RowLayout {
+            Kirigami.FormData.label: i18n("Disk & memory cache:")
+            spacing: Kirigami.Units.smallSpacing
+
+            QQC2.Button {
+                id: clearSourceCacheBtn
+                text: i18n("Clear cache")
+                icon.name: "edit-clear-history"
+                onClicked: {
+                    if (root.targetApplet && root.targetApplet.clearCache) {
+                        root.targetApplet.clearCache();
+                        sourceCacheFeedbackLabel.visible = true;
+                        sourceCacheFeedbackTimer.restart();
+                    }
+                }
+            }
+
+            QQC2.Label {
+                id: sourceCacheFeedbackLabel
+                text: i18n("Cache cleared")
+                visible: false
+                color: Kirigami.Theme.positiveTextColor
+            }
+
+            Timer {
+                id: sourceCacheFeedbackTimer
+                interval: 2500
+                onTriggered: sourceCacheFeedbackLabel.visible = false
+            }
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 25
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Deletes cached lyrics and negative lookup results on disk and in memory.")
+        }
     }
 }

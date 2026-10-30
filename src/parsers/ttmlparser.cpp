@@ -183,6 +183,8 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
     QXmlStreamReader xml(ttmlContent);
     QVector<LyricLine> parsedLines;
     bool hasAnyWordTimings = false;
+    bool isExplicitlyUnsynced = false;
+    int timedLinesCount = 0;
 
     struct TtmlChunk {
         bool isTimed = false;
@@ -200,12 +202,27 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
         if (token == QXmlStreamReader::StartElement) {
             const QStringView tagName = xml.name();
 
-            if (tagName == QLatin1String("p")) {
+            if (tagName == QLatin1String("tt")) {
+                const QXmlStreamAttributes ttAttrs = xml.attributes();
+                for (const auto &attr : ttAttrs) {
+                    if (attr.name().toString().compare(QLatin1String("timing"), Qt::CaseInsensitive) == 0
+                        || attr.qualifiedName().toString().endsWith(QLatin1String(":timing"), Qt::CaseInsensitive)) {
+                        const QString timingVal = attr.value().toString().trimmed();
+                        if (timingVal.compare(QLatin1String("None"), Qt::CaseInsensitive) == 0
+                            || timingVal.compare(QLatin1String("Unsynced"), Qt::CaseInsensitive) == 0) {
+                            isExplicitlyUnsynced = true;
+                        }
+                    }
+                }
+            } else if (tagName == QLatin1String("p")) {
                 const QXmlStreamAttributes pAttrs = xml.attributes();
                 qint64 pBegin = -1;
                 qint64 pEnd = -1;
+                bool lineHasExplicitTimestamp = false;
                 if (pAttrs.hasAttribute(QLatin1String("begin"))) {
-                    parseTimestamp(pAttrs.value(QLatin1String("begin")).toString(), &pBegin);
+                    if (parseTimestamp(pAttrs.value(QLatin1String("begin")).toString(), &pBegin) && pBegin >= 0) {
+                        lineHasExplicitTimestamp = true;
+                    }
                 }
                 if (pAttrs.hasAttribute(QLatin1String("end"))) {
                     parseTimestamp(pAttrs.value(QLatin1String("end")).toString(), &pEnd);
@@ -265,6 +282,7 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
 
                             if (hasBegin) {
                                 hasAnyWordTimings = true;
+                                lineHasExplicitTimestamp = true;
                             }
 
                             if (isBgRole) {
@@ -304,6 +322,7 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                             const ContainerContext &ctx = contextStack.last();
                             if (ctx.begin >= 0 && !ctx.hasChildSpans) {
                                 hasAnyWordTimings = true;
+                                lineHasExplicitTimestamp = true;
                                 TtmlChunk c;
                                 c.isTimed = true;
                                 c.text = text;
@@ -446,6 +465,9 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                 }
 
                 if (!line.text.isEmpty() && !isCreditOrNotice(line.text)) {
+                    if (lineHasExplicitTimestamp) {
+                        ++timedLinesCount;
+                    }
                     parsedLines.append(line);
                 }
             }
@@ -453,6 +475,26 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
     }
 
     if (parsedLines.isEmpty()) {
+        lyrics->lines.clear();
+        lyrics->type = LyricsType::None;
+        return false;
+    }
+
+    bool hasAdvancingTimestamps = false;
+    for (const auto &l : parsedLines) {
+        if (l.startMs > 0) {
+            hasAdvancingTimestamps = true;
+            break;
+        }
+    }
+
+    const bool isUnsynced = isExplicitlyUnsynced
+        || (timedLinesCount == 0)
+        || (parsedLines.size() > 1 && !hasAdvancingTimestamps && !hasAnyWordTimings);
+
+    if (isUnsynced) {
+        lyrics->lines = parsedLines;
+        lyrics->type = LyricsType::Static;
         return false;
     }
 

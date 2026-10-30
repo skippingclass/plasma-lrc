@@ -41,6 +41,14 @@ void LrclibProvider::invalidateCache(const TrackMetadata &meta)
     }
 }
 
+void LrclibProvider::clearAllCaches()
+{
+    cancel();
+    if (m_client) {
+        m_client->clearCache();
+    }
+}
+
 void LrclibProvider::onLoaded(const QString &requestKey, const Lyrics &lyrics)
 {
     if (requestKey != m_pendingKey) {

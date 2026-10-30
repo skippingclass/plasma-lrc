@@ -36,6 +36,7 @@ public:
     void requestLyrics(const TrackMetadata &meta, quint64 generation) override;
     void cancel() override;
     void invalidateCache(const TrackMetadata &meta) override;
+    void clearAllCaches() override;
 
     QString confirmedRejectionReason(quint64 generation) const override
     {

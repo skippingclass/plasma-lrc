@@ -627,6 +627,80 @@ int main(int argc, char **argv)
         check("spicy provider: unrelated track cache preserved", QFile::exists(otherPath));
     }
 
+    // =========================================================================
+    // Suite 5: Unsynced TTML Rejection and clearAllCaches
+    // =========================================================================
+    {
+        HttpTestServer server;
+
+        // 1. LrcRedProvider rejects unsynced TTML
+        LrcRedProvider lrcred(nullptr, server.apiBase().toString());
+        const QString unsyncedTtml = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:lrc=\"http://lrc.red/lyric-ttml-internal\" lrc:timing=\"None\">\n"
+            "  <body><div><p>Unsynced Line</p></div></body>\n"
+            "</tt>");
+
+        server.responses.clear();
+        server.responses.append({200, unsyncedTtml.toUtf8(), 0, {}});
+
+        TrackMetadata meta;
+        meta.isrc = QStringLiteral("GBTEST123456");
+        meta.title = QStringLiteral("Unsynced Test");
+        meta.artist = QStringLiteral("Test Artist");
+
+        bool lrcredFailed = false;
+        MissingReason failReason = MissingReason::NotFound;
+        bool lrcredLoaded = false;
+
+        QObject::connect(&lrcred, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason r, const QString &) {
+            lrcredFailed = true;
+            failReason = r;
+        });
+        QObject::connect(&lrcred, &LyricsProvider::lyricsLoaded, [&](quint64, const Lyrics &, const QString &) {
+            lrcredLoaded = true;
+        });
+
+        lrcred.requestLyrics(meta, 1);
+        check("lrcred rejects unsynced: failed emitted", waitFor([&] { return lrcredFailed; }));
+        check("lrcred rejects unsynced: not loaded", !lrcredLoaded);
+        check("lrcred rejects unsynced: reason is Unsynced", failReason == MissingReason::Unsynced);
+
+        // 2. clearAllCaches sweeps provider directories
+        const QString amllDummy = AmllProvider::cacheDirectory() + QStringLiteral("/dummy.ttml");
+        const QString lrcredDummy = LrcRedProvider::cacheDirectory() + QStringLiteral("/dummy.ttml");
+        const QString lrclibDummy = LrclibClient::cacheDirectory() + QStringLiteral("/dummy.json");
+        const QString spicyDummy = SpicyLyrics::cacheDirectory() + QStringLiteral("/dummy.json");
+
+        QDir().mkpath(AmllProvider::cacheDirectory());
+        QDir().mkpath(LrcRedProvider::cacheDirectory());
+        QDir().mkpath(LrclibClient::cacheDirectory());
+        QDir().mkpath(SpicyLyrics::cacheDirectory());
+
+        for (const QString &path : {amllDummy, lrcredDummy, lrclibDummy, spicyDummy}) {
+            QFile f(path);
+            if (f.open(QIODevice::WriteOnly)) {
+                f.write("test");
+                f.close();
+            }
+            check("suite 5: created dummy file", QFile::exists(path));
+        }
+
+        AmllProvider amll;
+        LrcRedProvider lrcredProv;
+        LrclibProvider lrclibProv;
+        SpicyLyricsProvider spicyProv;
+
+        amll.clearAllCaches();
+        lrcredProv.clearAllCaches();
+        lrclibProv.clearAllCaches();
+        spicyProv.clearAllCaches();
+
+        check("suite 5: clearAllCaches removes amll dummy", !QFile::exists(amllDummy));
+        check("suite 5: clearAllCaches removes lrcred dummy", !QFile::exists(lrcredDummy));
+        check("suite 5: clearAllCaches removes lrclib dummy", !QFile::exists(lrclibDummy));
+        check("suite 5: clearAllCaches removes spicy dummy", !QFile::exists(spicyDummy));
+    }
+
     if (s_failures == 0) {
         std::printf("\nAll provider cache tests passed successfully.\n");
         return 0;

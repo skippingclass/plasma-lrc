@@ -28,7 +28,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.4 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.5 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -50,6 +50,17 @@ QByteArray LrclibClient::userAgent()
 QString LrclibClient::cacheDirectory()
 {
     return QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/plasma-lrc/lrclib");
+}
+
+void LrclibClient::clearCache()
+{
+    cancel();
+    m_memoryCache.clear();
+    const QString dir = cacheDirectory();
+    if (QDir(dir).exists()) {
+        QDir(dir).removeRecursively();
+        QDir().mkpath(dir);
+    }
 }
 
 QString LrclibClient::makeCacheKey(const QString &title, const QString &artist, qint64 durationMs)

@@ -44,6 +44,8 @@ ColumnLayout {
     property bool isLyricsDiscarded: false
     signal toggleDiscardLyrics()
 
+    signal retryLyrics()
+
     spacing: Kirigami.Units.smallSpacing
 
     // The popup has to hug its content: an explicit maximumWidth or minimumHeight
@@ -75,6 +77,17 @@ ColumnLayout {
         Item {
             Layout.fillWidth: true
             visible: !root.showTrackInfo
+        }
+
+        PlasmaComponents3.ToolButton {
+            id: retryBtn
+            icon.name: "view-refresh"
+            text: i18n("Retry")
+            display: PlasmaComponents3.AbstractButton.IconOnly
+            visible: root.trackInfo.length > 0
+            PlasmaComponents3.ToolTip.text: i18n("Try searching again")
+            PlasmaComponents3.ToolTip.visible: hovered
+            onClicked: root.retryLyrics()
         }
 
         PlasmaComponents3.ToolButton {

@@ -417,6 +417,60 @@ int main()
         }
     }
 
+    // 14. Unsynced TTML detection (lrc.red timing="None" and untimed <p> tags)
+    {
+        const QString unsyncedTimingNone = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:lrc=\"http://lrc.red/lyric-ttml-internal\" lrc:timing=\"None\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p>Unsynced line one</p>\n"
+            "      <p>Unsynced line two</p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics1;
+        const bool ok1 = TtmlParser::parseTtml(unsyncedTimingNone, &lyrics1, 100000);
+        check("unsynced timing=None: not ok", !ok1);
+        check("unsynced timing=None: type is Static", lyrics1.type == LyricsType::Static);
+        check("unsynced timing=None: not usable", !lyrics1.isUsable());
+        check("unsynced timing=None: lines parsed", lyrics1.lines.size() == 2, QString::number(lyrics1.lines.size()));
+
+        const QString untimedParagraphs = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p>Static line one</p>\n"
+            "      <p>Static line two</p>\n"
+            "      <p>Static line three</p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics2;
+        const bool ok2 = TtmlParser::parseTtml(untimedParagraphs, &lyrics2, 100000);
+        check("untimed <p>: not ok", !ok2);
+        check("untimed <p>: type is Static", lyrics2.type == LyricsType::Static);
+        check("untimed <p>: not usable", !lyrics2.isUsable());
+
+        const QString zeroTimedParagraphs = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\">\n"
+            "  <body>\n"
+            "    <div>\n"
+            "      <p begin=\"00:00.000\">First line at zero</p>\n"
+            "      <p begin=\"00:00.000\">Second line at zero</p>\n"
+            "      <p begin=\"00:00.000\">Third line at zero</p>\n"
+            "    </div>\n"
+            "  </body>\n"
+            "</tt>");
+
+        Lyrics lyrics3;
+        const bool ok3 = TtmlParser::parseTtml(zeroTimedParagraphs, &lyrics3, 100000);
+        check("all-zero timestamps: not ok", !ok3);
+        check("all-zero timestamps: type is Static", lyrics3.type == LyricsType::Static);
+        check("all-zero timestamps: not usable", !lyrics3.isUsable());
+    }
+
     if (s_failed == 0) {
         std::cout << "\nAll TTML parser tests passed successfully.\n";
         return 0;

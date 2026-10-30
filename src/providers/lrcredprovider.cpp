@@ -31,7 +31,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.4 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.5 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -49,11 +49,11 @@ LrcRedProvider::~LrcRedProvider()
 
 QString LrcRedProvider::cacheDirectory()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    QString base = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation);
     if (base.isEmpty()) {
-        base = QDir::tempPath() + QStringLiteral("/plasma-lrc");
+        base = QDir::tempPath();
     }
-    return base + QStringLiteral("/lrcred");
+    return base + QStringLiteral("/plasma-lrc/lrcred");
 }
 
 QString LrcRedProvider::makeCacheKey(const QString &title, const QString &artist, qint64 durationMs, const QString &isrc)
@@ -179,6 +179,24 @@ void LrcRedProvider::invalidateCache(const TrackMetadata &meta)
         const QString lrcPath = cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".lrc");
         if (QFile::exists(lrcPath)) {
             QFile::remove(lrcPath);
+        }
+    }
+}
+
+void LrcRedProvider::clearAllCaches()
+{
+    cancel();
+    m_negativeCache.clear();
+    const QString dir = cacheDirectory();
+    if (QDir(dir).exists()) {
+        QDir(dir).removeRecursively();
+        QDir().mkpath(dir);
+    }
+    const QString legacyBase = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!legacyBase.isEmpty()) {
+        const QString legacyPath = legacyBase + QStringLiteral("/lrcred");
+        if (QDir(legacyPath).exists()) {
+            QDir(legacyPath).removeRecursively();
         }
     }
 }
@@ -538,14 +556,15 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
         ok = LrcParser::parseLrc(trimmed, &lyrics, m_targetDurationMs);
     }
 
-    if (!ok) {
+    if (!ok && lyrics.type != LyricsType::Static) {
         // Parsing error in payload -> transient Unreachable, NO negative cache
         Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
         return;
     }
 
-    if (!lyrics.isUsable()) {
+    if (!lyrics.isUsable() || lyrics.type == LyricsType::Static) {
         // Valid text/TTML, but confirmed unsynced
+        m_diagReason = QStringLiteral("Lyrics are unsynchronized (static text)");
         m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
         Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
         return;
