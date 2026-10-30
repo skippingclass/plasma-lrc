@@ -21,7 +21,7 @@ KCM.SimpleKCM {
     property alias cfg_preferredPlayer: preferredField.text
     property alias cfg_ignoredPlayers: ignoredField.text
     property alias cfg_lyricOffset: offsetField.value
-    property alias cfg_pollInterval: pollIntervalField.value
+    property int cfg_pollInterval: 2000
     property alias cfg_showTimestamp: showTimestampCheckBox.checked
     property alias cfg_pauseWhenIdle: pauseWhenIdleCheckBox.checked
     property alias cfg_pauseHideDelay: pauseHideDelayField.value
@@ -30,27 +30,34 @@ KCM.SimpleKCM {
 
     Kirigami.FormLayout {
 
-        QQC2.SpinBox {
-            id: pollIntervalField
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Player")
+        }
 
-            Kirigami.FormData.label: i18n("Update every:")
-            from: 500
-            to: 10000
-            stepSize: 500
-            textFromValue: function (value) {
-                return value + " ms";
-            }
-            valueFromText: function (text) {
-                const parsed = parseInt(text);
-                return isNaN(parsed) ? 2000 : parsed;
-            }
+        QQC2.TextField {
+            id: playerField
+
+            Kirigami.FormData.label: i18n("Lock to player:")
+            placeholderText: i18n("auto-detect (leave empty)")
+            Layout.fillWidth: true
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            visible: playerField.text.length > 0
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("With a name here the widget follows that player and nothing else. Leave empty to let the widget auto-detect active players.")
         }
 
         QQC2.TextField {
             id: preferredField
 
             Kirigami.FormData.label: i18n("Favourite player:")
-            placeholderText: i18n("spotify")
+            placeholderText: i18n("e.g. spotify")
             Layout.fillWidth: true
         }
 
@@ -61,15 +68,30 @@ KCM.SimpleKCM {
             visible: preferredField.text.length > 0
             wrapMode: Text.Wrap
             opacity: 0.75
-            text: i18n("Used while it is playing. Part of the name is enough, so \"chrome\" covers every chromium instance. If it is not playing, the widget keeps to the usual choice instead of waiting for it.")
+            text: i18n("Used while it is playing. Part of the name is enough (e.g. \"chrome\" covers every chromium instance).")
         }
 
         QQC2.TextField {
-            id: playerField
+            id: ignoredField
 
-            Kirigami.FormData.label: i18n("Lock to player:")
-            placeholderText: i18n("auto-detect")
+            Kirigami.FormData.label: i18n("Never ask:")
+            placeholderText: i18n("e.g. TelegramDesktop, chromium.instance1234")
             Layout.fillWidth: true
+        }
+
+        QQC2.Label {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+            visible: ignoredField.text.length > 0
+            wrapMode: Text.Wrap
+            opacity: 0.75
+            text: i18n("Applications to skip, separated by commas (for media sessions that are not music tracks).")
+        }
+
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Timing & Pauses")
         }
 
         QQC2.SpinBox {
@@ -95,49 +117,7 @@ KCM.SimpleKCM {
             wrapMode: Text.Wrap
             opacity: 0.75
             visible: offsetField.value !== 0
-            text: i18n("Positive delays the lyrics (shifts later if they are rushing ahead of the music); negative shows them earlier.")
-        }
-
-        QQC2.TextField {
-            id: ignoredField
-
-            Kirigami.FormData.label: i18n("Never ask:")
-            placeholderText: i18n("TelegramDesktop, chromium.instance1234")
-            Layout.fillWidth: true
-        }
-
-        QQC2.Label {
-            Layout.columnSpan: 2
-            Layout.fillWidth: true
-            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-            visible: ignoredField.text.length > 0
-            wrapMode: Text.Wrap
-            opacity: 0.75
-            text: i18n("Applications that implement MPRIS for things that are not tracks — a chat client reporting a voice message, for example — are recognised by their metadata and skipped on their own. This field is for the rest.")
-        }
-
-        QQC2.Label {
-            Layout.columnSpan: 2
-            Layout.fillWidth: true
-            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-            visible: playerField.text.length > 0
-            wrapMode: Text.Wrap
-            opacity: 0.75
-            text: i18n("With a name here the widget follows that player and nothing else, which is what you want when two of them report tracks. Part of the name is enough. While the player is not running the panel stays empty, and the widget picks it up as soon as it starts. Leave this empty to let the widget decide.")
-        }
-
-        QQC2.CheckBox {
-            id: showTimestampCheckBox
-
-            Kirigami.FormData.label: i18n("Timestamps:")
-            text: i18n("Prefix the lyrics with a [mm:ss] timestamp")
-        }
-
-        QQC2.CheckBox {
-            id: pauseWhenIdleCheckBox
-
-            Kirigami.FormData.label: i18n("Idle:")
-            text: i18n("Stop querying while nothing is playing")
+            text: i18n("Positive delays the lyrics (shifts later if they are rushing ahead); negative shows them earlier.")
         }
 
         QQC2.SpinBox {
@@ -156,13 +136,23 @@ KCM.SimpleKCM {
             }
         }
 
-        QQC2.Label {
-            Layout.columnSpan: 2
-            Layout.fillWidth: true
-            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-            wrapMode: Text.Wrap
-            opacity: 0.75
-            text: i18n("Clear lyrics after the player has remained paused for this many seconds (0 to keep them visible). Lyrics reappear as soon as playback resumes.")
+        QQC2.CheckBox {
+            id: showTimestampCheckBox
+
+            Kirigami.FormData.label: i18n("Timestamps:")
+            text: i18n("Prefix the lyrics with a [mm:ss] timestamp")
+        }
+
+        QQC2.CheckBox {
+            id: pauseWhenIdleCheckBox
+
+            Kirigami.FormData.label: i18n("Idle:")
+            text: i18n("Stop querying while nothing is playing")
+        }
+
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Mouse Actions")
         }
 
         QQC2.ComboBox {

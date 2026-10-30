@@ -31,34 +31,16 @@ KCM.SimpleKCM {
 
     Kirigami.FormLayout {
 
-        QQC2.CheckBox {
-            id: showIconCheckBox
-
-            Kirigami.FormData.label: i18n("Icon:")
-            text: i18n("Show a note next to the lyrics")
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Text & Layout")
         }
 
-        QQC2.CheckBox {
-            id: showTrackInfoCheckBox
+        QQC2.ComboBox {
+            id: textAlignmentBox
 
-            Kirigami.FormData.label: i18n("Tooltip:")
-            text: i18n("Show the current track in the tooltip")
-        }
-
-        QQC2.TextField {
-            id: placeholderField
-
-            Kirigami.FormData.label: i18n("No lyrics text:")
-            Layout.fillWidth: true
-        }
-
-        QQC2.CheckBox {
-            id: showNoteDuringPausesCheckBox
-
-            Kirigami.FormData.label: i18n("Pauses & intros:")
-            text: i18n("Show note symbol during intros and pauses")
-            QQC2.ToolTip.visible: hovered
-            QQC2.ToolTip.text: i18n("Display musical note symbol on the panel during track intros and instrumental pauses.")
+            Kirigami.FormData.label: i18n("Alignment:")
+            model: [i18n("Center"), i18n("Left")]
         }
 
         QQC2.SpinBox {
@@ -77,11 +59,23 @@ KCM.SimpleKCM {
             }
         }
 
+        QQC2.CheckBox {
+            id: fadeTransitionCheckBox
+
+            Kirigami.FormData.label: i18n("Transitions:")
+            text: i18n("Smooth fade animation between lines")
+        }
+
         QQC2.ComboBox {
             id: attributionLayoutBox
 
             Kirigami.FormData.label: i18n("Credit layout:")
             model: [i18n("Right of lyrics"), i18n("Below lyrics")]
+        }
+
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Karaoke & Highlighting")
         }
 
         QQC2.ComboBox {
@@ -92,6 +86,7 @@ KCM.SimpleKCM {
         }
 
         RowLayout {
+            visible: wordStyleBox.currentIndex === 2
             Kirigami.FormData.label: i18n("Highlight color:")
             spacing: Kirigami.Units.smallSpacing
 
@@ -128,6 +123,7 @@ KCM.SimpleKCM {
         }
 
         RowLayout {
+            visible: wordStyleBox.currentIndex === 2
             Kirigami.FormData.label: i18n("Color presets:")
             spacing: Kirigami.Units.smallSpacing
 
@@ -167,36 +163,49 @@ KCM.SimpleKCM {
             }
         }
 
-        QQC2.ComboBox {
-            id: textAlignmentBox
-
-            Kirigami.FormData.label: i18n("Alignment:")
-            model: [i18n("Center"), i18n("Left")]
-        }
-
-        QQC2.CheckBox {
-            id: fadeTransitionCheckBox
-
-            Kirigami.FormData.label: i18n("Transitions:")
-            text: i18n("Smooth fade animation between lines")
-        }
-
         QQC2.CheckBox {
             id: showBackingVocalsCheckBox
 
             Kirigami.FormData.label: i18n("Backing vocals:")
-            text: i18n("Experimental backing vocals")
+            text: i18n("Show backing vocals in parentheses")
             QQC2.ToolTip.visible: hovered
-            QQC2.ToolTip.text: i18n("Show backing vocals in parentheses with synchronized highlighting.")
+            QQC2.ToolTip.text: i18n("Show backing vocals with synchronized highlighting.")
         }
 
-        QQC2.Label {
-            Layout.columnSpan: 2
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Panel & Pauses")
+        }
+
+        QQC2.CheckBox {
+            id: showIconCheckBox
+
+            Kirigami.FormData.label: i18n("Icon:")
+            text: i18n("Show a note next to the lyrics")
+        }
+
+        QQC2.CheckBox {
+            id: showNoteDuringPausesCheckBox
+
+            Kirigami.FormData.label: i18n("Pauses & intros:")
+            text: i18n("Show note symbol during intros and pauses")
+            QQC2.ToolTip.visible: hovered
+            QQC2.ToolTip.text: i18n("Display musical note symbol on the panel during track intros and instrumental pauses.")
+        }
+
+        QQC2.TextField {
+            id: placeholderField
+
+            Kirigami.FormData.label: i18n("No lyrics text:")
+            placeholderText: "♪"
             Layout.fillWidth: true
-            Layout.maximumWidth: Kirigami.Units.gridUnit * 20
-            wrapMode: Text.Wrap
-            opacity: 0.75
-            text: i18n("Show backing vocals in parentheses with synchronized highlighting.")
+        }
+
+        QQC2.CheckBox {
+            id: showTrackInfoCheckBox
+
+            Kirigami.FormData.label: i18n("Tooltip:")
+            text: i18n("Show the current track in the tooltip")
         }
     }
 }

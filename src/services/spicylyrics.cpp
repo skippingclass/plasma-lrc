@@ -46,7 +46,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.3 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.4 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {

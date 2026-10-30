@@ -27,7 +27,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.3 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.4 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
