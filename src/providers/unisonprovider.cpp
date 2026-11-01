@@ -354,7 +354,7 @@ void UnisonProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.0 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -416,7 +416,7 @@ void UnisonProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
     while (base.endsWith(QLatin1Char('/'))) base.chop(1);
     QUrl url(QStringLiteral("%1/lyrics/%2").arg(base, candidateId));
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.0 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);

@@ -32,7 +32,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.0 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.1 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -57,16 +57,27 @@ QString LrcRedProvider::cacheDirectory()
     return base + QStringLiteral("/plasma-lrc/lrcred");
 }
 
-QString LrcRedProvider::makeCacheKey(const QString &title, const QString &artist, qint64 durationMs, const QString &isrc)
+QString LrcRedProvider::makeCacheKey(const QString &title, const QString &artist, qint64 durationMs, const QString &isrc,
+                                     const QString &expectedTitle, const QString &expectedArtist)
 {
     if (!isrc.isEmpty()) {
         return QStringLiteral("isrc_") + isrc.toLower().trimmed();
     }
-    const QString combined = QStringLiteral("%1\t%2\t%3")
+    const QString expTitle = !expectedTitle.trimmed().isEmpty() ? expectedTitle.trimmed().toLower() : title.trimmed().toLower();
+    const QString expArtist = !expectedArtist.trimmed().isEmpty() ? expectedArtist.trimmed().toLower() : artist.trimmed().toLower();
+    const QString combined = QStringLiteral("%1\t%2\t%3\t%4\t%5")
         .arg(title.trimmed().toLower(),
              artist.trimmed().toLower(),
-             QString::number(durationMs > 0 ? durationMs / 1000 : 0));
+             QString::number(durationMs > 0 ? durationMs / 1000 : 0),
+             expTitle,
+             expArtist);
     return QString::fromLatin1(QCryptographicHash::hash(combined.toUtf8(), QCryptographicHash::Sha1).toHex());
+}
+
+QString LrcRedProvider::makeCacheKey(const TrackMetadata &meta)
+{
+    return makeCacheKey(meta.title, meta.artist, meta.durationMs, meta.isrc,
+                        meta.effectiveExpectedTitle(), meta.effectiveExpectedArtist());
 }
 
 bool LrcRedProvider::canHandle(const TrackMetadata &meta) const
@@ -84,7 +95,7 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
     m_diagCache = QStringLiteral("Miss");
     m_currentMeta = meta;
     m_targetDurationMs = meta.durationMs;
-    m_currentCacheKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, meta.isrc);
+    m_currentCacheKey = makeCacheKey(meta);
     m_requestDeadline = QDeadlineTimer(kRequestTimeoutMs);
     m_candidateQueue.clear();
     m_currentCandidateIdx = 0;
@@ -110,7 +121,7 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
 
     // Check disk cache
     Lyrics cachedLyrics;
-    if (checkDiskCache(m_currentCacheKey, m_targetDurationMs, &cachedLyrics)) {
+    if (checkDiskCache(m_currentCacheKey, m_currentMeta, &cachedLyrics)) {
         const quint64 gen = m_currentGeneration;
         m_currentCacheKey.clear();
         m_diagCache = QStringLiteral("Hit (disk)");
@@ -174,30 +185,30 @@ void LrcRedProvider::cancel()
 
 void LrcRedProvider::invalidateCache(const TrackMetadata &meta)
 {
-    QStringList keysToInvalidate;
-    const QString mainKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, meta.isrc);
-    if (!mainKey.isEmpty()) {
-        keysToInvalidate.append(mainKey);
-    }
-    if (!meta.isrc.isEmpty() && !meta.title.isEmpty()) {
-        const QString fallbackKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, QString());
-        if (!fallbackKey.isEmpty() && fallbackKey != mainKey) {
-            keysToInvalidate.append(fallbackKey);
-        }
-    }
+    const QVector<TrackMetadata> variants = generateSearchVariants(meta);
+    QVector<TrackMetadata> allMetas = variants;
+    allMetas.append(meta);
 
-    for (const QString &key : keysToInvalidate) {
-        if (m_currentCacheKey == key) {
-            cancel();
+    for (const auto &v : allMetas) {
+        QStringList keysToInvalidate;
+        keysToInvalidate.append(makeCacheKey(v));
+        keysToInvalidate.append(makeCacheKey(v.title, v.artist, v.durationMs, v.isrc));
+        if (!v.isrc.isEmpty()) {
+            keysToInvalidate.append(makeCacheKey(v.title, v.artist, v.durationMs, QString(),
+                                                 v.effectiveExpectedTitle(), v.effectiveExpectedArtist()));
         }
-        m_negativeCache.remove(key);
-        const QString ttmlPath = cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".ttml");
-        if (QFile::exists(ttmlPath)) {
-            QFile::remove(ttmlPath);
-        }
-        const QString lrcPath = cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".lrc");
-        if (QFile::exists(lrcPath)) {
-            QFile::remove(lrcPath);
+
+        for (const QString &key : keysToInvalidate) {
+            if (key.isEmpty()) {
+                continue;
+            }
+            if (m_currentCacheKey == key) {
+                cancel();
+            }
+            m_negativeCache.remove(key);
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".ttml"));
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".lrc"));
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".meta"));
         }
     }
 }
@@ -579,6 +590,9 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
         candItem.ttmlUrl = ttmlUrl;
         candItem.lrcUrl = lrcUrl;
         candItem.isrc = candIsrc;
+        candItem.title = candTitle;
+        candItem.artist = candArtist;
+        candItem.durationMs = candDurMs;
         candItem.score = score;
         candItem.durationDiff = diff;
         matchingCandidates.append(candItem);
@@ -696,7 +710,15 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
     lyrics.attribution = QStringLiteral("lrc.red");
     lyrics.attributionUrl = lyrics.attributionData.providerUrl;
 
-    writeDiskCache(cacheKey, data, isTtml);
+    QString candTitle;
+    QString candArtist;
+    qint64 candDurMs = 0;
+    if (m_currentCandidateIdx >= 0 && m_currentCandidateIdx < m_candidateQueue.size()) {
+        candTitle = m_candidateQueue.at(m_currentCandidateIdx).title;
+        candArtist = m_candidateQueue.at(m_currentCandidateIdx).artist;
+        candDurMs = m_candidateQueue.at(m_currentCandidateIdx).durationMs;
+    }
+    writeDiskCache(cacheKey, data, isTtml, candTitle, candArtist, candDurMs);
     Q_EMIT lyricsLoaded(gen, lyrics, id());
 }
 
@@ -722,10 +744,34 @@ void LrcRedProvider::onTimeout()
     }
 }
 
-bool LrcRedProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, Lyrics *outLyrics)
+bool LrcRedProvider::checkDiskCache(const QString &cacheKey, const TrackMetadata &meta, Lyrics *outLyrics)
 {
     if (!outLyrics || cacheKey.isEmpty()) {
         return false;
+    }
+
+    const QString metaPath = cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".meta");
+    if (QFile::exists(metaPath)) {
+        QFile metaFile(metaPath);
+        if (metaFile.open(QIODevice::ReadOnly)) {
+            const QJsonObject obj = QJsonDocument::fromJson(metaFile.readAll()).object();
+            metaFile.close();
+            const QString candTitle = obj.value(QStringLiteral("title")).toString();
+            const QString candArtist = obj.value(QStringLiteral("artist")).toString();
+            const qint64 candDurMs = obj.value(QStringLiteral("durationMs")).toVariant().toLongLong();
+            if (!TrackMatch::matchCandidate(meta, candTitle, candArtist, candDurMs, 4000)) {
+                QFile::remove(metaPath);
+                QFile::remove(cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml"));
+                QFile::remove(cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".lrc"));
+                return false;
+            }
+        }
+    } else {
+        if (!meta.effectiveExpectedArtist().trimmed().isEmpty() && meta.isrc.trimmed().isEmpty()) {
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml"));
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".lrc"));
+            return false;
+        }
     }
 
     const QString ttmlPath = cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml");
@@ -737,7 +783,7 @@ bool LrcRedProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, 
             if (file.open(QIODevice::ReadOnly)) {
                 const QString content = QString::fromUtf8(file.readAll());
                 file.close();
-                if (TtmlParser::parseTtml(content, outLyrics, durationMs) && outLyrics->isUsable()) {
+                if (TtmlParser::parseTtml(content, outLyrics, meta.durationMs) && outLyrics->isUsable()) {
                     outLyrics->attributionData.provider = QStringLiteral("lrc.red");
                     outLyrics->attributionData.providerUrl = QStringLiteral("https://lrc.red");
                     outLyrics->attribution = QStringLiteral("lrc.red");
@@ -760,7 +806,7 @@ bool LrcRedProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, 
             if (file.open(QIODevice::ReadOnly)) {
                 const QString content = QString::fromUtf8(file.readAll());
                 file.close();
-                if (LrcParser::parseLrc(content, outLyrics, durationMs) && outLyrics->isUsable()) {
+                if (LrcParser::parseLrc(content, outLyrics, meta.durationMs) && outLyrics->isUsable()) {
                     outLyrics->attributionData.provider = QStringLiteral("lrc.red");
                     outLyrics->attributionData.providerUrl = QStringLiteral("https://lrc.red");
                     outLyrics->attribution = QStringLiteral("lrc.red");
@@ -777,7 +823,8 @@ bool LrcRedProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, 
     return false;
 }
 
-void LrcRedProvider::writeDiskCache(const QString &cacheKey, const QByteArray &data, bool isTtml)
+void LrcRedProvider::writeDiskCache(const QString &cacheKey, const QByteArray &data, bool isTtml,
+                                    const QString &candTitle, const QString &candArtist, qint64 candDurationMs)
 {
     if (cacheKey.isEmpty() || data.isEmpty()) {
         return;
@@ -788,6 +835,16 @@ void LrcRedProvider::writeDiskCache(const QString &cacheKey, const QByteArray &d
     QFile file(dirPath + QStringLiteral("/") + cacheKey + ext);
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(data);
+    }
+    if (!candTitle.isEmpty() || !candArtist.isEmpty()) {
+        QFile metaFile(dirPath + QStringLiteral("/") + cacheKey + QStringLiteral(".meta"));
+        if (metaFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QJsonObject obj;
+            obj[QStringLiteral("title")] = candTitle;
+            obj[QStringLiteral("artist")] = candArtist;
+            obj[QStringLiteral("durationMs")] = candDurationMs;
+            metaFile.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        }
     }
 }
 

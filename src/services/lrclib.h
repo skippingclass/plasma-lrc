@@ -45,8 +45,11 @@ public:
     static bool isDurationCompatible(double candDurationSec, qint64 targetDurationMs);
     static double maxAllowedDurationDiffSec(qint64 targetDurationMs);
     static bool validateCandidateIdentity(const QJsonObject &cand, const QString &expectedTitle, const QString &expectedArtist);
+    static bool validateCandidateIdentity(const QString &candTitle, const QString &candArtist, const QString &expectedTitle, const QString &expectedArtist);
 
-    static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs);
+    static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs,
+                                const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
+    static QString makeCacheKey(const TrackMetadata &meta);
     static QString cacheDirectory();
     void clearCache();
     static QByteArray userAgent();
@@ -85,7 +88,9 @@ private:
     QPointer<QNetworkReply> m_activeReply;
     struct CachedLyrics {
         Lyrics lyrics;
-        qint64 expiresAtMs;
+        qint64 expiresAtMs = 0;
+        QString candidateTitle;
+        QString candidateArtist;
     };
     QHash<QString, CachedLyrics> m_memoryCache;
 

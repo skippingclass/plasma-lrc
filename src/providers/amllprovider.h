@@ -28,7 +28,7 @@ public:
     QString displayName() const override { return QStringLiteral("AMLL TTML DB"); }
     Capabilities capabilities() const override
     {
-        return Capability::WordSync;
+        return Capability::WordSync | Capability::LineSync | Capability::SearchByTitleArtist;
     }
 
     bool canHandle(const TrackMetadata &meta) const override;
@@ -76,8 +76,9 @@ private:
     void handlePayload(const QByteArray &data, quint64 gen);
     void failCurrent(MissingReason reason, const QString &diagReason, bool is404 = false);
 
-    bool checkDiskCache(const QString &cacheKey, qint64 durationMs, Lyrics *outLyrics);
-    void writeDiskCache(const QString &cacheKey, const QByteArray &data);
+    bool checkDiskCache(const QString &cacheKey, const TrackMetadata &meta, Lyrics *outLyrics);
+    void writeDiskCache(const QString &cacheKey, const QByteArray &data,
+                        const QString &candTitle = QString(), const QStringList &candArtists = {}, qint64 candDurationMs = 0);
 
     QString m_apiBase;
     QNetworkAccessManager m_network;
@@ -87,6 +88,9 @@ private:
     TrackMetadata m_currentMeta;
     QString m_currentCacheKey;
     Step m_currentStep = Step::Idle;
+    QString m_selectedCandTitle;
+    QStringList m_selectedCandArtists;
+    qint64 m_selectedCandDurationMs = 0;
     QHash<QString, qint64> m_negativeCache; // cacheKey -> timestamp
     quint64 m_diagGeneration = 0;
     QString m_diagReason;

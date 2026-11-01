@@ -386,6 +386,7 @@ void LrcApplet::clearCache()
 {
     if (m_candidateController) {
         m_candidateController->close();
+        m_candidateController->clearCache();
     }
     if (m_pipeline) {
         m_pipeline->clearAllCaches();
@@ -604,6 +605,16 @@ void LrcApplet::readSettings()
             } else {
                 p->setEnabled(shouldEnable);
             }
+        }
+    }
+
+    if (m_manualCandidateSelected) {
+        const QStringList disabledList = disabledProvidersRaw.split(QLatin1Char(','), Qt::SkipEmptyParts);
+        const bool activeDisabled = disabledList.contains(m_activeProviderId)
+            || (m_activeProviderId == QLatin1String("spicy") && !m_useSpicy);
+        if (activeDisabled) {
+            m_manualCandidateSelected = false;
+            Q_EMIT manualCandidateSelectedChanged();
         }
     }
 
@@ -4090,6 +4101,10 @@ QVariantMap LrcApplet::diagnosticData() const
         .arg((normDurMs % 60000) / 1000, 2, 10, QLatin1Char('0'))
         .arg(normDurMs) : QStringLiteral("Unknown");
 
+    const QStringList attemptedVariants = m_pipeline ? m_pipeline->attemptedVariants() : QStringList();
+    search[QStringLiteral("attemptedVariants")] = attemptedVariants;
+    search[QStringLiteral("attemptedVariantsFormatted")] = attemptedVariants.isEmpty() ? QStringLiteral("None") : attemptedVariants.join(QStringLiteral(" → "));
+
     QString source = provider();
     if (source.isEmpty()) {
         source = attribution();
@@ -4224,6 +4239,17 @@ QString LrcApplet::diagnosticReport() const
     ts << QStringLiteral("  Source:       %1\n").arg(s.value(QStringLiteral("currentSource")).toString());
     ts << QStringLiteral("  Provider ID:  %1\n").arg(s.value(QStringLiteral("currentProviderId")).toString());
     ts << QStringLiteral("  Sync Quality: %1\n\n").arg(s.value(QStringLiteral("syncQuality")).toString());
+
+    ts << QStringLiteral("Attempted Search Variants:\n");
+    const QStringList attemptedVars = s.value(QStringLiteral("attemptedVariants")).toStringList();
+    if (attemptedVars.isEmpty()) {
+        ts << QStringLiteral("  None\n\n");
+    } else {
+        for (const QString &v : attemptedVars) {
+            ts << QStringLiteral("  - %1\n").arg(v);
+        }
+        ts << QStringLiteral("\n");
+    }
 
     ts << QStringLiteral("Provider Pipeline:\n");
     const QVariantList providers = s.value(QStringLiteral("providers")).toList();

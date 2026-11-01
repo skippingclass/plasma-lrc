@@ -56,7 +56,9 @@ public:
     }
 
     static QString cacheDirectory();
-    static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs, const QString &isrc);
+    static QString makeCacheKey(const QString &title, const QString &artist, qint64 durationMs, const QString &isrc,
+                                const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
+    static QString makeCacheKey(const TrackMetadata &meta);
 
 private Q_SLOTS:
     void onReplyFinished();
@@ -67,6 +69,9 @@ private:
         QString ttmlUrl;
         QString lrcUrl;
         QString isrc;
+        QString title;
+        QString artist;
+        qint64 durationMs = 0;
         int score = 0;
         double durationDiff = 999999.0;
     };
@@ -77,8 +82,9 @@ private:
     QUrl resolveCandidateUrl(const QString &rawUrl) const;
     void handleSearchReply(const QByteArray &data);
     void handleFileReply(const QByteArray &data, bool isTtml);
-    bool checkDiskCache(const QString &cacheKey, qint64 durationMs, Lyrics *outLyrics);
-    void writeDiskCache(const QString &cacheKey, const QByteArray &data, bool isTtml);
+    bool checkDiskCache(const QString &cacheKey, const TrackMetadata &meta, Lyrics *outLyrics);
+    void writeDiskCache(const QString &cacheKey, const QByteArray &data, bool isTtml,
+                        const QString &candTitle = QString(), const QString &candArtist = QString(), qint64 candDurationMs = 0);
 
     QString m_apiBase;
     QNetworkAccessManager m_network;

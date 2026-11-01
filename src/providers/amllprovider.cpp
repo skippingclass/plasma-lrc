@@ -29,7 +29,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.0 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.1 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
@@ -59,10 +59,14 @@ QString AmllProvider::makeCacheKey(const TrackMetadata &meta)
     if (!meta.spotifyTrackId.trimmed().isEmpty()) {
         return meta.spotifyTrackId.trimmed();
     }
-    const QString combined = QStringLiteral("%1\t%2\t%3")
+    const QString expTitle = meta.effectiveExpectedTitle().trimmed().toLower();
+    const QString expArtist = meta.effectiveExpectedArtist().trimmed().toLower();
+    const QString combined = QStringLiteral("%1\t%2\t%3\t%4\t%5")
         .arg(meta.title.trimmed().toLower(),
              meta.artist.trimmed().toLower(),
-             QString::number(meta.durationMs > 0 ? meta.durationMs / 1000 : 0));
+             QString::number(meta.durationMs > 0 ? meta.durationMs / 1000 : 0),
+             expTitle,
+             expArtist);
     return QString::fromLatin1(QCryptographicHash::hash(combined.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
@@ -81,6 +85,9 @@ void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
     m_diagCache = QStringLiteral("Miss");
     m_currentMeta = meta;
     m_currentCacheKey = makeCacheKey(meta);
+    m_selectedCandTitle.clear();
+    m_selectedCandArtists.clear();
+    m_selectedCandDurationMs = 0;
 
     // Check negative cache
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -98,7 +105,7 @@ void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
 
     // Check disk cache
     Lyrics cachedLyrics;
-    if (checkDiskCache(m_currentCacheKey, meta.durationMs, &cachedLyrics)) {
+    if (checkDiskCache(m_currentCacheKey, meta, &cachedLyrics)) {
         const quint64 gen = m_currentGeneration;
         m_currentGeneration = 0;
         m_diagCache = QStringLiteral("Hit (disk)");
@@ -138,27 +145,32 @@ void AmllProvider::cancel()
 
 void AmllProvider::invalidateCache(const TrackMetadata &meta)
 {
-    const QString key = makeCacheKey(meta);
-    if (key.isEmpty()) {
-        return;
-    }
+    const QVector<TrackMetadata> variants = generateSearchVariants(meta);
+    QVector<TrackMetadata> allMetas = variants;
+    allMetas.append(meta);
 
-    if (m_currentCacheKey == key) {
-        cancel();
-    }
+    for (const auto &v : allMetas) {
+        QStringList keys;
+        keys.append(makeCacheKey(v));
+        if (!v.spotifyTrackId.trimmed().isEmpty()) {
+            keys.append(v.spotifyTrackId.trimmed());
+        }
+        const QString oldCombined = QStringLiteral("%1\t%2\t%3")
+            .arg(v.title.trimmed().toLower(),
+                 v.artist.trimmed().toLower(),
+                 QString::number(v.durationMs > 0 ? v.durationMs / 1000 : 0));
+        keys.append(QString::fromLatin1(QCryptographicHash::hash(oldCombined.toUtf8(), QCryptographicHash::Sha1).toHex()));
 
-    m_negativeCache.remove(key);
-
-    const QString diskPath = cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".ttml");
-    if (QFile::exists(diskPath)) {
-        QFile::remove(diskPath);
-    }
-
-    if (!meta.spotifyTrackId.trimmed().isEmpty()) {
-        m_negativeCache.remove(meta.spotifyTrackId.trimmed());
-        const QString spotifyDiskPath = cacheDirectory() + QStringLiteral("/") + meta.spotifyTrackId.trimmed() + QStringLiteral(".ttml");
-        if (QFile::exists(spotifyDiskPath)) {
-            QFile::remove(spotifyDiskPath);
+        for (const QString &k : keys) {
+            if (k.isEmpty()) {
+                continue;
+            }
+            if (m_currentCacheKey == k) {
+                cancel();
+            }
+            m_negativeCache.remove(k);
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + k + QStringLiteral(".ttml"));
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + k + QStringLiteral(".meta"));
         }
     }
 }
@@ -343,7 +355,7 @@ void AmllProvider::handlePayload(const QByteArray &data, quint64 gen)
     lyrics.attribution = QStringLiteral("AMLL TTML DB");
     lyrics.attributionUrl = lyrics.attributionData.providerUrl;
 
-    writeDiskCache(m_currentCacheKey, trimmed.toUtf8());
+    writeDiskCache(m_currentCacheKey, trimmed.toUtf8(), m_selectedCandTitle, m_selectedCandArtists, m_selectedCandDurationMs);
 
     m_currentGeneration = 0;
     m_currentStep = Step::Idle;
@@ -484,6 +496,9 @@ void AmllProvider::onReplyFinished()
                     }
                 }
 
+                m_selectedCandTitle = candTitle;
+                m_selectedCandArtists = candArtists;
+                m_selectedCandDurationMs = candDurationMs;
                 startGetById(itemId, filename);
                 return;
             }
@@ -539,10 +554,36 @@ void AmllProvider::onTimeout()
     failCurrent(MissingReason::Unreachable, QStringLiteral("Request timed out"));
 }
 
-bool AmllProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, Lyrics *outLyrics)
+bool AmllProvider::checkDiskCache(const QString &cacheKey, const TrackMetadata &meta, Lyrics *outLyrics)
 {
     if (!outLyrics || cacheKey.isEmpty()) {
         return false;
+    }
+
+    const QString metaPath = cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".meta");
+    if (QFile::exists(metaPath)) {
+        QFile metaFile(metaPath);
+        if (metaFile.open(QIODevice::ReadOnly)) {
+            const QJsonObject obj = QJsonDocument::fromJson(metaFile.readAll()).object();
+            metaFile.close();
+            const QString candTitle = obj.value(QStringLiteral("title")).toString();
+            QStringList candArtists;
+            const QJsonArray artsArr = obj.value(QStringLiteral("artists")).toArray();
+            for (const auto &a : artsArr) {
+                candArtists.append(a.toString());
+            }
+            const qint64 candDurMs = obj.value(QStringLiteral("durationMs")).toVariant().toLongLong();
+            if (!TrackMatch::matchCandidate(meta, candTitle, candArtists, candDurMs, 4000)) {
+                QFile::remove(metaPath);
+                QFile::remove(cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml"));
+                return false;
+            }
+        }
+    } else {
+        if (!meta.effectiveExpectedArtist().trimmed().isEmpty() && meta.spotifyTrackId.trimmed().isEmpty()) {
+            QFile::remove(cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml"));
+            return false;
+        }
     }
 
     const QString path = cacheDirectory() + QStringLiteral("/") + cacheKey + QStringLiteral(".ttml");
@@ -563,7 +604,7 @@ bool AmllProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, Ly
     }
 
     const QString text = QString::fromUtf8(file.readAll());
-    if (TtmlParser::parseTtml(text, outLyrics, durationMs) && outLyrics->isUsable()) {
+    if (TtmlParser::parseTtml(text, outLyrics, meta.durationMs) && outLyrics->isUsable()) {
         outLyrics->attributionData.provider = QStringLiteral("AMLL TTML DB");
         outLyrics->attributionData.providerUrl = QStringLiteral("https://github.com/amll-dev/amll-ttml-db");
         outLyrics->attribution = QStringLiteral("AMLL TTML DB");
@@ -574,7 +615,8 @@ bool AmllProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, Ly
     return false;
 }
 
-void AmllProvider::writeDiskCache(const QString &cacheKey, const QByteArray &data)
+void AmllProvider::writeDiskCache(const QString &cacheKey, const QByteArray &data,
+                                  const QString &candTitle, const QStringList &candArtists, qint64 candDurationMs)
 {
     if (cacheKey.isEmpty() || data.isEmpty()) {
         return;
@@ -590,6 +632,21 @@ void AmllProvider::writeDiskCache(const QString &cacheKey, const QByteArray &dat
     QFile file(filePath);
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(data);
+    }
+
+    if (!candTitle.isEmpty() || !candArtists.isEmpty()) {
+        QFile metaFile(dirPath + QStringLiteral("/") + cacheKey + QStringLiteral(".meta"));
+        if (metaFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QJsonObject obj;
+            obj[QStringLiteral("title")] = candTitle;
+            QJsonArray arts;
+            for (const QString &a : candArtists) {
+                arts.append(a);
+            }
+            obj[QStringLiteral("artists")] = arts;
+            obj[QStringLiteral("durationMs")] = candDurationMs;
+            metaFile.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        }
     }
 }
 
@@ -612,7 +669,7 @@ void AmllProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId)
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.0 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -719,7 +776,7 @@ void AmllProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fetc
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.0 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);

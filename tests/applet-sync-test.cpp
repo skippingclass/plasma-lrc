@@ -2456,6 +2456,7 @@ public:
                     void cancel() override {}
 
                     void searchCandidates(const TrackMetadata &meta, quint64 searchId) override {
+                        ++searchCalls;
                         m_activeSearchId = searchId;
                         if (autoRespondCandidates) {
                             LyricCandidate cand;
@@ -2511,6 +2512,7 @@ public:
                     bool autoRespondFetch = false;
                     quint64 m_activeSearchId = 0;
                     quint64 m_activeFetchId = 0;
+                    int searchCalls = 0;
                     int cancelSearchCount = 0;
                     int cancelFetchCount = 0;
                 private:
@@ -2676,7 +2678,7 @@ public:
                 {
                     const quint64 sBefore = mockLrclib->m_activeSearchId;
                     widget.m_candidateController->startSearch(meta, {QStringLiteral("lrclib")}, {});
-                    check("regression 21 lifecycle: empty enabled list sets nomatches", widget.m_candidateController->status() == QStringLiteral("nomatches"));
+                    check("regression 21 lifecycle: empty enabled list sets all_disabled", widget.m_candidateController->status() == QStringLiteral("all_disabled"));
                     check("regression 21 lifecycle: 0 provider requests launched", mockLrclib->m_activeSearchId == sBefore);
                 }
 
@@ -2701,6 +2703,169 @@ public:
                     widget.applyMetadata(otherMeta);
                     check("regression 21 lifecycle: different song resets manual candidate", !widget.isManualCandidateSelected());
                     widget.m_repeatTrack = false;
+                }
+
+                // 5) Candidate cache: consecutive openings reuse fresh results with 0 network calls
+                {
+                    widget.m_candidateController->clearCache();
+                    mockLrclib->autoRespondCandidates = true;
+                    mockLrclib->searchCalls = 0;
+
+                    TrackMetadata cacheMeta;
+                    cacheMeta.title = QStringLiteral("Cache Title");
+                    cacheMeta.artist = QStringLiteral("Cache Artist");
+                    cacheMeta.durationMs = 180000;
+
+                    widget.m_candidateController->startSearch(cacheMeta, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    check("regression 21 cache: first search finishes ready", waitFor([&] {
+                        return widget.m_candidateController->status() == QStringLiteral("ready");
+                    }));
+                    check("regression 21 cache: candidate returned", widget.m_candidateController->rawCandidates().size() == 1);
+                    check("regression 21 cache: first search called provider once", mockLrclib->searchCalls == 1);
+                    check("regression 21 cache: isUsingCachedResults is false on first search", !widget.m_candidateController->isUsingCachedResults());
+
+                    // Second search for the same track
+                    widget.m_candidateController->startSearch(cacheMeta, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    check("regression 21 cache: second search immediately ready", widget.m_candidateController->status() == QStringLiteral("ready"));
+                    check("regression 21 cache: 0 network calls on second search", mockLrclib->searchCalls == 1);
+                    check("regression 21 cache: candidate preserved", widget.m_candidateController->rawCandidates().size() == 1);
+                    check("regression 21 cache: isUsingCachedResults is true", widget.m_candidateController->isUsingCachedResults());
+                }
+
+                // 6) In-flight protection: reopening during search does not restart
+                {
+                    mockLrclib->autoRespondCandidates = false;
+                    TrackMetadata inFlightMeta;
+                    inFlightMeta.title = QStringLiteral("InFlight Title");
+                    inFlightMeta.artist = QStringLiteral("InFlight Artist");
+
+                    widget.m_candidateController->startSearch(inFlightMeta, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    check("regression 21 cache: status is searching", widget.m_candidateController->status() == QStringLiteral("searching"));
+                    const quint64 sid1 = widget.m_candidateController->m_searchId;
+                    const int callsBefore = mockLrclib->searchCalls;
+
+                    // Reopen same track while searching
+                    widget.m_candidateController->startSearch(inFlightMeta, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    check("regression 21 cache: searchId not changed on reopen", widget.m_candidateController->m_searchId == sid1);
+                    check("regression 21 cache: no new provider call on reopen", mockLrclib->searchCalls == callsBefore);
+                    widget.m_candidateController->close();
+                }
+
+                // 7) Partial cache: cached providers return immediately while uncached are queried
+                {
+                    widget.m_candidateController->clearCache();
+                    mockLrclib->autoRespondCandidates = true;
+                    mockAmll->autoRespondCandidates = true;
+                    mockLrclib->searchCalls = 0;
+                    mockAmll->searchCalls = 0;
+
+                    TrackMetadata partMeta;
+                    partMeta.title = QStringLiteral("Partial Title");
+                    partMeta.artist = QStringLiteral("Partial Artist");
+
+                    // Step 1: query lrclib only so it gets cached
+                    widget.m_candidateController->startSearch(partMeta, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    check("regression 21 cache: lrclib search finishes", waitFor([&] {
+                        return widget.m_candidateController->status() == QStringLiteral("ready");
+                    }));
+                    check("regression 21 cache: lrclib called once", mockLrclib->searchCalls == 1);
+
+                    // Step 2: query both lrclib and amll
+                    // lrclib should be reused from cache without call, amll should be called
+                    widget.m_candidateController->startSearch(partMeta, {QStringLiteral("lrclib"), QStringLiteral("amll")}, {QStringLiteral("lrclib"), QStringLiteral("amll")});
+                    check("regression 21 cache: combined search finishes", waitFor([&] {
+                        return widget.m_candidateController->status() == QStringLiteral("ready");
+                    }));
+                    check("regression 21 cache: lrclib was not called again", mockLrclib->searchCalls == 1);
+                    check("regression 21 cache: amll was called once", mockAmll->searchCalls == 1);
+                    check("regression 21 cache: both candidates present", widget.m_candidateController->rawCandidates().size() == 2);
+                }
+
+                // 8) Search again failure preserves previous candidate list and sets warning
+                {
+                    check("regression 21 refresh: candidates present before refresh", widget.m_candidateController->rawCandidates().size() == 2);
+                    mockLrclib->autoRespondCandidates = false;
+                    mockAmll->autoRespondCandidates = false;
+
+                    widget.m_candidateController->searchAgain();
+                    check("regression 21 refresh: candidates preserved during searchAgain", widget.m_candidateController->rawCandidates().size() == 2);
+                    check("regression 21 refresh: hasUsableResults is true", widget.m_candidateController->hasUsableResults());
+
+                    const quint64 refSid = widget.m_candidateController->m_searchId;
+                    widget.m_candidateController->onCandidateSearchFailed(refSid, MissingReason::Unreachable, QStringLiteral("lrclib"));
+                    widget.m_candidateController->onCandidateSearchFailed(refSid, MissingReason::Unreachable, QStringLiteral("amll"));
+
+                    check("regression 21 refresh: status returned to ready after refresh failure", widget.m_candidateController->status() == QStringLiteral("ready"));
+                    check("regression 21 refresh: previous candidates still preserved", widget.m_candidateController->rawCandidates().size() == 2);
+                    check("regression 21 refresh: refreshErrorMessage set", !widget.m_candidateController->refreshErrorMessage().isEmpty());
+                }
+
+                // 9) 429 cooldown: provider skipped during cooldown
+                {
+                    widget.m_candidateController->clearCache();
+                    mockLrclib->autoRespondCandidates = false;
+                    mockLrclib->searchCalls = 0;
+
+                    TrackMetadata cdMeta1;
+                    cdMeta1.title = QStringLiteral("429 Track 1");
+                    cdMeta1.artist = QStringLiteral("Artist");
+
+                    widget.m_candidateController->startSearch(cdMeta1, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    const quint64 sid429 = widget.m_candidateController->m_searchId;
+                    widget.m_candidateController->onCandidateSearchFailed(sid429, MissingReason::Unreachable, QStringLiteral("lrclib"), 60);
+                    check("regression 21 cooldown: lrclib called for track 1", mockLrclib->searchCalls == 1);
+
+                    // Search different track during cooldown
+                    TrackMetadata cdMeta2;
+                    cdMeta2.title = QStringLiteral("429 Track 2");
+                    cdMeta2.artist = QStringLiteral("Artist");
+
+                    widget.m_candidateController->startSearch(cdMeta2, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    check("regression 21 cooldown: lrclib skipped during cooldown (searchCalls still 1)", mockLrclib->searchCalls == 1);
+                }
+
+                // 10) Candidate cache LRU eviction (max 20 contexts)
+                {
+                    widget.m_candidateController->clearCache();
+                    mockLrclib->autoRespondCandidates = true;
+
+                    for (int i = 0; i < 22; ++i) {
+                        TrackMetadata lruMeta;
+                        lruMeta.title = QStringLiteral("LRU Song %1").arg(i);
+                        lruMeta.artist = QStringLiteral("Artist");
+                        widget.m_candidateController->startSearch(lruMeta, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                        waitFor([&] { return widget.m_candidateController->status() == QStringLiteral("ready"); });
+                    }
+
+                    // Querying song 0 (which was evicted) should trigger a new search call
+                    const int callsBefore0 = mockLrclib->searchCalls;
+                    TrackMetadata song0;
+                    song0.title = QStringLiteral("LRU Song 0");
+                    song0.artist = QStringLiteral("Artist");
+                    widget.m_candidateController->startSearch(song0, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
+                    waitFor([&] { return widget.m_candidateController->status() == QStringLiteral("ready"); });
+                    check("regression 21 LRU: song 0 was evicted and required network call", mockLrclib->searchCalls > callsBefore0);
+                }
+
+                // 11) Disabling active manual provider in settings resets manualCandidateSelected
+                {
+                    widget.m_activeProviderId = QStringLiteral("lrclib");
+                    widget.m_manualCandidateSelected = true;
+                    check("regression 21 settings: manual selection true before disabling", widget.isManualCandidateSelected());
+
+                    bool signalEmitted = false;
+                    QObject::connect(&widget, &LrcApplet::manualCandidateSelectedChanged, [&]() {
+                        signalEmitted = true;
+                    });
+
+                    widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("disabledProviders"), QStringLiteral("lrclib,amll"));
+                    widget.readSettings();
+                    check("regression 21 settings: manual selection reset to false when provider disabled", !widget.isManualCandidateSelected());
+                    check("regression 21 settings: manualCandidateSelectedChanged emitted", signalEmitted);
+
+                    // Restore configuration
+                    widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("disabledProviders"), QString());
+                    widget.readSettings();
                 }
 
                 // ChooseMatchWindow.qml component verification

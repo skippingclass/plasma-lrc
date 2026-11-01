@@ -145,6 +145,22 @@ void normalizeTrackMetadata(TrackMetadata *meta)
     meta->searchNormalized = true;
 }
 
+TrackMetadata prepareCandidateSearchMetadata(const TrackMetadata &meta)
+{
+    TrackMetadata prepared = meta;
+    if (!prepared.searchNormalized) {
+        if (prepared.isWebSession || prepared.artist.trimmed().isEmpty()) {
+            splitTrackArtistAndTitle(&prepared.artist, &prepared.title, prepared.isWebSession);
+        }
+        prepared.artist = cleanTrackArtist(prepared.artist);
+        prepared.title = cleanTrackTitle(prepared.title);
+        prepared.expectedArtist = !meta.expectedArtist.trimmed().isEmpty() ? meta.expectedArtist : prepared.artist;
+        prepared.expectedTitle = !meta.expectedTitle.trimmed().isEmpty() ? meta.expectedTitle : prepared.title;
+        prepared.searchNormalized = true;
+    }
+    return prepared;
+}
+
 QVector<TrackMetadata> generateSearchVariants(const TrackMetadata &meta)
 {
     QVector<TrackMetadata> variants;

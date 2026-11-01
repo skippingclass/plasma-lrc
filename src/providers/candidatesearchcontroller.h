@@ -9,6 +9,7 @@
 #include "lyricsprovider.h"
 #include "lyrictypes.h"
 
+#include <QHash>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -27,6 +28,9 @@ class CandidateSearchController : public QObject
     Q_PROPERTY(int selectedIndex READ selectedIndex WRITE setSelectedIndex NOTIFY selectedIndexChanged)
     Q_PROPERTY(bool searching READ isSearching NOTIFY statusChanged)
     Q_PROPERTY(bool loading READ isLoading NOTIFY statusChanged)
+    Q_PROPERTY(bool hasUsableResults READ hasUsableResults NOTIFY hasUsableResultsChanged)
+    Q_PROPERTY(bool isUsingCachedResults READ isUsingCachedResults NOTIFY isUsingCachedResultsChanged)
+    Q_PROPERTY(QString refreshErrorMessage READ refreshErrorMessage NOTIFY refreshErrorMessageChanged)
 
 public:
     explicit CandidateSearchController(QObject *parent = nullptr);
@@ -40,6 +44,9 @@ public:
 
     bool isSearching() const { return m_status == QLatin1String("searching"); }
     bool isLoading() const { return m_status == QLatin1String("loading"); }
+    bool hasUsableResults() const { return !m_candidates.isEmpty(); }
+    bool isUsingCachedResults() const { return m_isUsingCachedResults; }
+    QString refreshErrorMessage() const { return m_refreshErrorMessage; }
 
     Q_INVOKABLE void startSearch(const TrackMetadata &meta,
                                  const QStringList &providerOrder,
@@ -48,44 +55,91 @@ public:
     Q_INVOKABLE void useSelected();
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void close();
+    Q_INVOKABLE void clearRefreshErrorMessage();
+    Q_INVOKABLE void clearCache();
 
     void registerProvider(LyricsProvider *provider);
     LyricsProvider *provider(const QString &id) const;
 
     QList<LyricCandidate> rawCandidates() const { return m_candidates; }
 
+    static constexpr int kFreshTtlMs = 5 * 60 * 1000;    // 5 minutes
+    static constexpr int kStaleTtlMs = 30 * 60 * 1000;   // 30 minutes
+    static constexpr int kNegativeTtlMs = 60 * 1000;     // 60 seconds
+    static constexpr int kDefaultRateLimitCooldownMs = 60 * 1000; // 60 seconds
+    static constexpr int kMaxTrackContexts = 20;
+    static constexpr qint64 kMaxCacheSizeBytes = 16 * 1024 * 1024; // 16 MiB
+
 Q_SIGNALS:
     void statusChanged();
     void candidatesChanged();
     void selectedIndexChanged();
+    void hasUsableResultsChanged();
+    void isUsingCachedResultsChanged();
+    void refreshErrorMessageChanged();
     void candidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId);
     void candidateLyricsFailed(const QString &errorMessage);
 
 private Q_SLOTS:
     void onCandidatesFound(quint64 searchId, const QList<LyricCandidate> &candidates, const QString &providerId);
+    void onCandidateSearchFailed(quint64 searchId, MissingReason reason, const QString &providerId, int retryAfterSec = 0);
     void onCandidateLyricsLoaded(quint64 fetchId, const Lyrics &lyrics, const QString &providerId);
     void onCandidateLyricsFailed(quint64 fetchId, MissingReason reason, const QString &providerId);
     void onDeadlineTimeout();
     void onFetchDeadlineTimeout();
 
 private:
+    struct CachedProviderResult {
+        qint64 timestampMs = 0;
+        qint64 retryAfterUntilMs = 0;
+        QList<LyricCandidate> candidates;
+        bool isValidResponse = false;
+        bool isRateLimited = false;
+    };
+
+    struct TrackCandidateCache {
+        QString trackContextKey;
+        qint64 lastAccessedMs = 0;
+        QHash<QString, CachedProviderResult> providerResults;
+        qint64 estimatedSizeBytes = 0;
+    };
+
     struct ProviderEntry {
         LyricsProvider *provider = nullptr;
         int priority = 0;
         bool inFlight = false;
         bool completed = false;
+        bool failed = false;
+        bool isCached = false;
+        bool isStale = false;
         QList<LyricCandidate> foundCandidates;
     };
 
+    void startSearchInternal(bool isRefresh);
     void pumpQueue();
     void finishSearch();
     void rebuildCandidatesList();
     QString formatDuration(qint64 ms) const;
     QString formatSyncType(CandidateSyncType type) const;
 
+    static QString makeTrackContextKey(const TrackMetadata &meta);
+    static qint64 estimateCandidateSizeBytes(const QList<LyricCandidate> &candidates);
+    void evictCacheIfNeeded();
+    void purgeExpiredCache();
+
     QList<LyricsProvider *> m_allProviders;
     QList<ProviderEntry> m_activeProviders;
     QList<LyricCandidate> m_candidates;
+    QHash<QString, bool> m_candidateStaleMap; // providerId:candId -> isStale
+
+    QHash<QString, TrackCandidateCache> m_trackCache;
+    QHash<QString, qint64> m_providerRateLimitUntilMs;
+    qint64 m_totalCacheSizeBytes = 0;
+    QString m_currentContextKey;
+    bool m_isUsingCachedResults = false;
+    QString m_refreshErrorMessage;
+    bool m_isExplicitRefresh = false;
+    bool m_hadSuccessfulResponseInSearch = false;
 
     TrackMetadata m_currentMeta;
     QStringList m_providerOrder;

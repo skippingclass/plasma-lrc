@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.9.0 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.9.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -73,6 +73,7 @@ add_library(${PLUGIN_ID} SHARED
     src/parsers/yrcparser.h
     src/parsers/qrcdecoder.cpp
     src/parsers/qrcdecoder.h
+    src/parsers/tokenpunctuationhelper.h
     src/parsers/zlibcodec.cpp
     src/parsers/zlibcodec.h
     src/services/spicylyrics.cpp
@@ -180,6 +181,7 @@ if(PLASMA_LRC_TESTS)
         src/parsers/yrcparser.h
         src/parsers/qrcdecoder.cpp
         src/parsers/qrcdecoder.h
+        src/parsers/tokenpunctuationhelper.h
         src/parsers/lrcparser.cpp
         src/parsers/lrcparser.h
         src/parsers/ttmlparser.cpp

@@ -29,7 +29,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.0 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.1 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -63,10 +63,24 @@ void LrclibClient::clearCache()
     }
 }
 
-QString LrclibClient::makeCacheKey(const QString &title, const QString &artist, qint64 durationMs)
+QString LrclibClient::makeCacheKey(const QString &title, const QString &artist, qint64 durationMs,
+                                   const QString &expectedTitle, const QString &expectedArtist)
 {
-    const QString raw = QStringLiteral("%1|%2|%3").arg(title.trimmed().toLower(), artist.trimmed().toLower(), QString::number(durationMs / 1000));
+    const QString expTitle = !expectedTitle.trimmed().isEmpty() ? expectedTitle.trimmed().toLower() : title.trimmed().toLower();
+    const QString expArtist = !expectedArtist.trimmed().isEmpty() ? expectedArtist.trimmed().toLower() : artist.trimmed().toLower();
+    const QString raw = QStringLiteral("%1|%2|%3|%4|%5")
+        .arg(title.trimmed().toLower(),
+             artist.trimmed().toLower(),
+             QString::number(durationMs > 0 ? durationMs / 1000 : 0),
+             expTitle,
+             expArtist);
     return QString::fromLatin1(QCryptographicHash::hash(raw.toUtf8(), QCryptographicHash::Sha1).toHex());
+}
+
+QString LrclibClient::makeCacheKey(const TrackMetadata &meta)
+{
+    return makeCacheKey(meta.title, meta.artist, meta.durationMs,
+                        meta.effectiveExpectedTitle(), meta.effectiveExpectedArtist());
 }
 
 double LrclibClient::maxAllowedDurationDiffSec(qint64 targetDurationMs)
@@ -93,7 +107,7 @@ bool LrclibClient::isDurationCompatible(double candDurationSec, qint64 targetDur
     return diff <= maxDiff;
 }
 
-bool LrclibClient::validateCandidateIdentity(const QJsonObject &cand, const QString &expectedTitle, const QString &expectedArtist)
+bool LrclibClient::validateCandidateIdentity(const QString &candTitle, const QString &candArtist, const QString &expectedTitle, const QString &expectedArtist)
 {
     const QString expTitle = expectedTitle.trimmed();
     const QString expArtist = expectedArtist.trimmed();
@@ -101,32 +115,34 @@ bool LrclibClient::validateCandidateIdentity(const QJsonObject &cand, const QStr
         return true;
     }
 
-    QString candTitle = cand.value(QStringLiteral("trackName")).toString();
-    if (candTitle.isEmpty()) {
-        candTitle = cand.value(QStringLiteral("name")).toString();
-    }
-    candTitle = candTitle.trimmed();
-
-    QString candArtist = cand.value(QStringLiteral("artistName")).toString();
-    if (candArtist.isEmpty()) {
-        candArtist = cand.value(QStringLiteral("artist")).toString();
-    }
-    candArtist = candArtist.trimmed();
-
-    // Strict identity validation: missing title or missing artist when expected fails
     if (!expTitle.isEmpty()) {
-        if (candTitle.isEmpty() || !TrackMatch::matchTitles(candTitle, expTitle)) {
+        if (candTitle.trimmed().isEmpty() || !TrackMatch::matchTitles(candTitle.trimmed(), expTitle)) {
             return false;
         }
     }
 
     if (!expArtist.isEmpty()) {
-        if (candArtist.isEmpty() || !TrackMatch::matchArtists(candArtist, expArtist)) {
+        if (candArtist.trimmed().isEmpty() || !TrackMatch::matchArtists(candArtist.trimmed(), expArtist)) {
             return false;
         }
     }
 
     return true;
+}
+
+bool LrclibClient::validateCandidateIdentity(const QJsonObject &cand, const QString &expectedTitle, const QString &expectedArtist)
+{
+    QString candTitle = cand.value(QStringLiteral("trackName")).toString();
+    if (candTitle.isEmpty()) {
+        candTitle = cand.value(QStringLiteral("name")).toString();
+    }
+
+    QString candArtist = cand.value(QStringLiteral("artistName")).toString();
+    if (candArtist.isEmpty()) {
+        candArtist = cand.value(QStringLiteral("artist")).toString();
+    }
+
+    return validateCandidateIdentity(candTitle, candArtist, expectedTitle, expectedArtist);
 }
 
 int LrclibClient::scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs, const QString &expectedTitle, const QString &expectedArtist)
@@ -240,23 +256,38 @@ void LrclibClient::invalidate(const QString &title, const QString &artist, qint6
 
 void LrclibClient::invalidate(const TrackMetadata &meta)
 {
+    const QVector<TrackMetadata> variants = generateSearchVariants(meta);
+    QVector<TrackMetadata> allMetas = variants;
+    allMetas.append(meta);
     TrackMetadata normMeta = meta;
     normalizeTrackMetadata(&normMeta);
+    allMetas.append(normMeta);
 
-    const QString key = makeCacheKey(normMeta.title, normMeta.artist, normMeta.durationMs);
-    if (key.isEmpty()) {
-        return;
-    }
+    for (const auto &v : allMetas) {
+        const QString key = makeCacheKey(v);
+        if (key.isEmpty()) {
+            continue;
+        }
 
-    if (m_currentKey == key) {
-        cancel();
-    }
+        if (m_currentKey == key) {
+            cancel();
+        }
 
-    m_memoryCache.remove(key);
+        m_memoryCache.remove(key);
 
-    const QString diskPath = cacheDirectory() + QLatin1Char('/') + key + QStringLiteral(".json");
-    if (QFile::exists(diskPath)) {
-        QFile::remove(diskPath);
+        const QString diskPath = cacheDirectory() + QLatin1Char('/') + key + QStringLiteral(".json");
+        if (QFile::exists(diskPath)) {
+            QFile::remove(diskPath);
+        }
+
+        const QString legacyKey = makeCacheKey(v.title, v.artist, v.durationMs);
+        if (!legacyKey.isEmpty() && legacyKey != key) {
+            m_memoryCache.remove(legacyKey);
+            const QString legacyDisk = cacheDirectory() + QLatin1Char('/') + legacyKey + QStringLiteral(".json");
+            if (QFile::exists(legacyDisk)) {
+                QFile::remove(legacyDisk);
+            }
+        }
     }
 }
 
@@ -279,7 +310,8 @@ QString LrclibClient::request(const TrackMetadata &meta)
 
     // If title is empty, return stable key and queue missing asynchronously
     if (normMeta.title.isEmpty()) {
-        const QString emptyKey = makeCacheKey(QString(), normMeta.artist, normMeta.durationMs);
+        const QString emptyKey = makeCacheKey(QString(), normMeta.artist, normMeta.durationMs,
+                                             normMeta.effectiveExpectedTitle(), normMeta.effectiveExpectedArtist());
         m_currentKey = emptyKey;
         const quint64 gen = m_generation;
         QTimer::singleShot(0, this, [this, gen, key = emptyKey] {
@@ -290,7 +322,7 @@ QString LrclibClient::request(const TrackMetadata &meta)
         return emptyKey;
     }
 
-    m_currentKey = makeCacheKey(normMeta.title, normMeta.artist, normMeta.durationMs);
+    m_currentKey = makeCacheKey(normMeta);
     m_currentDurationMs = normMeta.durationMs;
     m_expectedTitle = normMeta.effectiveExpectedTitle();
     m_expectedArtist = normMeta.effectiveExpectedArtist();
@@ -300,16 +332,20 @@ QString LrclibClient::request(const TrackMetadata &meta)
     // Check memory cache
     const auto memIt = m_memoryCache.constFind(reqKey);
     if (memIt != m_memoryCache.constEnd() && QDateTime::currentMSecsSinceEpoch() < memIt->expiresAtMs) {
-        m_lastCacheStatus = QStringLiteral("Hit (memory)");
-        m_lastRejectionReason.clear();
-        QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics = memIt->lyrics] {
-            if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
-                cleanupAttemptState();
-                m_currentKey.clear();
-                Q_EMIT loaded(key, lyrics);
-            }
-        });
-        return reqKey;
+        if (validateCandidateIdentity(memIt->candidateTitle, memIt->candidateArtist, m_expectedTitle, m_expectedArtist)) {
+            m_lastCacheStatus = QStringLiteral("Hit (memory)");
+            m_lastRejectionReason.clear();
+            QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics = memIt->lyrics] {
+                if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
+                    cleanupAttemptState();
+                    m_currentKey.clear();
+                    Q_EMIT loaded(key, lyrics);
+                }
+            });
+            return reqKey;
+        } else {
+            m_memoryCache.remove(reqKey);
+        }
     }
 
     // Check disk cache with strict candidate identity validation
@@ -346,7 +382,11 @@ QString LrclibClient::request(const TrackMetadata &meta)
                         if (parseCandidate(diskObj, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
                             m_lastCacheStatus = QStringLiteral("Hit (disk)");
                             m_lastRejectionReason.clear();
-                            m_memoryCache.insert(reqKey, {lyrics, modified.toMSecsSinceEpoch() + kCacheTtlMs});
+                            QString candTitle = diskObj.value(QStringLiteral("trackName")).toString();
+                            if (candTitle.isEmpty()) candTitle = diskObj.value(QStringLiteral("name")).toString();
+                            QString candArtist = diskObj.value(QStringLiteral("artistName")).toString();
+                            if (candArtist.isEmpty()) candArtist = diskObj.value(QStringLiteral("artist")).toString();
+                            m_memoryCache.insert(reqKey, {lyrics, modified.toMSecsSinceEpoch() + kCacheTtlMs, candTitle, candArtist});
                             QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics] {
                                 if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
                                     cleanupAttemptState();
@@ -606,7 +646,11 @@ void LrclibClient::finishWithCandidate(const QJsonObject &cand)
     const QString key = m_currentKey;
     Lyrics lyrics;
     if (parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
-        m_memoryCache.insert(key, {lyrics, QDateTime::currentMSecsSinceEpoch() + kCacheTtlMs});
+        QString candTitle = cand.value(QStringLiteral("trackName")).toString();
+        if (candTitle.isEmpty()) candTitle = cand.value(QStringLiteral("name")).toString();
+        QString candArtist = cand.value(QStringLiteral("artistName")).toString();
+        if (candArtist.isEmpty()) candArtist = cand.value(QStringLiteral("artist")).toString();
+        m_memoryCache.insert(key, {lyrics, QDateTime::currentMSecsSinceEpoch() + kCacheTtlMs, candTitle, candArtist});
 
         // Write disk cache
         QDir().mkpath(cacheDirectory());

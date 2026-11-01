@@ -79,6 +79,21 @@ Window {
             showCloseButton: false
         }
 
+        // Non-blocking refresh warning message
+        Kirigami.InlineMessage {
+            id: refreshWarningMessage
+            Layout.fillWidth: true
+            type: Kirigami.MessageType.Warning
+            visible: root.controller ? (root.controller.refreshErrorMessage.length > 0) : false
+            text: root.controller ? root.controller.refreshErrorMessage : ""
+            showCloseButton: true
+            onVisibleChanged: {
+                if (!visible && root.controller) {
+                    root.controller.clearRefreshErrorMessage();
+                }
+            }
+        }
+
         // Searching / Loading indicator
         RowLayout {
             Layout.fillWidth: true
@@ -105,10 +120,34 @@ Window {
             Layout.fillHeight: true
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
-            text: i18n("No matching lyrics found.")
+            text: i18n("No matching lyrics found across enabled providers.")
             font.italic: true
             color: Kirigami.Theme.disabledTextColor
             visible: root.controller ? (root.controller.status === "nomatches") : false
+        }
+
+        // No response indicator
+        Controls.Label {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: i18n("No response received from lyric providers. Check connection and try again.")
+            font.italic: true
+            color: Kirigami.Theme.disabledTextColor
+            visible: root.controller ? (root.controller.status === "no_response") : false
+        }
+
+        // All providers disabled indicator
+        Controls.Label {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: i18n("All lyric providers are disabled in settings.")
+            font.italic: true
+            color: Kirigami.Theme.disabledTextColor
+            visible: root.controller ? (root.controller.status === "all_disabled") : false
         }
 
         // Candidate List
@@ -116,7 +155,7 @@ Window {
             id: scrollView
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: !root.controller || root.controller.status !== "nomatches"
+            visible: root.controller ? (root.controller.status !== "nomatches" && root.controller.status !== "no_response" && root.controller.status !== "all_disabled") : true
 
             ListView {
                 id: candidateList
@@ -132,6 +171,10 @@ Window {
 
                     width: candidateList.width
                     highlighted: root.controller && root.controller.selectedIndex === delegateItem.index
+
+                    Controls.ToolTip.visible: delegateItem.hovered
+                    Controls.ToolTip.delay: Kirigami.Units.toolTipDelay
+                    Controls.ToolTip.text: (delegateItem.modelData.title || "") + "\n" + (delegateItem.modelData.artist || "")
 
                     onClicked: {
                         if (root.controller) {
@@ -256,7 +299,7 @@ Window {
                 text: i18n("Use selected")
                 icon.name: "dialog-ok"
                 highlighted: true
-                enabled: root.controller ? (root.controller.selectedIndex >= 0 && root.controller.status === "ready") : false
+                enabled: root.controller ? (root.controller.selectedIndex >= 0 && (root.controller.status === "ready" || root.controller.status === "error")) : false
                 onClicked: {
                     if (root.controller) {
                         root.controller.useSelected();

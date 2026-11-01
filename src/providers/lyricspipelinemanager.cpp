@@ -401,7 +401,8 @@ void LyricsPipelineManager::pumpQueue()
         }
 
         if (inFlightCount == 0 && pendingIndex == -1) {
-            if (!m_hasEmittedResult && m_currentVariantIndex + 1 < m_searchVariants.size()) {
+            const bool canUpgradeToWord = (m_bestQuality != LyricsType::Syllable);
+            if ((!m_hasEmittedResult || canUpgradeToWord) && m_currentVariantIndex + 1 < m_searchVariants.size()) {
                 ++m_currentVariantIndex;
                 const TrackMetadata nextMeta = m_searchVariants.at(m_currentVariantIndex);
                 const QString nextDesc = nextMeta.artist.isEmpty() ? nextMeta.title : QStringLiteral("%1 — %2").arg(nextMeta.artist, nextMeta.title);
@@ -411,6 +412,10 @@ void LyricsPipelineManager::pumpQueue()
                     if (cand.provider && cand.provider->isEnabled()
                         && cand.provider->capabilities().testFlag(LyricsProvider::Capability::SearchByTitleArtist)
                         && cand.provider->canHandle(nextMeta)) {
+                        if (m_hasEmittedResult && m_bestQuality == LyricsType::Line
+                            && !cand.provider->capabilities().testFlag(LyricsProvider::Capability::WordSync)) {
+                            continue;
+                        }
                         cand.completed = false;
                         cand.inFlight = false;
                         auto &diag = m_providerDiagnostics[cand.provider->id()];

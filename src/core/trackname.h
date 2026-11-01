@@ -51,6 +51,12 @@ struct TrackMetadata;
 void normalizeTrackMetadata(TrackMetadata *meta);
 
 /**
+ * Prepares metadata for candidate search, splitting artist-title for web sessions
+ * and cleaning decorations while preserving expected artist and expected title.
+ */
+TrackMetadata prepareCandidateSearchMetadata(const TrackMetadata &meta);
+
+/**
  * Generates search query variants:
  * For browser sessions: up to 3 unique variants:
  * 1. Cleaned original metadata

@@ -208,6 +208,17 @@ Window {
                             Layout.fillWidth: true
                             elide: Text.ElideRight
                         }
+
+                        Controls.Label {
+                            text: i18n("Attempted variants:")
+                            font.bold: true
+                            Layout.alignment: Qt.AlignRight
+                        }
+                        Controls.Label {
+                            text: root.searchData.attemptedVariantsFormatted || i18n("(none)")
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                        }
                     }
 
                     // 2. Current Selection

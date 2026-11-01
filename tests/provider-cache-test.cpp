@@ -6,6 +6,7 @@
 #include "lrcredprovider.h"
 #include "spicylyricsprovider.h"
 #include "ttmlparser.h"
+#include "trackname.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -852,6 +853,195 @@ int main(int argc, char **argv)
         check("suite 5: clearAllCaches removes lrcred dummy", !QFile::exists(lrcredDummy));
         check("suite 5: clearAllCaches removes lrclib dummy", !QFile::exists(lrclibDummy));
         check("suite 5: clearAllCaches removes spicy dummy", !QFile::exists(spicyDummy));
+    }
+
+    // =========================================================================
+    // Suite 6: Identity Validation and Search Variant Invalidation
+    // =========================================================================
+    {
+        HttpTestServer server;
+        const QString amllBase = QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort());
+        AmllProvider amll(nullptr, amllBase);
+        LrcRedProvider lrcred(nullptr, amllBase);
+        LrclibProvider lrclib(nullptr, server.apiBase());
+
+        // 1. AMLL disk cache identity validation: reject foreign candidate
+        {
+            TrackMetadata meta;
+            meta.title = QStringLiteral("Identity Song");
+            meta.artist = QStringLiteral("Target Artist");
+            meta.durationMs = 200000;
+
+            const QString key = AmllProvider::makeCacheKey(meta);
+            const QString ttmlPath = AmllProvider::cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".ttml");
+            const QString metaPath = AmllProvider::cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".meta");
+
+            QDir().mkpath(AmllProvider::cacheDirectory());
+            QFile tf(ttmlPath);
+            tf.open(QIODevice::WriteOnly);
+            tf.write(kValidTtml);
+            tf.close();
+
+            QFile mf(metaPath);
+            mf.open(QIODevice::WriteOnly);
+            QJsonObject metaObj;
+            metaObj[QStringLiteral("title")] = QStringLiteral("Identity Song");
+            metaObj[QStringLiteral("artists")] = QJsonArray{QStringLiteral("Wrong Artist")};
+            metaObj[QStringLiteral("durationMs")] = 200000;
+            mf.write(QJsonDocument(metaObj).toJson());
+            mf.close();
+
+            check("suite 6: amll foreign cache files created", QFile::exists(ttmlPath) && QFile::exists(metaPath));
+
+            server.responses.append({404, "Not Found", 0, {}});
+            bool failed = false;
+            QObject::connect(&amll, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason, const QString &) {
+                failed = true;
+            });
+            amll.requestLyrics(meta, 1);
+            waitFor([&] { return failed; });
+
+            check("suite 6: amll rejected foreign disk cache and removed ttml", !QFile::exists(ttmlPath));
+            check("suite 6: amll rejected foreign disk cache and removed meta", !QFile::exists(metaPath));
+        }
+
+        // 2. LrcRed disk cache identity validation: reject foreign candidate
+        {
+            TrackMetadata meta;
+            meta.title = QStringLiteral("Identity Song 2");
+            meta.artist = QStringLiteral("Target Artist 2");
+            meta.durationMs = 200000;
+
+            const QString key = LrcRedProvider::makeCacheKey(meta);
+            const QString ttmlPath = LrcRedProvider::cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".ttml");
+            const QString metaPath = LrcRedProvider::cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".meta");
+
+            QDir().mkpath(LrcRedProvider::cacheDirectory());
+            QFile tf(ttmlPath);
+            tf.open(QIODevice::WriteOnly);
+            tf.write(kValidTtml);
+            tf.close();
+
+            QFile mf(metaPath);
+            mf.open(QIODevice::WriteOnly);
+            QJsonObject metaObj;
+            metaObj[QStringLiteral("title")] = QStringLiteral("Identity Song 2");
+            metaObj[QStringLiteral("artist")] = QStringLiteral("Wrong Artist 2");
+            metaObj[QStringLiteral("durationMs")] = 200000;
+            mf.write(QJsonDocument(metaObj).toJson());
+            mf.close();
+
+            check("suite 6: lrcred foreign cache files created", QFile::exists(ttmlPath) && QFile::exists(metaPath));
+
+            server.responses.append({404, "Not Found", 0, {}});
+            bool failed = false;
+            QObject::connect(&lrcred, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason, const QString &) {
+                failed = true;
+            });
+            lrcred.requestLyrics(meta, 2);
+            waitFor([&] { return failed; });
+
+            check("suite 6: lrcred rejected foreign disk cache and removed ttml", !QFile::exists(ttmlPath));
+            check("suite 6: lrcred rejected foreign disk cache and removed meta", !QFile::exists(metaPath));
+        }
+
+        // 3. LRCLIB disk cache identity validation: reject foreign candidate
+        {
+            TrackMetadata meta;
+            meta.title = QStringLiteral("Identity Song 3");
+            meta.artist = QStringLiteral("Target Artist 3");
+            meta.durationMs = 200000;
+
+            const QString key = LrclibClient::makeCacheKey(meta);
+            const QString jsonPath = LrclibClient::cacheDirectory() + QStringLiteral("/") + key + QStringLiteral(".json");
+
+            QDir().mkpath(LrclibClient::cacheDirectory());
+            QFile jf(jsonPath);
+            jf.open(QIODevice::WriteOnly);
+            QJsonObject obj;
+            obj[QStringLiteral("trackName")] = QStringLiteral("Identity Song 3");
+            obj[QStringLiteral("artistName")] = QStringLiteral("Wrong Artist 3");
+            obj[QStringLiteral("duration")] = 200.0;
+            obj[QStringLiteral("plainLyrics")] = QStringLiteral("plain");
+            obj[QStringLiteral("syncedLyrics")] = QStringLiteral("[00:01.00]Line");
+            jf.write(QJsonDocument(obj).toJson());
+            jf.close();
+
+            check("suite 6: lrclib foreign cache file created", QFile::exists(jsonPath));
+
+            server.responses.append({404, "Not Found", 0, {}});
+            bool failed = false;
+            QObject::connect(&lrclib, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason, const QString &) {
+                failed = true;
+            });
+            lrclib.requestLyrics(meta, 3);
+            check("suite 6: lrclib synchronously rejected foreign disk cache and removed json", !QFile::exists(jsonPath));
+            waitFor([&] { return failed; });
+
+            if (QFile::exists(jsonPath)) {
+                QFile rf(jsonPath);
+                if (rf.open(QIODevice::ReadOnly)) {
+                    const QJsonObject resObj = QJsonDocument::fromJson(rf.readAll()).object();
+                    check("suite 6: recreated cache is negative cache, not foreign lyrics", resObj.value(QStringLiteral("missing")).toBool());
+                }
+            }
+        }
+
+        // 4. Invalidation clears all search variants
+        {
+            TrackMetadata meta;
+            meta.isWebSession = true;
+            meta.title = QStringLiteral("WebArtist - WebTitle (Official Music Video)");
+            meta.artist = QStringLiteral("WebArtist");
+            meta.durationMs = 180000;
+
+            const QVector<TrackMetadata> variants = generateSearchVariants(meta);
+            check("suite 6: search variants generated", variants.size() >= 2);
+
+            QList<QString> amllFiles;
+            QList<QString> lrcredFiles;
+            QList<QString> lrclibFiles;
+
+            for (const auto &v : variants) {
+                const QString amllKey = AmllProvider::makeCacheKey(v);
+                const QString amllFile = AmllProvider::cacheDirectory() + QStringLiteral("/") + amllKey + QStringLiteral(".ttml");
+                QFile af(amllFile);
+                if (af.open(QIODevice::WriteOnly)) { af.write("dummy"); af.close(); amllFiles.append(amllFile); }
+
+                const QString lrcredKey = LrcRedProvider::makeCacheKey(v);
+                const QString lrcredFile = LrcRedProvider::cacheDirectory() + QStringLiteral("/") + lrcredKey + QStringLiteral(".ttml");
+                QFile rf(lrcredFile);
+                if (rf.open(QIODevice::WriteOnly)) { rf.write("dummy"); rf.close(); lrcredFiles.append(lrcredFile); }
+
+                const QString lrclibKey = LrclibClient::makeCacheKey(v);
+                const QString lrclibFile = LrclibClient::cacheDirectory() + QStringLiteral("/") + lrclibKey + QStringLiteral(".json");
+                QFile lf(lrclibFile);
+                if (lf.open(QIODevice::WriteOnly)) { lf.write("dummy"); lf.close(); lrclibFiles.append(lrclibFile); }
+            }
+
+            check("suite 6: all variant files written", !amllFiles.isEmpty() && !lrcredFiles.isEmpty() && !lrclibFiles.isEmpty());
+
+            amll.invalidateCache(meta);
+            lrcred.invalidateCache(meta);
+            lrclib.invalidateCache(meta);
+
+            bool allAmllPurged = true;
+            for (const QString &f : amllFiles) {
+                if (QFile::exists(f)) allAmllPurged = false;
+            }
+            bool allLrcredPurged = true;
+            for (const QString &f : lrcredFiles) {
+                if (QFile::exists(f)) allLrcredPurged = false;
+            }
+            bool allLrclibPurged = true;
+            for (const QString &f : lrclibFiles) {
+                if (QFile::exists(f)) allLrclibPurged = false;
+            }
+
+            check("suite 6: amll variant files purged", allAmllPurged);
+            check("suite 6: lrcred variant files purged", allLrcredPurged);
+            check("suite 6: lrclib variant files purged", allLrclibPurged);
+        }
     }
 
     if (s_failures == 0) {
