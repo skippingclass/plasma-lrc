@@ -31,7 +31,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.5 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.6 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -84,6 +84,14 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
     m_currentMeta = meta;
     m_targetDurationMs = meta.durationMs;
     m_currentCacheKey = makeCacheKey(meta.title, meta.artist, meta.durationMs, meta.isrc);
+    m_requestDeadline = QDeadlineTimer(kRequestTimeoutMs);
+    m_candidateQueue.clear();
+    m_currentCandidateIdx = 0;
+    m_currentCandidateTriedTtml = false;
+    m_currentCandidateTriedLrc = false;
+    m_hadTransientError = false;
+    m_hadUnsyncedCandidate = false;
+    m_hadTruncatedCandidates = false;
 
     // Check negative cache
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -112,12 +120,13 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
 
     // Direct ISRC query
     if (!meta.isrc.isEmpty()) {
-        QString directUrl = m_apiBase;
-        if (!directUrl.endsWith(QLatin1Char('/'))) {
-            directUrl.append(QLatin1Char('/'));
-        }
-        directUrl += QStringLiteral("s/%1.ttml").arg(meta.isrc);
-        startFileDownload(QUrl(directUrl), true, meta.isrc);
+        CandidateItem candItem;
+        candItem.isrc = meta.isrc;
+        m_candidateQueue.append(candItem);
+        m_currentCandidateIdx = 0;
+        m_currentCandidateTriedTtml = false;
+        m_currentCandidateTriedLrc = false;
+        tryNextCandidateOrFormat();
         return;
     }
 
@@ -151,6 +160,13 @@ void LrcRedProvider::cancel()
     m_currentCacheKey.clear();
     m_currentGeneration = 0;
     m_currentMeta = TrackMetadata{};
+    m_candidateQueue.clear();
+    m_currentCandidateIdx = 0;
+    m_currentCandidateTriedTtml = false;
+    m_currentCandidateTriedLrc = false;
+    m_hadTransientError = false;
+    m_hadUnsyncedCandidate = false;
+    m_hadTruncatedCandidates = false;
 }
 
 void LrcRedProvider::invalidateCache(const TrackMetadata &meta)
@@ -185,7 +201,6 @@ void LrcRedProvider::invalidateCache(const TrackMetadata &meta)
 
 void LrcRedProvider::clearAllCaches()
 {
-    cancel();
     m_negativeCache.clear();
     const QString dir = cacheDirectory();
     if (QDir(dir).exists()) {
@@ -201,8 +216,23 @@ void LrcRedProvider::clearAllCaches()
     }
 }
 
+QUrl LrcRedProvider::resolveCandidateUrl(const QString &rawUrl) const
+{
+    QUrl u(rawUrl);
+    if (u.isRelative()) {
+        return QUrl(m_apiBase).resolved(u);
+    }
+    return u;
+}
+
 void LrcRedProvider::startSearch(const QString &query)
 {
+    const qint64 remaining = m_requestDeadline.remainingTime();
+    if (remaining <= 0) {
+        onTimeout();
+        return;
+    }
+
     QString searchUrl = m_apiBase;
     if (!searchUrl.endsWith(QLatin1Char('/'))) {
         searchUrl.append(QLatin1Char('/'));
@@ -222,11 +252,17 @@ void LrcRedProvider::startSearch(const QString &query)
     m_currentReply->setProperty("action", "search");
     connect(m_currentReply, &QNetworkReply::finished, this, &LrcRedProvider::onReplyFinished);
 
-    m_watchdog.start(kRequestTimeoutMs);
+    m_watchdog.start(qBound(500LL, remaining, static_cast<qint64>(kRequestTimeoutMs)));
 }
 
 void LrcRedProvider::startFileDownload(const QUrl &url, bool isTtml, const QString &fallbackIsrc)
 {
+    const qint64 remaining = m_requestDeadline.remainingTime();
+    if (remaining <= 0) {
+        onTimeout();
+        return;
+    }
+
     QNetworkRequest request{url};
     request.setHeader(QNetworkRequest::UserAgentHeader, s_userAgent);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
@@ -239,7 +275,92 @@ void LrcRedProvider::startFileDownload(const QUrl &url, bool isTtml, const QStri
     }
     connect(m_currentReply, &QNetworkReply::finished, this, &LrcRedProvider::onReplyFinished);
 
-    m_watchdog.start(kRequestTimeoutMs);
+    m_watchdog.start(qBound(500LL, remaining, static_cast<qint64>(kRequestTimeoutMs)));
+}
+
+void LrcRedProvider::tryNextCandidateOrFormat()
+{
+    const quint64 gen = m_currentGeneration;
+    const QString cacheKey = m_currentCacheKey;
+    if (cacheKey.isEmpty() || gen == 0) {
+        return;
+    }
+
+    if (m_requestDeadline.hasExpired()) {
+        onTimeout();
+        return;
+    }
+
+    while (m_currentCandidateIdx < m_candidateQueue.size()) {
+        const CandidateItem &cand = m_candidateQueue.at(m_currentCandidateIdx);
+
+        // 1. Try TTML if available and not yet tried
+        if (!cand.ttmlUrl.isEmpty() && !m_currentCandidateTriedTtml) {
+            m_currentCandidateTriedTtml = true;
+            startFileDownload(resolveCandidateUrl(cand.ttmlUrl), true, cand.isrc);
+            return;
+        }
+
+        // 2. Try LRC if available and not yet tried
+        if (!cand.lrcUrl.isEmpty() && !m_currentCandidateTriedLrc) {
+            m_currentCandidateTriedLrc = true;
+            startFileDownload(resolveCandidateUrl(cand.lrcUrl), false, cand.isrc);
+            return;
+        }
+
+        // 3. Candidate with isrc fallback
+        if (!cand.isrc.isEmpty()) {
+            if (!m_currentCandidateTriedTtml) {
+                m_currentCandidateTriedTtml = true;
+                QString directUrl = m_apiBase;
+                if (!directUrl.endsWith(QLatin1Char('/'))) {
+                    directUrl.append(QLatin1Char('/'));
+                }
+                directUrl += QStringLiteral("s/%1.ttml").arg(cand.isrc);
+                startFileDownload(QUrl(directUrl), true, cand.isrc);
+                return;
+            }
+            if (!m_currentCandidateTriedLrc) {
+                m_currentCandidateTriedLrc = true;
+                QString directUrl = m_apiBase;
+                if (!directUrl.endsWith(QLatin1Char('/'))) {
+                    directUrl.append(QLatin1Char('/'));
+                }
+                directUrl += QStringLiteral("s/%1.lrc").arg(cand.isrc);
+                startFileDownload(QUrl(directUrl), false, QString());
+                return;
+            }
+        }
+
+        // Advance to next candidate
+        ++m_currentCandidateIdx;
+        m_currentCandidateTriedTtml = false;
+        m_currentCandidateTriedLrc = false;
+    }
+
+    // Queue exhausted
+    m_currentCacheKey.clear();
+    const bool canNegativeCache = !m_hadTruncatedCandidates && !m_hadTransientError;
+    if (m_hadUnsyncedCandidate && !m_hadTransientError) {
+        m_diagReason = m_hadTruncatedCandidates
+            ? QStringLiteral("Checked candidates are unsynchronized (remaining candidates not evaluated)")
+            : QStringLiteral("Lyrics are unsynchronized (static text)");
+        if (canNegativeCache) {
+            m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+        }
+        Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
+    } else if (m_hadTransientError) {
+        m_diagReason = QStringLiteral("Transient network or parsing error");
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+    } else {
+        m_diagReason = m_hadTruncatedCandidates
+            ? QStringLiteral("Candidate limit reached without usable lyrics (remaining candidates not evaluated)")
+            : QStringLiteral("Track not found in database");
+        if (canNegativeCache) {
+            m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+        }
+        Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+    }
 }
 
 void LrcRedProvider::onReplyFinished()
@@ -263,37 +384,34 @@ void LrcRedProvider::onReplyFinished()
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
     if (reply->error() != QNetworkReply::NoError || statusCode != 200) {
-        const QString fallbackIsrc = reply->property("fallbackIsrc").toString();
-        const bool isTtml = reply->property("isTtml").toBool();
-        if (action == QLatin1String("download") && isTtml && !fallbackIsrc.isEmpty()) {
-            QString directUrl = m_apiBase;
-            if (!directUrl.endsWith(QLatin1Char('/'))) {
-                directUrl.append(QLatin1Char('/'));
+        if (action == QLatin1String("search")) {
+            m_currentCacheKey.clear();
+            if (statusCode == 404) {
+                m_diagReason = QStringLiteral("Track not found in database (HTTP 404)");
+                m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+                Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+            } else if (statusCode == 429) {
+                m_diagReason = QStringLiteral("Rate limit reached (HTTP 429)");
+                Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            } else if (statusCode >= 500) {
+                m_diagReason = QStringLiteral("HTTP server error (%1)").arg(statusCode);
+                Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            } else if (reply->error() != QNetworkReply::NoError) {
+                m_diagReason = QStringLiteral("Network error (%1)").arg(reply->errorString());
+                Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            } else {
+                m_diagReason = QStringLiteral("HTTP error (%1)").arg(statusCode);
+                Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
             }
-            directUrl += QStringLiteral("s/%1.lrc").arg(fallbackIsrc);
-            startFileDownload(QUrl(directUrl), false, QString());
             return;
         }
 
-        m_currentCacheKey.clear();
-        // Negative cache ONLY on confirmed 404 Not Found!
-        // Never on transient network errors, 429, 5xx, or status 0.
+        // Action is download
         if (statusCode == 404) {
-            m_diagReason = QStringLiteral("Track not found in database (HTTP 404)");
-            m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
-            Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
-        } else if (statusCode == 429) {
-            m_diagReason = QStringLiteral("Rate limit reached (HTTP 429)");
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
-        } else if (statusCode >= 500) {
-            m_diagReason = QStringLiteral("HTTP server error (%1)").arg(statusCode);
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
-        } else if (reply->error() != QNetworkReply::NoError) {
-            m_diagReason = QStringLiteral("Network error (%1)").arg(reply->errorString());
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            tryNextCandidateOrFormat();
         } else {
-            m_diagReason = QStringLiteral("HTTP error (%1)").arg(statusCode);
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            m_hadTransientError = true;
+            tryNextCandidateOrFormat();
         }
         return;
     }
@@ -350,13 +468,12 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
     target.title = target.title.trimmed();
     target.artist = target.artist.trimmed();
 
-    QJsonObject bestHit;
-    int bestScore = -1;
-    double bestDurationDiff = 999999.0;
     bool hadTitleMismatch = false;
     bool hadArtistMismatch = false;
     bool hadDurationMismatch = false;
     bool hadMissingFiles = false;
+
+    QVector<CandidateItem> matchingCandidates;
 
     for (const auto &val : hits) {
         if (!val.isObject()) {
@@ -444,14 +561,16 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
             score += 10;
         }
 
-        if (score > bestScore || (score == bestScore && diff < bestDurationDiff)) {
-            bestScore = score;
-            bestDurationDiff = diff;
-            bestHit = cand;
-        }
+        CandidateItem candItem;
+        candItem.ttmlUrl = ttmlUrl;
+        candItem.lrcUrl = lrcUrl;
+        candItem.isrc = candIsrc;
+        candItem.score = score;
+        candItem.durationDiff = diff;
+        matchingCandidates.append(candItem);
     }
 
-    if (bestHit.isEmpty()) {
+    if (matchingCandidates.isEmpty()) {
         if (hadTitleMismatch && !hadArtistMismatch && !hadDurationMismatch && !hadMissingFiles) {
             m_diagReason = QStringLiteral("Candidate title mismatch");
         } else if (hadArtistMismatch && !hadTitleMismatch && !hadDurationMismatch && !hadMissingFiles) {
@@ -469,42 +588,30 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
         return;
     }
 
-    const QJsonObject files = bestHit.value(QStringLiteral("files")).toObject();
-    const QString ttmlUrl = files.value(QStringLiteral("ttml")).toString();
-    const QString lrcUrl = files.value(QStringLiteral("lrc")).toString();
-    const QString isrc = bestHit.value(QStringLiteral("isrc")).toString();
-
-    auto resolveUrl = [this](const QString &rawUrl) -> QUrl {
-        QUrl u(rawUrl);
-        if (u.isRelative()) {
-            return QUrl(m_apiBase).resolved(u);
+    std::sort(matchingCandidates.begin(), matchingCandidates.end(), [](const CandidateItem &a, const CandidateItem &b) {
+        if (a.score != b.score) {
+            return a.score > b.score;
         }
-        return u;
-    };
+        return a.durationDiff < b.durationDiff;
+    });
 
-    if (!ttmlUrl.isEmpty()) {
-        startFileDownload(resolveUrl(ttmlUrl), true, isrc);
-    } else if (!lrcUrl.isEmpty()) {
-        startFileDownload(resolveUrl(lrcUrl), false, isrc);
-    } else if (!isrc.isEmpty()) {
-        QString directUrl = m_apiBase;
-        if (!directUrl.endsWith(QLatin1Char('/'))) {
-            directUrl.append(QLatin1Char('/'));
-        }
-        directUrl += QStringLiteral("s/%1.ttml").arg(isrc);
-        startFileDownload(QUrl(directUrl), true, isrc);
-    } else {
-        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
-        m_currentCacheKey.clear();
-        Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+    m_candidateQueue.clear();
+    const int count = qMin(3, matchingCandidates.size());
+    m_hadTruncatedCandidates = (matchingCandidates.size() > count);
+    for (int i = 0; i < count; ++i) {
+        m_candidateQueue.append(matchingCandidates.at(i));
     }
+    m_currentCandidateIdx = 0;
+    m_currentCandidateTriedTtml = false;
+    m_currentCandidateTriedLrc = false;
+
+    tryNextCandidateOrFormat();
 }
 
 void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
 {
     const quint64 gen = m_currentGeneration;
     const QString cacheKey = m_currentCacheKey;
-    m_currentCacheKey.clear();
 
     if (cacheKey.isEmpty() || gen == 0) {
         return;
@@ -515,14 +622,15 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
 
     if (trimmed.isEmpty() || trimmed.startsWith(QLatin1String("<!DOCTYPE"), Qt::CaseInsensitive)
         || trimmed.startsWith(QLatin1String("<html"), Qt::CaseInsensitive)) {
-        // Malformed transient response (HTML error page, empty data)
-        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        m_hadTransientError = true;
+        tryNextCandidateOrFormat();
         return;
     }
 
     if (isTtml) {
         if (!trimmed.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            m_hadTransientError = true;
+            tryNextCandidateOrFormat();
             return;
         }
         QXmlStreamReader xmlReader(trimmed);
@@ -534,15 +642,15 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
             }
         }
         if (xmlReader.hasError() || !hasTt) {
-            // Malformed / truncated XML transient response
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            m_hadTransientError = true;
+            tryNextCandidateOrFormat();
             return;
         }
     } else {
         const QJsonDocument jsonDoc = QJsonDocument::fromJson(data);
         if (!jsonDoc.isNull() && (jsonDoc.isObject() || jsonDoc.isArray())) {
-            // Malformed / JSON response instead of LRC
-            Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+            m_hadTransientError = true;
+            tryNextCandidateOrFormat();
             return;
         }
     }
@@ -557,19 +665,18 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
     }
 
     if (!ok && lyrics.type != LyricsType::Static) {
-        // Parsing error in payload -> transient Unreachable, NO negative cache
-        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        m_hadTransientError = true;
+        tryNextCandidateOrFormat();
         return;
     }
 
     if (!lyrics.isUsable() || lyrics.type == LyricsType::Static) {
-        // Valid text/TTML, but confirmed unsynced
-        m_diagReason = QStringLiteral("Lyrics are unsynchronized (static text)");
-        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
-        Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
+        m_hadUnsyncedCandidate = true;
+        tryNextCandidateOrFormat();
         return;
     }
 
+    m_currentCacheKey.clear();
     lyrics.attributionData.provider = QStringLiteral("lrc.red");
     lyrics.attributionData.providerUrl = QStringLiteral("https://lrc.red");
     lyrics.attribution = QStringLiteral("lrc.red");
@@ -590,6 +697,8 @@ void LrcRedProvider::onTimeout()
         m_currentReply = nullptr;
     }
 
+    m_candidateQueue.clear();
+    m_currentCandidateIdx = 0;
     const quint64 gen = m_currentGeneration;
     const QString cacheKey = m_currentCacheKey;
     m_currentCacheKey.clear();

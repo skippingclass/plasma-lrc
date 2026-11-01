@@ -52,7 +52,6 @@ void SpicyLyricsProvider::invalidateCache(const TrackMetadata &meta)
 
 void SpicyLyricsProvider::clearAllCaches()
 {
-    cancel();
     if (m_spicy) {
         m_spicy->clearCache();
     }

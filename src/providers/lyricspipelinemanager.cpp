@@ -111,11 +111,14 @@ void LyricsPipelineManager::clearAllCaches()
         }
     }
 
-    // Sweep root applet cache directory
+    // Sweep root applet cache directory loose files (e.g. sync state)
     const QString commonCacheDir = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/plasma-lrc");
-    if (QDir(commonCacheDir).exists()) {
-        QDir(commonCacheDir).removeRecursively();
-        QDir().mkpath(commonCacheDir);
+    QDir rootDir(commonCacheDir);
+    if (rootDir.exists()) {
+        const QFileInfoList files = rootDir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
+        for (const QFileInfo &fi : files) {
+            QFile::remove(fi.absoluteFilePath());
+        }
     }
 
     // Sweep legacy plasmashell locations if any remain

@@ -6,9 +6,9 @@
 
 #include "lrclibprovider.h"
 
-LrclibProvider::LrclibProvider(QObject *parent)
+LrclibProvider::LrclibProvider(QObject *parent, const QUrl &apiBase)
     : LyricsProvider(parent)
-    , m_client(new LrclibClient(this))
+    , m_client(new LrclibClient(this, apiBase))
 {
     connect(m_client, &LrclibClient::loaded, this, &LrclibProvider::onLoaded);
     connect(m_client, &LrclibClient::missing, this, &LrclibProvider::onMissing);
@@ -43,7 +43,6 @@ void LrclibProvider::invalidateCache(const TrackMetadata &meta)
 
 void LrclibProvider::clearAllCaches()
 {
-    cancel();
     if (m_client) {
         m_client->clearCache();
     }

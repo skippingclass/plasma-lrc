@@ -11,6 +11,7 @@
 #include <QQmlEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
+#include <QThread>
 #include <cstdio>
 
 class FakeSettingsProvider : public LyricsProvider
@@ -2094,6 +2095,139 @@ public:
                     check("regression 17: QML swapped to line 1 with sungEnd=0",
                           qmlRoot->property("displayedLineIndex").toInt() == 1 && qmlRoot->property("sungEnd").toInt() == 0);
                 }
+            }
+
+            // Regression 18: Blacklist late response and fallback rejection
+            {
+                widget.m_trackTitle = QStringLiteral("Never Gonna Give You Up");
+                widget.m_trackArtist = QStringLiteral("Rick Astley");
+                widget.m_trackAlbum = QStringLiteral("Whenever You Need Somebody");
+                widget.m_trackLengthUs = 213000000;
+                widget.m_lookupGeneration = 100;
+
+                widget.toggleBlacklistCurrentTrack();
+                check("regression 18: track is blacklisted", widget.isCurrentTrackBlacklisted());
+                check("regression 18: text is empty after blacklist", widget.text().isEmpty());
+                check("regression 18: hasLyrics is false after blacklist", !widget.hasLyrics());
+
+                Lyrics lateLyrics;
+                lateLyrics.type = LyricsType::Line;
+                LyricLine ll; ll.text = QStringLiteral("Never gonna give you up"); ll.startMs = 0; ll.endMs = 5000;
+                lateLyrics.lines = {ll};
+
+                // Simulate late response from a provider
+                widget.onPipelineResolved(100, lateLyrics, QStringLiteral("lrcred"));
+                check("regression 18: late onPipelineResolved ignored for blacklisted track", !widget.hasLyrics());
+                check("regression 18: text remains empty after late resolved", widget.text().isEmpty());
+
+                // Simulate late all-failed
+                widget.onPipelineAllFailed(100, MissingReason::NotFound);
+                check("regression 18: late onPipelineAllFailed does not launch fallback", !widget.m_fetchingLrc);
+
+                // Verify unblacklisting via readSettings() resumes search
+                widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("blacklistedTracks"), QStringLiteral("Rick Astley - Never Gonna Give You Up"));
+                widget.readSettings();
+                check("regression 18: track is blacklisted via settings", widget.isCurrentTrackBlacklisted());
+                check("regression 18: m_lyricsLookupDone is true while blacklisted", widget.m_lyricsLookupDone);
+
+                // Unblacklist by updating settings
+                widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("blacklistedTracks"), QString());
+                widget.readSettings();
+                check("regression 18: track is no longer blacklisted after settings update", !widget.isCurrentTrackBlacklisted());
+                check("regression 18: m_lyricsLookupDone reset to false on unblacklist via settings", !widget.m_lyricsLookupDone);
+                check("regression 18: requestLyrics triggered (fetchingLrc is true)", widget.m_fetchingLrc);
+
+                widget.clearBlacklist();
+            }
+
+            // Regression 19: Backing vocal projection invalidation across providers with identical text
+            {
+                widget.clearLyrics();
+                widget.m_showBackingVocals = true;
+                widget.m_wordSynced = true;
+                widget.m_positionValid = true;
+                widget.m_pauseHidden = false;
+                widget.m_positionClock.invalidate();
+                widget.m_positionBaseMs = 1590; // effective 1500ms
+
+                // Provider A lyrics: 1 line, 3 words, all Voice::Main
+                Lyrics lyricsA;
+                lyricsA.type = LyricsType::Syllable;
+                LyricLine lineA;
+                lineA.text = QStringLiteral("Take on me");
+                lineA.startMs = 1000;
+                lineA.endMs = 3000;
+                LyricWord w1; w1.text = QStringLiteral("Take "); w1.startMs = 1000; w1.endMs = 1400; w1.textStart = 0; w1.textEnd = 5; w1.isBackground = false;
+                LyricWord w2; w2.text = QStringLiteral("on "); w2.startMs = 1400; w2.endMs = 1800; w2.textStart = 5; w2.textEnd = 8; w2.isBackground = false;
+                LyricWord w3; w3.text = QStringLiteral("me"); w3.startMs = 1800; w3.endMs = 2500; w3.textStart = 8; w3.textEnd = 10; w3.isBackground = false;
+                lineA.words = {w1, w2, w3};
+                lyricsA.lines = {lineA};
+
+                widget.onPipelineResolved(++widget.m_lookupGeneration, lyricsA, QStringLiteral("providerA"));
+                widget.updateWord();
+                check("regression 19: provider A projected revision matches lyrics revision", widget.m_cachedProjectedRevision == widget.m_lyricsRevision);
+                check("regression 19: provider A backing text is empty", widget.m_backingText.isEmpty());
+
+                // Provider B lyrics: SAME line text and word count, but "on" & "me" are Voice::Background
+                Lyrics lyricsB;
+                lyricsB.type = LyricsType::Syllable;
+                LyricLine lineB;
+                lineB.text = QStringLiteral("Take on me");
+                lineB.startMs = 1000;
+                lineB.endMs = 3000;
+                LyricWord wb1 = w1; wb1.isBackground = false;
+                LyricWord wb2 = w2; wb2.isBackground = true;
+                LyricWord wb3 = w3; wb3.isBackground = true;
+                lineB.words = {wb1, wb2, wb3};
+                lyricsB.lines = {lineB};
+
+                widget.onPipelineResolved(++widget.m_lookupGeneration, lyricsB, QStringLiteral("providerB"));
+                widget.updateWord();
+                check("regression 19: provider B reprojected despite identical line text", widget.m_cachedProjectedRevision == widget.m_lyricsRevision);
+                check("regression 19: provider B backing text is populated", !widget.m_backingText.isEmpty());
+            }
+
+            // Regression 20: Diagnostics metadata accuracy, wall-clock measurement age on pause and 1.5x rate
+            {
+                widget.clearLyrics();
+                widget.m_trackTitle = QStringLiteral("Shape of You (Official Music Video)");
+                widget.m_trackArtist = QStringLiteral("Ed Sheeran - Topic");
+                widget.m_trackAlbum = QStringLiteral("Divide [Deluxe]");
+                widget.m_trackLengthUs = 233000000; // 233s
+                widget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.spotify");
+
+                widget.requestLyrics();
+                const QVariantMap diag = widget.diagnosticData();
+                const QVariantMap search = diag.value(QStringLiteral("search")).toMap();
+                check("regression 20: raw title matches search query", search.value(QStringLiteral("rawTitle")).toString() == QStringLiteral("Shape of You (Official Music Video)"));
+                check("regression 20: normalized title is cleaned in diagnostics", search.value(QStringLiteral("normalizedTitle")).toString() == QStringLiteral("Shape of You"));
+                check("regression 20: normalized artist is cleaned in diagnostics", search.value(QStringLiteral("normalizedArtist")).toString() == QStringLiteral("Ed Sheeran"));
+
+                // Accepted MPRIS measurement
+                widget.setPlaying(true, true);
+                widget.onPlayerSeeked(75000000); // 75000ms
+                const QVariantMap sync1 = widget.diagnosticData().value(QStringLiteral("sync")).toMap();
+                check("regression 20: lastMprisPositionMs recorded accurately", sync1.value(QStringLiteral("lastMprisPositionMs")).toLongLong() == 75000);
+                check("regression 20: measurementAgeMs starts non-negative", sync1.value(QStringLiteral("measurementAgeMs")).toLongLong() >= 0);
+
+                // Pause playback: extrapolation clock stops (currentClockElapsedMs == 0), but wall-clock age advances
+                widget.setPlaying(false, true);
+                QThread::msleep(25);
+                const QVariantMap syncPaused = widget.diagnosticData().value(QStringLiteral("sync")).toMap();
+                check("regression 20: currentClockElapsedMs is 0 when paused", widget.currentClockElapsedMs() == 0);
+                check("regression 20: measurementAgeMs advances while paused", syncPaused.value(QStringLiteral("measurementAgeMs")).toLongLong() >= 20);
+
+                // Play at 1.5x rate
+                widget.m_playbackRate = 1.5;
+                widget.setPlaying(true, true);
+                widget.onPlayerSeeked(80000000);
+                QThread::msleep(20);
+                const QVariantMap syncRate = widget.diagnosticData().value(QStringLiteral("sync")).toMap();
+                const qint64 age = syncRate.value(QStringLiteral("measurementAgeMs")).toLongLong();
+                const qint64 scaledClock = syncRate.value(QStringLiteral("clockElapsedMs")).toLongLong();
+                check("regression 20: clockElapsedMs scales with 1.5x rate", scaledClock >= age);
+
+                widget.m_playbackRate = 1.0;
             }
         }
 

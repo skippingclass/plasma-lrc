@@ -7,6 +7,8 @@
 #include "lyricspipelinemanager.h"
 #include "lyricsprovider.h"
 #include "localprovider.h"
+#include "lrclibprovider.h"
+#include "http-test-server.h"
 
 #include <iostream>
 #include <QCoreApplication>
@@ -172,6 +174,11 @@ void runEventLoopWithTimeout(int timeoutMs)
 
 int main(int argc, char *argv[])
 {
+    QTemporaryDir testCache;
+    QTemporaryDir testConfig;
+    qputenv("XDG_CACHE_HOME", testCache.path().toUtf8());
+    qputenv("XDG_CONFIG_HOME", testConfig.path().toUtf8());
+
     QCoreApplication app(argc, argv);
 
     // Test 1: Priority order and successful fallback
@@ -748,6 +755,55 @@ int main(int argc, char *argv[])
         check("word-success-cancel: only p1 resolved", resolvedIds.size() == 1 && resolvedIds[0] == QStringLiteral("p1_word"));
         check("word-success-cancel: p2 was cancelled", p2->cancelCount() >= 1);
         check("word-success-cancel: p3 was not even called or cancelled", p3->callCount() == 0 || p3->cancelCount() >= 1);
+    }
+
+    // Test 18: clearAllCaches during in-flight requests does not cancel real HTTP provider
+    {
+        HttpTestServer server;
+        const QByteArray validLrcResponse = R"({
+            "id": 12345,
+            "trackName": "DelayedSong",
+            "artistName": "DelayedArtist",
+            "duration": 180,
+            "syncedLyrics": "[00:01.00] Real line from delayed LRCLIB\n[00:03.00] Second line"
+        })";
+        // 150ms delay on HTTP response
+        server.responses.append({200, validLrcResponse, 150, {}});
+
+        LyricsPipelineManager pipeline;
+        auto *lrclibProv = new LrclibProvider(&pipeline, server.apiBase());
+
+        pipeline.registerProvider(lrclibProv);
+        pipeline.setProviderOrder({QStringLiteral("lrclib")});
+
+        bool resolved = false;
+        QString resolvedId;
+        Lyrics resolvedLyrics;
+        QObject::connect(&pipeline, &LyricsPipelineManager::lyricsResolved,
+                         [&](quint64, const Lyrics &l, const QString &id) {
+            resolved = true;
+            resolvedId = id;
+            resolvedLyrics = l;
+        });
+
+        TrackMetadata meta;
+        meta.title = QStringLiteral("DelayedSong");
+        meta.artist = QStringLiteral("DelayedArtist");
+        meta.durationMs = 180000;
+        pipeline.requestLyrics(meta, 500);
+
+        // Wait until mock HTTP server has actually received the HTTP request,
+        // ensuring the request is strictly in flight and avoiding passing on warm cache.
+        check("clear-cache-real-http: request received by mock server",
+              waitFor([&] { return !server.requests.isEmpty(); }, 2000));
+
+        // Clear all caches while the HTTP request is in flight on the server
+        pipeline.clearAllCaches();
+
+        check("clear-cache-real-http: in-flight request not aborted, resolved successfully", waitFor([&] { return resolved; }, 2000));
+        check("clear-cache-real-http: resolved by lrclib", resolvedId == QStringLiteral("lrclib"));
+        check("clear-cache-real-http: lyrics usable", resolvedLyrics.isUsable());
+        check("clear-cache-real-http: line text verified", !resolvedLyrics.lines.isEmpty() && resolvedLyrics.lines[0].text == QStringLiteral("Real line from delayed LRCLIB"));
     }
 
     if (s_failed == 0) {

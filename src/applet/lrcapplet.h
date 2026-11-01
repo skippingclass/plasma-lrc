@@ -579,6 +579,8 @@ private:
     QString m_trackTitle;
     QString m_trackAlbum;
     QString m_trackUrl;
+    TrackMetadata m_lastSearchRawMeta;
+    TrackMetadata m_lastSearchNormalizedMeta;
     /// Track length as MPRIS reports it: microseconds.
     qint64 m_trackLengthUs;
     /// The id was made up by a browser for a media session of a web page.
@@ -614,6 +616,7 @@ private:
     QString m_customHighlightColor;
     QString m_blacklistedTracks;
     void saveBlacklist();
+    void handleCurrentTrackBlacklisted();
     bool isTrackBlacklisted(const QString &artist, const QString &title) const;
 
     QString m_spicyKey;
@@ -661,6 +664,8 @@ private:
 
     qint64 m_positionMs;
     qint64 m_positionBaseMs;
+    qint64 m_lastAcceptedMprisPositionMs = 0;
+    QElapsedTimer m_mprisMeasurementTimer;
     qint64 m_gaplessLeadMs = 0;
     double m_playbackRate = 1.0;
     QElapsedTimer m_positionClock;
@@ -722,8 +727,10 @@ private:
         QVector<BgPhrase> bgPhrases;
     };
     static ProjectedLine projectLineForSeparateRendering(const LyricLine &line);
+    quint64 m_lyricsRevision = 0;
     ProjectedLine m_cachedProjectedLine;
     int m_cachedProjectedLineIndex = -1;
+    quint64 m_cachedProjectedRevision = 0;
     QString m_cachedProjectedLineText;
     int m_cachedProjectedWordCount = -1;
     qint64 m_cachedProjectedStartMs = -1;

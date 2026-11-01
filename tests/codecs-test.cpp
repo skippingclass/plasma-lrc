@@ -14,6 +14,7 @@
 
 #include <iostream>
 #include <QString>
+#include <QTemporaryDir>
 #include <cstring>
 #include <zlib.h>
 
@@ -60,6 +61,10 @@ QByteArray compressZlib(const QByteArray &data)
 
 int main()
 {
+    QTemporaryDir testCache;
+    QTemporaryDir testConfig;
+    qputenv("XDG_CACHE_HOME", testCache.path().toUtf8());
+    qputenv("XDG_CONFIG_HOME", testConfig.path().toUtf8());
     // 1. ZlibCodec
     {
         const QByteArray original = "The quick brown fox jumps over the lazy dog. Plasma LRC test.";
@@ -298,6 +303,97 @@ int main()
                   qrcLyrics.lines[0].text == QStringLiteral("Hello world (Yeah)"), qrcLyrics.lines[0].text);
             check("qrc spacing & bg: (Yeah) marked as background",
                   qrcLyrics.lines[0].words.last().isBackground);
+        }
+
+        // QRC punctuation, commas, quotes, and standalone apostrophes spacing
+        {
+            const QString qrcPunct = QStringLiteral(
+                "[1000,4000]Hello,(1000,500)world(1500,500)fuckin'(2000,500)God(2500,500)\n"
+                "[5000,4000]Fuck(5000,500)'em(5500,500)you(6000,500)'re(6500,500)it(7000,500)'s(7500,500)\n"
+                "[9000,3000]Fuck(9000,300)'(9300,100)em(9400,300)\n"
+                "[12000,2000]Hello\"(12000,500)world(12500,500)\n"
+                "[14000,2000]can(14000,300)'(14300,100)t(14400,300)\n"
+                "[16000,3000]fuckin(16000,300)'(16300,100)God(16400,300)\n"
+                "[19000,3000]girls(19000,300)'(19300,100)night(19400,300)\n"
+                "[22000,4000]\"(22000,100)Hello(22100,300)\"(22400,100)world(22500,300)\n");
+            Lyrics pLyrics;
+            const bool pOk = QrcDecoder::parse(qrcPunct, &pLyrics);
+            check("qrc punctuation & apostrophe: parse ok", pOk && pLyrics.lines.size() == 8);
+            if (pLyrics.lines.size() == 8) {
+                check("qrc: space after comma and apostrophe",
+                      pLyrics.lines[0].text == QStringLiteral("Hello, world fuckin' God"), pLyrics.lines[0].text);
+                check("qrc: space before slang apostrophe, preserve contractions",
+                      pLyrics.lines[1].text == QStringLiteral("Fuck 'em you're it's"), pLyrics.lines[1].text);
+                check("qrc: standalone apostrophe with slang suffix: Fuck + ' + em -> Fuck 'em",
+                      pLyrics.lines[2].text == QStringLiteral("Fuck 'em"), pLyrics.lines[2].text);
+                check("qrc: closing quote before word: Hello\" + world -> Hello\" world",
+                      pLyrics.lines[3].text == QStringLiteral("Hello\" world"), pLyrics.lines[3].text);
+                check("qrc: standalone apostrophe with contraction suffix: can + ' + t -> can't",
+                      pLyrics.lines[4].text == QStringLiteral("can't"), pLyrics.lines[4].text);
+                check("qrc: standalone trailing apostrophe: fuckin + ' + God -> fuckin' God",
+                      pLyrics.lines[5].text == QStringLiteral("fuckin' God"), pLyrics.lines[5].text);
+                check("qrc: standalone plural possessive: girls + ' + night -> girls' night",
+                      pLyrics.lines[6].text == QStringLiteral("girls' night"), pLyrics.lines[6].text);
+                check("qrc: standalone straight quotes: \" + Hello + \" + world -> \"Hello\" world",
+                      pLyrics.lines[7].text == QStringLiteral("\"Hello\" world"), pLyrics.lines[7].text);
+            }
+        }
+
+        // KRC punctuation, quotes, and standalone apostrophes spacing
+        {
+            const QString krcPunct = QStringLiteral(
+                "[1000,3000]<0,300,0>Fuck<300,100,0>'<400,300,0>em\n"
+                "[4000,2000]<0,500,0>Hello\"<500,500,0>world\n"
+                "[7000,2000]<0,300,0>can<300,100,0>'<400,300,0>t\n"
+                "[10000,3000]<0,300,0>fuckin<300,100,0>'<400,300,0>God\n"
+                "[13000,3000]<0,300,0>girls<300,100,0>'<400,300,0>night\n"
+                "[16000,4000]<0,100,0>\"<100,300,0>Hello<400,100,0>\"<500,300,0>world\n");
+            const QString ttml = KrcParser::toTtml(krcPunct);
+            Lyrics kLyrics;
+            const bool kOk = TtmlParser::parseTtml(ttml, &kLyrics);
+            check("krc punct & apostrophe: parse ok", kOk && kLyrics.lines.size() == 6);
+            if (kLyrics.lines.size() == 6) {
+                check("krc: Fuck + ' + em -> Fuck 'em",
+                      kLyrics.lines[0].text == QStringLiteral("Fuck 'em"), kLyrics.lines[0].text);
+                check("krc: Hello\" + world -> Hello\" world",
+                      kLyrics.lines[1].text == QStringLiteral("Hello\" world"), kLyrics.lines[1].text);
+                check("krc: can + ' + t -> can't",
+                      kLyrics.lines[2].text == QStringLiteral("can't"), kLyrics.lines[2].text);
+                check("krc: fuckin + ' + God -> fuckin' God",
+                      kLyrics.lines[3].text == QStringLiteral("fuckin' God"), kLyrics.lines[3].text);
+                check("krc: girls + ' + night -> girls' night",
+                      kLyrics.lines[4].text == QStringLiteral("girls' night"), kLyrics.lines[4].text);
+                check("krc: \" + Hello + \" + world -> \"Hello\" world",
+                      kLyrics.lines[5].text == QStringLiteral("\"Hello\" world"), kLyrics.lines[5].text);
+            }
+        }
+
+        // YRC punctuation, quotes, and standalone apostrophes spacing
+        {
+            const QString yrcPunct = QStringLiteral(
+                "[1000,3000](1000,300,0)Fuck(1300,100,0)'(1400,300,0)em\n"
+                "[4000,2000](4000,500,0)Hello\"(4500,500,0)world\n"
+                "[7000,2000](7000,300,0)can(7300,100,0)'(7400,300,0)t\n"
+                "[10000,3000](10000,300,0)fuckin(10300,100,0)'(10400,300,0)God\n"
+                "[13000,3000](13000,300,0)girls(13300,100,0)'(13400,300,0)night\n"
+                "[16000,4000](16000,100,0)\"(16100,300,0)Hello(16400,100,0)\"(16500,300,0)world\n");
+            Lyrics yLyrics;
+            const bool yOk = YrcParser::parse(yrcPunct, &yLyrics);
+            check("yrc punct & apostrophe: parse ok", yOk && yLyrics.lines.size() == 6);
+            if (yLyrics.lines.size() == 6) {
+                check("yrc: Fuck + ' + em -> Fuck 'em",
+                      yLyrics.lines[0].text == QStringLiteral("Fuck 'em"), yLyrics.lines[0].text);
+                check("yrc: Hello\" + world -> Hello\" world",
+                      yLyrics.lines[1].text == QStringLiteral("Hello\" world"), yLyrics.lines[1].text);
+                check("yrc: can + ' + t -> can't",
+                      yLyrics.lines[2].text == QStringLiteral("can't"), yLyrics.lines[2].text);
+                check("yrc: fuckin + ' + God -> fuckin' God",
+                      yLyrics.lines[3].text == QStringLiteral("fuckin' God"), yLyrics.lines[3].text);
+                check("yrc: girls + ' + night -> girls' night",
+                      yLyrics.lines[4].text == QStringLiteral("girls' night"), yLyrics.lines[4].text);
+                check("yrc: \" + Hello + \" + world -> \"Hello\" world",
+                      yLyrics.lines[5].text == QStringLiteral("\"Hello\" world"), yLyrics.lines[5].text);
+            }
         }
 
         // Duration bounds validation (> 1.15x trackDurationMs rejected)

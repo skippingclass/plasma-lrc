@@ -408,12 +408,12 @@ Window {
                         rowSpacing: Kirigami.Units.smallSpacing
 
                         Controls.Label {
-                            text: i18n("Base MPRIS position:")
+                            text: i18n("Last MPRIS measurement:")
                             font.bold: true
                             Layout.alignment: Qt.AlignRight
                         }
                         Controls.Label {
-                            text: (root.syncData.baseMprisPositionMs !== undefined ? root.syncData.baseMprisPositionMs : 0) + " ms"
+                            text: (root.syncData.lastMprisPositionMs !== undefined ? root.syncData.lastMprisPositionMs : 0) + " ms"
                             Layout.fillWidth: true
                         }
 
@@ -423,7 +423,17 @@ Window {
                             Layout.alignment: Qt.AlignRight
                         }
                         Controls.Label {
-                            text: "+" + (root.syncData.measurementAgeMs !== undefined ? root.syncData.measurementAgeMs : 0) + " ms"
+                            text: (root.syncData.measurementAgeMs !== undefined ? root.syncData.measurementAgeMs : 0) + " ms"
+                            Layout.fillWidth: true
+                        }
+
+                        Controls.Label {
+                            text: i18n("Base MPRIS position:")
+                            font.bold: true
+                            Layout.alignment: Qt.AlignRight
+                        }
+                        Controls.Label {
+                            text: (root.syncData.baseMprisPositionMs !== undefined ? root.syncData.baseMprisPositionMs : 0) + " ms"
                             Layout.fillWidth: true
                         }
 

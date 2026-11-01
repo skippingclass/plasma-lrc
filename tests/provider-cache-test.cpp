@@ -206,6 +206,38 @@ int main(int argc, char **argv)
         amll.invalidateCache(metaSearch);
         check("amll: search track invalidated", !QFile::exists(searchCachedFile));
         QObject::disconnect(connSearch);
+
+        // 5. Corrupted / Malformed JSON in search does NOT poison negative cache
+        TrackMetadata metaMalformed;
+        metaMalformed.title = QStringLiteral("Malformed Test");
+        metaMalformed.artist = QStringLiteral("Corrupt Band");
+        metaMalformed.durationMs = 180000;
+
+        server.responses.append({200, "{\"code\":200, \"data\": INVALID_JSON", 0, {}});
+        failed = false;
+        failReason = MissingReason::NotFound;
+        auto connFail = QObject::connect(&amll, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason r, const QString &) {
+            failed = true;
+            failReason = r;
+        });
+
+        amll.requestLyrics(metaMalformed, 12);
+        check("amll: corrupted JSON in search fails with Unreachable", waitFor([&] { return failed; }) && failReason == MissingReason::Unreachable);
+
+        // Immediate retry: valid search with 0 results -> fails with NotFound AND sets negative cache
+        server.responses.append({200, "{\"code\":200, \"data\": {\"items\": []}}", 0, {}});
+        failed = false;
+        failReason = MissingReason::Unreachable;
+        amll.requestLyrics(metaMalformed, 13);
+        check("amll: valid empty search results fail with NotFound", waitFor([&] { return failed; }) && failReason == MissingReason::NotFound);
+
+        // Now subsequent request hits negative cache immediately without touching network
+        failed = false;
+        failReason = MissingReason::Unreachable;
+        amll.requestLyrics(metaMalformed, 14);
+        check("amll: negative cache hit after valid empty search", waitFor([&] { return failed; }) && failReason == MissingReason::NotFound);
+        QObject::disconnect(connFail);
+        amll.invalidateCache(metaMalformed);
     }
 
     // =========================================================================
@@ -527,6 +559,126 @@ int main(int argc, char **argv)
         lrcred.invalidateCache(metaRedA);
         check("lrcred: track A cache removed", !QFile::exists(fileRedA));
         check("lrcred: unrelated track B cache preserved", QFile::exists(fileRedB));
+
+        // 8. Multi-candidate queue: Candidate #1 static TTML, Candidate #2 synced TTML
+        TrackMetadata metaMulti;
+        metaMulti.title = QStringLiteral("Multi Candidate Track");
+        metaMulti.artist = QStringLiteral("Queue Artist");
+        metaMulti.durationMs = 210000;
+
+        const QString searchJsonMulti = QStringLiteral(
+            "{\"hits\": ["
+            "  {\"title\":\"Multi Candidate Track\",\"artist\":\"Queue Artist\",\"duration\":210,"
+            "   \"files\":{\"ttml\":\"/cand1.ttml\"}},"
+            "  {\"title\":\"Multi Candidate Track\",\"artist\":\"Queue Artist\",\"duration\":210,"
+            "   \"files\":{\"ttml\":\"/cand2.ttml\"}}"
+            "]}");
+
+        const QString unsyncedCand1 = QStringLiteral(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:lrc=\"http://lrc.red/lyric-ttml-internal\" lrc:timing=\"None\">"
+            "<body><div><p>Static lyric</p></div></body></tt>");
+
+        server.responses.append({200, searchJsonMulti.toUtf8(), 0, {}}); // search response
+        server.responses.append({200, unsyncedCand1.toUtf8(), 0, {}});   // cand 1 ttml -> static!
+        server.responses.append({200, kValidTtml, 0, {}});               // cand 2 ttml -> synced!
+
+        loaded = false;
+        Lyrics multiLyrics;
+        auto connMulti = QObject::connect(&lrcred, &LyricsProvider::lyricsLoaded, [&](quint64, const Lyrics &l, const QString &) {
+            loaded = true;
+            multiLyrics = l;
+        });
+
+        lrcred.requestLyrics(metaMulti, 31);
+        check("lrcred: static cand1 falls back to synced cand2", waitFor([&] { return loaded; }));
+        check("lrcred: cand2 loaded synced lyrics", multiLyrics.type == LyricsType::Line || multiLyrics.type == LyricsType::Syllable);
+        QObject::disconnect(connMulti);
+        lrcred.invalidateCache(metaMulti);
+
+        // 9. Candidate with static TTML but working synchronized LRC
+        TrackMetadata metaCandLrc;
+        metaCandLrc.title = QStringLiteral("Static TTML Synced LRC Track");
+        metaCandLrc.artist = QStringLiteral("Format Artist");
+        metaCandLrc.durationMs = 200000;
+
+        const QString searchJsonLrc = QStringLiteral(
+            "{\"hits\": ["
+            "  {\"title\":\"Static TTML Synced LRC Track\",\"artist\":\"Format Artist\",\"duration\":200,"
+            "   \"files\":{\"ttml\":\"/candStatic.ttml\",\"lrc\":\"/candSynced.lrc\"}}"
+            "]}");
+
+        server.responses.append({200, searchJsonLrc.toUtf8(), 0, {}}); // search
+        server.responses.append({200, unsyncedCand1.toUtf8(), 0, {}});   // ttml -> static!
+        server.responses.append({200, kValidLrc, 0, {}});                // lrc -> synced!
+
+        loaded = false;
+        Lyrics formatLyrics;
+        auto connFormat = QObject::connect(&lrcred, &LyricsProvider::lyricsLoaded, [&](quint64, const Lyrics &l, const QString &) {
+            loaded = true;
+            formatLyrics = l;
+        });
+
+        lrcred.requestLyrics(metaCandLrc, 32);
+        check("lrcred: static TTML falls back to synchronized LRC of same candidate", waitFor([&] { return loaded; }));
+        check("lrcred: loaded line-synced lyrics from LRC", formatLyrics.type == LyricsType::Line);
+        QObject::disconnect(connFormat);
+        lrcred.invalidateCache(metaCandLrc);
+
+        // 4 candidates: queue truncated to 3, all 3 checked candidates fail, 4th left uninspected
+        QJsonArray fourCandidates;
+        for (int i = 1; i <= 4; ++i) {
+            QJsonObject cand;
+            cand[QStringLiteral("title")] = QStringLiteral("Truncate Song");
+            cand[QStringLiteral("artist")] = QStringLiteral("Truncate Artist");
+            cand[QStringLiteral("duration")] = 200;
+            cand[QStringLiteral("isrc")] = QStringLiteral("TRUNC000000%1").arg(i);
+            QJsonObject files;
+            files[QStringLiteral("ttml")] = QStringLiteral("http://127.0.0.1:%1/cand%2.ttml").arg(server.serverPort()).arg(i);
+            files[QStringLiteral("lrc")] = QStringLiteral("http://127.0.0.1:%1/cand%2.lrc").arg(server.serverPort()).arg(i);
+            cand[QStringLiteral("files")] = files;
+            fourCandidates.append(cand);
+        }
+        QJsonObject fourRoot;
+        fourRoot[QStringLiteral("hits")] = fourCandidates;
+        const QString fourSearchJson = QString::fromUtf8(QJsonDocument(fourRoot).toJson());
+
+        server.responses.clear();
+        server.responses.append({200, fourSearchJson.toUtf8(), 0, {}}); // search
+        // Candidate 1: TTML 404, LRC 404
+        server.responses.append({404, "Not Found", 0, {}});
+        server.responses.append({404, "Not Found", 0, {}});
+        // Candidate 2: TTML 404, LRC 404
+        server.responses.append({404, "Not Found", 0, {}});
+        server.responses.append({404, "Not Found", 0, {}});
+        // Candidate 3: TTML 404, LRC 404
+        server.responses.append({404, "Not Found", 0, {}});
+        server.responses.append({404, "Not Found", 0, {}});
+
+        TrackMetadata metaTrunc;
+        metaTrunc.title = QStringLiteral("Truncate Song");
+        metaTrunc.artist = QStringLiteral("Truncate Artist");
+        metaTrunc.durationMs = 200000;
+
+        bool truncFailed = false;
+        auto connTrunc = QObject::connect(&lrcred, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason, const QString &) {
+            truncFailed = true;
+        });
+
+        lrcred.requestLyrics(metaTrunc, 50);
+        check("lrcred candidate truncation: fails after 3 candidates", waitFor([&] { return truncFailed; }));
+        QObject::disconnect(connTrunc);
+
+        // A second request for the same track must NOT hit negative cache!
+        server.responses.append({200, fourSearchJson.toUtf8(), 0, {}});
+        truncFailed = false;
+        connTrunc = QObject::connect(&lrcred, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason, const QString &) {
+            truncFailed = true;
+        });
+
+        lrcred.requestLyrics(metaTrunc, 51);
+        check("lrcred candidate truncation: negative cache was NOT set (Miss on retry)", lrcred.cacheUsage(51) != QStringLiteral("Hit (negative cache)"));
+        QObject::disconnect(connTrunc);
+        lrcred.cancel();
     }
 
     // =========================================================================
@@ -642,6 +794,7 @@ int main(int argc, char **argv)
 
         server.responses.clear();
         server.responses.append({200, unsyncedTtml.toUtf8(), 0, {}});
+        server.responses.append({404, "Not Found", 0, {}});
 
         TrackMetadata meta;
         meta.isrc = QStringLiteral("GBTEST123456");

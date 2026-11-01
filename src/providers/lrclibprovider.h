@@ -14,7 +14,8 @@ class LrclibProvider : public LyricsProvider
     Q_OBJECT
 
 public:
-    explicit LrclibProvider(QObject *parent = nullptr);
+    explicit LrclibProvider(QObject *parent = nullptr,
+                            const QUrl &apiBase = QUrl(QStringLiteral("https://lrclib.net/api/")));
     ~LrclibProvider() override = default;
 
     QString id() const override { return QStringLiteral("lrclib"); }

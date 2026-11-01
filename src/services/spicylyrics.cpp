@@ -46,7 +46,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.5 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.6 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -518,7 +518,6 @@ QString SpicyLyrics::cacheDirectory()
 
 void SpicyLyrics::clearCache()
 {
-    cancel();
     m_memoryCache.clear();
     const QString dir = cacheDirectory();
     if (QDir(dir).exists()) {

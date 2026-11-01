@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.8.5 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.8.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -193,6 +193,12 @@ if(PLASMA_LRC_TESTS)
         src/providers/lyricsprovider.h
         src/providers/localprovider.cpp
         src/providers/localprovider.h
+        src/providers/lrclibprovider.cpp
+        src/providers/lrclibprovider.h
+        src/services/lrclib.cpp
+        src/services/lrclib.h
+        src/core/trackname.cpp
+        src/core/trackname.h
         src/parsers/lrcparser.cpp
         src/parsers/lrcparser.h
         src/parsers/ttmlparser.cpp

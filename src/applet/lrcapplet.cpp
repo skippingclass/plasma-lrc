@@ -502,6 +502,7 @@ void LrcApplet::readSettings()
         || showNoteDuringPauses != m_showNoteDuringPauses;
 
     const bool blacklistChanged = (blacklistedTracks != m_blacklistedTracks);
+    const bool wasTrackBlacklisted = isCurrentTrackBlacklisted();
 
     m_configuredPlayer = player;
     m_preferredPlayer = preferredPlayer;
@@ -597,6 +598,12 @@ void LrcApplet::readSettings()
 
     if (blacklistChanged) {
         Q_EMIT trackBlacklistChanged();
+        if (isCurrentTrackBlacklisted()) {
+            handleCurrentTrackBlacklisted();
+        } else if (wasTrackBlacklisted || !m_lyrics.isUsable()) {
+            m_lyricsLookupDone = false;
+            requestLyrics();
+        }
     }
 
     if (m_playingKnown && !m_playing) {
@@ -904,7 +911,7 @@ void LrcApplet::onProcessFinished()
     m_fetchingLrc = false;
 
     // If the track changed while the process was running, discard output from the old track.
-    if (!m_process || m_processGeneration != m_lookupGeneration) {
+    if (!m_process || m_processGeneration != m_lookupGeneration || isCurrentTrackBlacklisted()) {
         return;
     }
 
@@ -933,6 +940,7 @@ void LrcApplet::onProcessFinished()
     if (ok && parsed.isUsable()) {
         m_expiryTimer.stop();
         m_lyrics = parsed;
+        ++m_lyricsRevision;
         m_fromSpicy = false;
         m_wordSynced = false;
         m_lineIndex = -1;
@@ -1102,7 +1110,10 @@ void LrcApplet::clearLyrics()
 {
     m_expiryTimer.stop();
     m_lyrics = Lyrics();
+    ++m_lyricsRevision;
+    m_cachedProjectedRevision = 0;
     m_cachedProjectedLineIndex = -1;
+    m_cachedProjectedLine = ProjectedLine();
     m_cachedProjectedLineText.clear();
     m_cachedProjectedWordCount = -1;
     m_cachedProjectedStartMs = -1;
@@ -1144,6 +1155,10 @@ void LrcApplet::resetTrackPosition(bool isTrackTransition)
     }
     m_positionMs = 0;
     m_positionBaseMs = 0;
+    m_lastAcceptedMprisPositionMs = 0;
+    m_mprisMeasurementTimer.invalidate();
+    m_lastSearchRawMeta = TrackMetadata();
+    m_lastSearchNormalizedMeta = TrackMetadata();
     m_positionValid = false;
     m_positionClock.invalidate();
     m_positionRetries.invalidate();
@@ -1550,14 +1565,37 @@ void LrcApplet::toggleBlacklistCurrentTrack()
         entries.append(trackKey);
         m_blacklistedTracks = entries.join(QStringLiteral("; "));
         saveBlacklist();
-        // Immediately drop lyrics from display
-        cancelProcess();
-        clearLyrics();
-        m_discardedLyrics = Lyrics();
-        m_discardedActiveProviderId.clear();
-        m_discardedFromSpicy = false;
-        m_lyricsLookupDone = true;
+        handleCurrentTrackBlacklisted();
     }
+}
+
+void LrcApplet::handleCurrentTrackBlacklisted()
+{
+    cancelProcess();
+    if (m_pipeline) {
+        m_pipeline->cancel();
+    }
+    m_activeProviderId.clear();
+    m_fetchingLrc = false;
+    m_fetchingFromSpicy = false;
+    if (m_spicy) {
+        m_spicy->cancel();
+    }
+    if (m_lrclib) {
+        m_lrclib->cancel();
+    }
+    m_expiryTimer.stop();
+
+    ++m_lookupGeneration;
+    clearLyrics();
+    m_discardedLyrics = Lyrics();
+    m_discardedActiveProviderId.clear();
+    m_discardedFromSpicy = false;
+    m_lyricsLookupDone = true;
+    setText(QString());
+    setActive(false);
+    Q_EMIT wordChanged();
+    Q_EMIT lyricsChanged();
 }
 
 void LrcApplet::saveBlacklist()
@@ -1604,12 +1642,7 @@ void LrcApplet::addBlacklistTrack(const QString &track)
     saveBlacklist();
 
     if (isCurrentTrackBlacklisted()) {
-        cancelProcess();
-        clearLyrics();
-        m_discardedLyrics = Lyrics();
-        m_discardedActiveProviderId.clear();
-        m_discardedFromSpicy = false;
-        m_lyricsLookupDone = true;
+        handleCurrentTrackBlacklisted();
     }
 }
 
@@ -1713,6 +1746,7 @@ void LrcApplet::restoreCurrentLyrics()
 
     if (m_discardedLyrics.isUsable()) {
         m_lyrics = m_discardedLyrics;
+        ++m_lyricsRevision;
         m_fromSpicy = m_discardedFromSpicy;
         m_activeProviderId = m_discardedActiveProviderId;
         m_discardedLyrics = Lyrics();
@@ -1887,6 +1921,9 @@ void LrcApplet::requestLyrics()
     TrackMetadata searchMeta = meta;
     normalizeTrackMetadata(&searchMeta);
 
+    m_lastSearchRawMeta = meta;
+    m_lastSearchNormalizedMeta = searchMeta;
+
     m_fetchingFromSpicy = false;
     m_fetchingLrc = true;
 
@@ -1895,7 +1932,7 @@ void LrcApplet::requestLyrics()
 
 void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, const QString &providerId)
 {
-    if (generation != m_lookupGeneration || m_lyricsDiscarded) {
+    if (generation != m_lookupGeneration || m_lyricsDiscarded || isCurrentTrackBlacklisted()) {
         return;
     }
 
@@ -1937,6 +1974,7 @@ void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, con
     }
 
     m_lyrics = lyrics;
+    ++m_lyricsRevision;
     m_wordSynced = (lyrics.type == LyricsType::Syllable);
     m_lineIndex = -1;
     m_wordCursor = 0;
@@ -1966,7 +2004,7 @@ void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, con
 
 void LrcApplet::onPipelineLookupFinished(quint64 generation)
 {
-    if (generation != m_lookupGeneration || m_lyricsDiscarded) {
+    if (generation != m_lookupGeneration || m_lyricsDiscarded || isCurrentTrackBlacklisted()) {
         return;
     }
 
@@ -1977,7 +2015,7 @@ void LrcApplet::onPipelineLookupFinished(quint64 generation)
 
 void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason)
 {
-    if (generation != m_lookupGeneration || m_lyricsDiscarded) {
+    if (generation != m_lookupGeneration || m_lyricsDiscarded || isCurrentTrackBlacklisted()) {
         return;
     }
 
@@ -2127,7 +2165,7 @@ void LrcApplet::requestSpicyLyrics()
 
 void LrcApplet::fetchLrcLyrics(bool rawFallback)
 {
-    if (m_watchedService.isEmpty() || m_player.isEmpty() || m_trackTitle.isEmpty()) {
+    if (m_watchedService.isEmpty() || m_player.isEmpty() || m_trackTitle.isEmpty() || isCurrentTrackBlacklisted()) {
         return;
     }
 
@@ -2199,7 +2237,7 @@ void LrcApplet::fetchLrcLyrics(bool rawFallback)
 
 void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
 {
-    if (!m_fetchingFromSpicy || trackId != m_spotifyTrackId) {
+    if (!m_fetchingFromSpicy || trackId != m_spotifyTrackId || isCurrentTrackBlacklisted()) {
         return;
     }
     m_fetchingFromSpicy = false;
@@ -2244,6 +2282,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
 
     m_lyricsLookupDone = true;
     m_lyrics = lyrics;
+    ++m_lyricsRevision;
     m_fromSpicy = true;
     m_wordSynced = lyrics.type == LyricsType::Syllable;
     m_lineIndex = -1;
@@ -2267,7 +2306,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
 
 void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
 {
-    if (!m_fetchingFromSpicy || trackId != m_spotifyTrackId) {
+    if (!m_fetchingFromSpicy || trackId != m_spotifyTrackId || isCurrentTrackBlacklisted()) {
         return;
     }
     m_expiryTimer.stop();
@@ -2288,13 +2327,14 @@ void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
 
 void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
 {
-    if (!m_fetchingLrc || key != m_lrclibKey) {
+    if (!m_fetchingLrc || key != m_lrclibKey || isCurrentTrackBlacklisted()) {
         return;
     }
     m_expiryTimer.stop();
     m_fetchingLrc = false;
     m_lyricsLookupDone = true;
     m_lyrics = lyrics;
+    ++m_lyricsRevision;
     m_fromSpicy = false;
     m_wordSynced = false;
     m_lineIndex = -1;
@@ -2318,7 +2358,7 @@ void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
 
 void LrcApplet::onLrclibMissing(const QString &key)
 {
-    if (!m_fetchingLrc || key != m_lrclibKey) {
+    if (!m_fetchingLrc || key != m_lrclibKey || isCurrentTrackBlacklisted()) {
         return;
     }
     m_fetchingLrc = false;
@@ -2426,6 +2466,8 @@ void LrcApplet::onPositionFetched()
             // end boundary can justify a same-track gapless compensation.
             m_prevTrackNaturalEndTimer.invalidate();
             if (m_repeatTrack && remainingMs <= 250) {
+                m_lastAcceptedMprisPositionMs = reportedMs;
+                m_mprisMeasurementTimer.start();
                 m_gaplessLeadMs = isSpotify() ? kSpotifyGaplessLeadMs : 0;
                 m_positionBaseMs = reportedMs;
                 m_positionClock.start();
@@ -2460,6 +2502,8 @@ void LrcApplet::onPositionFetched()
             m_gaplessLeadMs = 0;
         }
         if (m_zeroPositionPolls <= 45) {
+            m_lastAcceptedMprisPositionMs = 0;
+            m_mprisMeasurementTimer.start();
             const bool wasInvalidZero = !m_positionValid;
             m_positionBaseMs = 0;
             m_positionClock.invalidate();
@@ -2502,6 +2546,9 @@ void LrcApplet::onPositionFetched()
             }
         }
     }
+
+    m_lastAcceptedMprisPositionMs = reportedMs;
+    m_mprisMeasurementTimer.start();
 
     if (wasInvalid || !m_playing || jumped || !m_positionClock.isValid()) {
         m_positionBaseMs = reportedMs;
@@ -2557,6 +2604,8 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
         // A seek near the end alone is not evidence of repeat-one. Require the
         // player's loop setting and an actual end boundary before compensating.
         if (remainingMs >= -5000 && remainingMs <= 250 && seekMs < 2000 && expected > 5000) {
+            m_lastAcceptedMprisPositionMs = seekMs;
+            m_mprisMeasurementTimer.start();
             m_prevTrackNaturalEndTimer.start();
             m_gaplessLeadMs = isSpotify() ? kSpotifyGaplessLeadMs : 0;
             m_positionBaseMs = seekMs;
@@ -2592,6 +2641,8 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
         }
     }
 
+    m_lastAcceptedMprisPositionMs = seekMs;
+    m_mprisMeasurementTimer.start();
     m_positionBaseMs = seekMs;
     if (m_playing) {
         m_positionClock.start();
@@ -3112,12 +3163,14 @@ void LrcApplet::updateWord()
     if (mainLineIndex >= 0) {
         const bool lineChanged = (m_lineIndex != mainLineIndex);
         const LyricLine &mainLine = m_lyrics.lines.at(mainLineIndex);
-        if (m_cachedProjectedLineIndex != mainLineIndex
+        if (m_cachedProjectedRevision != m_lyricsRevision
+            || m_cachedProjectedLineIndex != mainLineIndex
             || m_cachedProjectedLineText != mainLine.text
             || m_cachedProjectedWordCount != mainLine.words.size()
             || m_cachedProjectedStartMs != mainLine.startMs) {
             m_cachedProjectedLine = projectLineForSeparateRendering(mainLine);
             m_cachedProjectedLineIndex = mainLineIndex;
+            m_cachedProjectedRevision = m_lyricsRevision;
             m_cachedProjectedLineText = mainLine.text;
             m_cachedProjectedWordCount = mainLine.words.size();
             m_cachedProjectedStartMs = mainLine.startMs;
@@ -3965,24 +4018,41 @@ QVariantMap LrcApplet::diagnosticData() const
 
     // 1. Search diagnostics
     QVariantMap search;
-    search[QStringLiteral("rawTitle")] = m_trackTitle;
-    search[QStringLiteral("rawArtist")] = m_trackArtist;
-    search[QStringLiteral("rawAlbum")] = m_trackAlbum;
-    const qint64 rawDurMs = m_trackLengthUs > 0 ? (m_trackLengthUs / 1000) : 0;
+    TrackMetadata rawMeta;
+    TrackMetadata normMeta;
+    if (!m_lastSearchRawMeta.title.isEmpty()
+        && m_lastSearchRawMeta.title == m_trackTitle
+        && m_lastSearchRawMeta.artist == m_trackArtist) {
+        rawMeta = m_lastSearchRawMeta;
+        normMeta = m_lastSearchNormalizedMeta;
+    } else {
+        rawMeta.title = m_trackTitle;
+        rawMeta.artist = m_trackArtist;
+        rawMeta.album = m_trackAlbum;
+        rawMeta.durationMs = m_trackLengthUs > 0 ? (m_trackLengthUs / 1000) : 0;
+        normMeta = rawMeta;
+        normalizeTrackMetadata(&normMeta);
+    }
+
+    search[QStringLiteral("rawTitle")] = rawMeta.title;
+    search[QStringLiteral("rawArtist")] = rawMeta.artist;
+    search[QStringLiteral("rawAlbum")] = rawMeta.album;
+    const qint64 rawDurMs = rawMeta.durationMs;
     search[QStringLiteral("rawDurationMs")] = rawDurMs;
     search[QStringLiteral("rawDurationFormatted")] = rawDurMs > 0 ? QStringLiteral("%1:%2 (%3 ms)")
         .arg(rawDurMs / 60000)
         .arg((rawDurMs % 60000) / 1000, 2, 10, QLatin1Char('0'))
         .arg(rawDurMs) : QStringLiteral("Unknown");
 
-    const QString normTitle = cleanTrackTitle(m_trackTitle);
-    const QString normArtist = cleanTrackArtist(m_trackArtist);
-    const QString normAlbum = cleanTrackTitle(m_trackAlbum).trimmed();
-    search[QStringLiteral("normalizedTitle")] = normTitle;
-    search[QStringLiteral("normalizedArtist")] = normArtist;
-    search[QStringLiteral("normalizedAlbum")] = normAlbum;
-    search[QStringLiteral("normalizedDurationMs")] = rawDurMs;
-    search[QStringLiteral("normalizedDurationFormatted")] = search[QStringLiteral("rawDurationFormatted")];
+    search[QStringLiteral("normalizedTitle")] = normMeta.title;
+    search[QStringLiteral("normalizedArtist")] = normMeta.artist;
+    search[QStringLiteral("normalizedAlbum")] = normMeta.album;
+    const qint64 normDurMs = normMeta.durationMs;
+    search[QStringLiteral("normalizedDurationMs")] = normDurMs;
+    search[QStringLiteral("normalizedDurationFormatted")] = normDurMs > 0 ? QStringLiteral("%1:%2 (%3 ms)")
+        .arg(normDurMs / 60000)
+        .arg((normDurMs % 60000) / 1000, 2, 10, QLatin1Char('0'))
+        .arg(normDurMs) : QStringLiteral("Unknown");
 
     QString source = provider();
     if (source.isEmpty()) {
@@ -4039,22 +4109,27 @@ QVariantMap LrcApplet::diagnosticData() const
     const qint64 audioLeadComp = kAudioLeadCompensationMs;
     const qint64 userOffset = m_lyricOffset;
     const qint64 finalMs = m_positionMs;
+    const qint64 measurementAgeMs = m_mprisMeasurementTimer.isValid() ? m_mprisMeasurementTimer.elapsed() : 0;
 
+    sync[QStringLiteral("lastMprisPositionMs")] = m_lastAcceptedMprisPositionMs;
     sync[QStringLiteral("baseMprisPositionMs")] = baseMs;
-    sync[QStringLiteral("measurementAgeMs")] = elapsedMs;
+    sync[QStringLiteral("measurementAgeMs")] = measurementAgeMs;
+    sync[QStringLiteral("clockElapsedMs")] = elapsedMs;
     sync[QStringLiteral("extrapolatedPositionMs")] = extrapolatedMs;
     sync[QStringLiteral("gaplessLeadMs")] = gaplessLead;
     sync[QStringLiteral("audioLeadCompensationMs")] = audioLeadComp;
     sync[QStringLiteral("userOffsetMs")] = userOffset;
+    sync[QStringLiteral("filteredPositionMs")] = finalMs;
     sync[QStringLiteral("finalPositionMs")] = finalMs;
 
-    sync[QStringLiteral("calculationFormula")] = QStringLiteral("positionMs = baseMs (%1 ms) + elapsed (%2 ms) - gaplessLead (%3 ms) - audioLeadComp (%4 ms) - userOffset (%5 ms) = %6 ms")
+    sync[QStringLiteral("calculationFormula")] = QStringLiteral("positionMs = baseMs (%1 ms) + clockElapsed (%2 ms) - gaplessLead (%3 ms) - audioLeadComp (%4 ms) - userOffset (%5 ms) = %6 ms (measurement age: %7 ms)")
         .arg(baseMs)
         .arg(m_playing && m_positionClock.isValid() ? elapsedMs : 0)
         .arg(gaplessLead)
         .arg(audioLeadComp)
         .arg(userOffset)
-        .arg(finalMs);
+        .arg(finalMs)
+        .arg(measurementAgeMs);
 
     sync[QStringLiteral("lineIndex")] = m_lineIndex;
     sync[QStringLiteral("totalLines")] = static_cast<int>(m_lyrics.lines.size());
@@ -4143,13 +4218,15 @@ QString LrcApplet::diagnosticReport() const
     ts << QStringLiteral("  Position Valid:  %1\n\n").arg(y.value(QStringLiteral("positionValid")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No (no valid position)"));
 
     ts << QStringLiteral("Position Calculation (milliseconds):\n");
+    ts << QStringLiteral("  Last MPRIS Measurement:              %1 ms\n").arg(y.value(QStringLiteral("lastMprisPositionMs")).toLongLong());
+    ts << QStringLiteral("  Measurement Age (wall clock):        %1 ms\n").arg(y.value(QStringLiteral("measurementAgeMs")).toLongLong());
     ts << QStringLiteral("  Base MPRIS Position (baseMs):        %1 ms\n").arg(y.value(QStringLiteral("baseMprisPositionMs")).toLongLong());
-    ts << QStringLiteral("  Measurement Age (elapsed):          +%1 ms\n").arg(y.value(QStringLiteral("measurementAgeMs")).toLongLong());
+    ts << QStringLiteral("  Measurement Age (elapsed):          +%1 ms\n").arg(y.value(QStringLiteral("clockElapsedMs")).toLongLong());
     ts << QStringLiteral("  Gapless Lead Buffer (gaplessLead):  -%1 ms\n").arg(y.value(QStringLiteral("gaplessLeadMs")).toLongLong());
     ts << QStringLiteral("  Audio Lead Latency (audioLeadComp): -%1 ms\n").arg(y.value(QStringLiteral("audioLeadCompensationMs")).toLongLong());
     ts << QStringLiteral("  User Lyric Offset (userOffset):     -%1 ms\n").arg(y.value(QStringLiteral("userOffsetMs")).toLongLong());
     ts << QStringLiteral("  -------------------------------------------\n");
-    ts << QStringLiteral("  Final Lyrics Position:               %1 ms\n").arg(y.value(QStringLiteral("finalPositionMs")).toLongLong());
+    ts << QStringLiteral("  Final Filtered Position:             %1 ms\n").arg(y.value(QStringLiteral("filteredPositionMs")).toLongLong());
     ts << QStringLiteral("  Formula: %1\n\n").arg(y.value(QStringLiteral("calculationFormula")).toString());
 
     ts << QStringLiteral("Vocal & Line Cursors:\n");
