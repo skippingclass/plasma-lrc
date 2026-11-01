@@ -32,6 +32,7 @@
 
 class QDBusPendingCallWatcher;
 class LrclibClient;
+class CandidateSearchController;
 
 /**
  * Panel widget showing the lyric line that is currently being sung.
@@ -49,6 +50,9 @@ class LrclibClient;
 class LrcApplet : public Plasma::Applet
 {
     Q_OBJECT
+
+public:
+    static constexpr qint64 kAudioLeadCompensationMs = 90;
 
     // State coming from lrc_tty
     Q_PROPERTY(QString text READ text NOTIFY textChanged)
@@ -138,6 +142,8 @@ class LrcApplet : public Plasma::Applet
     Q_PROPERTY(bool showNoteDuringPauses READ showNoteDuringPauses NOTIFY settingsChanged)
     /// Whether lyrics for the current track have been discarded for this playback.
     Q_PROPERTY(bool isLyricsDiscarded READ isLyricsDiscarded NOTIFY lyricsDiscardedChanged)
+    Q_PROPERTY(bool isManualCandidateSelected READ isManualCandidateSelected NOTIFY manualCandidateSelectedChanged)
+    Q_PROPERTY(QObject *candidateController READ candidateControllerObj CONSTANT)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -427,6 +433,10 @@ public:
     Q_INVOKABLE void copyDiagnosticReport();
     Q_INVOKABLE void clearCache();
     Q_INVOKABLE void retryLyricsSearch();
+    Q_INVOKABLE void openChooseMatchWindow();
+    Q_INVOKABLE void useAutomaticSelection();
+    bool isManualCandidateSelected() const { return m_manualCandidateSelected; }
+    QObject *candidateControllerObj() const;
 
 Q_SIGNALS:
     void textChanged();
@@ -436,6 +446,7 @@ Q_SIGNALS:
     void backingChanged();
     void lineIndexChanged();
     void lyricsChanged();
+    void manualCandidateSelectedChanged();
     void playerChanged();
     void trackInfoChanged();
     void playingChanged();
@@ -463,6 +474,8 @@ private Q_SLOTS:
     void onSpicyMissing(const QString &trackId, MissingReason reason);
     void onLrclibLoaded(const QString &requestKey, const Lyrics &lyrics);
     void onLrclibMissing(const QString &requestKey);
+    void onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId);
+    void onCandidateLyricsFailed(const QString &errorMessage);
     void onPositionFetched();
     void onPauseTimeout();
     void onLyricsExpired();
@@ -477,6 +490,7 @@ private Q_SLOTS:
 
 private:
     friend class LrcAppletSyncTest;
+    friend class LrcBenchmark;
 
     void startPolling();
     void poll();
@@ -734,4 +748,8 @@ private:
     QString m_cachedProjectedLineText;
     int m_cachedProjectedWordCount = -1;
     qint64 m_cachedProjectedStartMs = -1;
+
+    CandidateSearchController *m_candidateController = nullptr;
+    bool m_manualCandidateSelected = false;
+    quint64 m_candidateLookupGeneration = 0;
 };

@@ -7,6 +7,7 @@
 #include "lrclib.h"
 #include "trackmatch.h"
 #include "trackname.h"
+#include "lyriclimits.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -28,7 +29,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.6 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.0 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -223,6 +224,8 @@ void LrclibClient::cancel()
     ++m_generation;
     cleanupAttemptState();
     m_currentKey.clear();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 void LrclibClient::invalidate(const QString &title, const QString &artist, qint64 durationMs, bool fromWebPage)
@@ -289,8 +292,8 @@ QString LrclibClient::request(const TrackMetadata &meta)
 
     m_currentKey = makeCacheKey(normMeta.title, normMeta.artist, normMeta.durationMs);
     m_currentDurationMs = normMeta.durationMs;
-    m_expectedTitle = normMeta.title;
-    m_expectedArtist = normMeta.artist;
+    m_expectedTitle = normMeta.effectiveExpectedTitle();
+    m_expectedArtist = normMeta.effectiveExpectedArtist();
     const QString reqKey = m_currentKey;
     const quint64 gen = m_generation;
 
@@ -312,47 +315,51 @@ QString LrclibClient::request(const TrackMetadata &meta)
     // Check disk cache with strict candidate identity validation
     const QString diskPath = cacheDirectory() + QLatin1Char('/') + reqKey + QStringLiteral(".json");
     if (QFile::exists(diskPath)) {
-        QFile file(diskPath);
-        if (file.open(QIODevice::ReadOnly)) {
-            const QByteArray payload = file.readAll();
-            file.close();
+        if (QFileInfo(diskPath).size() > LyricsLimits::kMaxInputSizeBytes) {
+            QFile::remove(diskPath);
+        } else {
+            QFile file(diskPath);
+            if (file.open(QIODevice::ReadOnly)) {
+                const QByteArray payload = file.readAll();
+                file.close();
 
-            const QDateTime modified = QFileInfo(diskPath).lastModified();
-            const qint64 age = modified.isValid() ? modified.msecsTo(QDateTime::currentDateTime()) : kCacheTtlMs + 1;
+                const QDateTime modified = QFileInfo(diskPath).lastModified();
+                const qint64 age = modified.isValid() ? modified.msecsTo(QDateTime::currentDateTime()) : kCacheTtlMs + 1;
 
-            const QJsonObject diskObj = QJsonDocument::fromJson(payload).object();
-            if (diskObj.value(QStringLiteral("missing")).toBool()) {
-                if (age <= kNegativeCacheTtlMs) {
-                    m_lastCacheStatus = QStringLiteral("Hit (negative cache)");
-                    m_lastRejectionReason = QStringLiteral("Track not found in database (cached)");
-                    QTimer::singleShot(0, this, [this, gen, key = reqKey] {
-                        if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
-                            cleanupAttemptState();
-                            m_currentKey.clear();
-                            Q_EMIT missing(key);
-                        }
-                    });
-                    return reqKey;
-                }
-            } else if (age <= kCacheTtlMs) {
-                if (validateCandidateIdentity(diskObj, m_expectedTitle, m_expectedArtist)) {
-                    Lyrics lyrics;
-                    if (parseCandidate(diskObj, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
-                        m_lastCacheStatus = QStringLiteral("Hit (disk)");
-                        m_lastRejectionReason.clear();
-                        m_memoryCache.insert(reqKey, {lyrics, modified.toMSecsSinceEpoch() + kCacheTtlMs});
-                        QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics] {
+                const QJsonObject diskObj = QJsonDocument::fromJson(payload).object();
+                if (diskObj.value(QStringLiteral("missing")).toBool()) {
+                    if (age <= kNegativeCacheTtlMs) {
+                        m_lastCacheStatus = QStringLiteral("Hit (negative cache)");
+                        m_lastRejectionReason = QStringLiteral("Track not found in database (cached)");
+                        QTimer::singleShot(0, this, [this, gen, key = reqKey] {
                             if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
                                 cleanupAttemptState();
                                 m_currentKey.clear();
-                                Q_EMIT loaded(key, lyrics);
+                                Q_EMIT missing(key);
                             }
                         });
                         return reqKey;
                     }
-                } else {
-                    // Cached candidate does not match expected identity; purge wrong entry
-                    QFile::remove(diskPath);
+                } else if (age <= kCacheTtlMs) {
+                    if (validateCandidateIdentity(diskObj, m_expectedTitle, m_expectedArtist)) {
+                        Lyrics lyrics;
+                        if (parseCandidate(diskObj, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
+                            m_lastCacheStatus = QStringLiteral("Hit (disk)");
+                            m_lastRejectionReason.clear();
+                            m_memoryCache.insert(reqKey, {lyrics, modified.toMSecsSinceEpoch() + kCacheTtlMs});
+                            QTimer::singleShot(0, this, [this, gen, key = reqKey, lyrics] {
+                                if (gen == m_generation && key == m_currentKey && !m_currentKey.isEmpty()) {
+                                    cleanupAttemptState();
+                                    m_currentKey.clear();
+                                    Q_EMIT loaded(key, lyrics);
+                                }
+                            });
+                            return reqKey;
+                        }
+                    } else {
+                        // Cached candidate does not match expected identity; purge wrong entry
+                        QFile::remove(diskPath);
+                    }
                 }
             }
         }
@@ -485,6 +492,7 @@ void LrclibClient::executeAttempt(const SearchAttempt &attempt)
     request.setTransferTimeout(kRequestTimeoutMs);
 
     QNetworkReply *reply = m_network.get(request);
+    LyricsLimits::attachSizeLimitGuard(reply);
     m_activeReply = reply;
     connect(reply, &QNetworkReply::finished, this, [this, reply, attempt, gen] {
         if (gen != m_generation) {
@@ -501,6 +509,13 @@ void LrclibClient::executeAttempt(const SearchAttempt &attempt)
 void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attempt)
 {
     reply->deleteLater();
+
+    if (LyricsLimits::isSizeLimitExceeded(reply)) {
+        m_hadRateLimitOrNetworkError = true;
+        m_lastRejectionReason = QStringLiteral("Response size limit exceeded (max 8 MiB)");
+        finishWithMissing(/*writeNegativeCache=*/false, MissingReason::SizeLimitExceeded);
+        return;
+    }
 
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (statusCode == 429) {
@@ -608,12 +623,14 @@ void LrclibClient::finishWithCandidate(const QJsonObject &cand)
     }
 }
 
-void LrclibClient::finishWithMissing(bool writeNegativeCache)
+void LrclibClient::finishWithMissing(bool writeNegativeCache, MissingReason reason)
 {
     const QString key = m_currentKey;
 
     if (m_lastRejectionReason.isEmpty()) {
-        m_lastRejectionReason = QStringLiteral("Track not found in database");
+        m_lastRejectionReason = (reason == MissingReason::SizeLimitExceeded)
+            ? QStringLiteral("Response size limit exceeded (max 8 MiB)")
+            : QStringLiteral("Track not found in database");
     }
 
     if (writeNegativeCache && !key.isEmpty()) {
@@ -626,5 +643,165 @@ void LrclibClient::finishWithMissing(bool writeNegativeCache)
 
     cleanupAttemptState();
     m_currentKey.clear();
-    Q_EMIT missing(key);
+    Q_EMIT missing(key, reason);
+}
+
+void LrclibClient::searchCandidates(const TrackMetadata &meta, quint64 searchId)
+{
+    QUrl url = m_apiBase.resolved(QUrl(QStringLiteral("search")));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("track_name"), meta.title);
+    if (!meta.artist.isEmpty()) {
+        q.addQueryItem(QStringLiteral("artist_name"), meta.artist);
+    }
+    url.setQuery(q);
+
+    QNetworkRequest request(url);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("User-Agent", s_userAgent);
+    request.setTransferTimeout(kRequestTimeoutMs);
+
+    if (m_candidateSearchReply) {
+        m_candidateSearchReply->abort();
+        m_candidateSearchReply->deleteLater();
+        m_candidateSearchReply = nullptr;
+    }
+
+    m_candidateSearchId = searchId;
+    m_candidateSearchReply = m_network.get(request);
+    LyricsLimits::attachSizeLimitGuard(m_candidateSearchReply);
+
+    connect(m_candidateSearchReply, &QNetworkReply::finished, this, [this, reply = m_candidateSearchReply, meta, searchId] {
+        if (!reply) return;
+        reply->deleteLater();
+        if (reply == m_candidateSearchReply) {
+            m_candidateSearchReply = nullptr;
+        }
+        if (searchId != m_candidateSearchId) {
+            return;
+        }
+        if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
+            Q_EMIT candidatesFound(searchId, {});
+            return;
+        }
+
+        const QByteArray data = reply->readAll();
+        const QJsonDocument doc = QJsonDocument::fromJson(data);
+        QList<LyricCandidate> result;
+
+        const QString expTitle = meta.effectiveExpectedTitle();
+        const QString expArtist = meta.effectiveExpectedArtist();
+
+        if (doc.isArray()) {
+            const QJsonArray arr = doc.array();
+            for (const QJsonValue &v : arr) {
+                if (result.size() >= 10) {
+                    break;
+                }
+                const QJsonObject obj = v.toObject();
+                if (!validateCandidateIdentity(obj, expTitle, expArtist)) {
+                    continue;
+                }
+                const double durSec = obj.value(QStringLiteral("duration")).toDouble(0.0);
+                if (!isDurationCompatible(durSec, meta.durationMs)) {
+                    continue;
+                }
+
+                LyricCandidate cand;
+                cand.id = QString::number(obj.value(QStringLiteral("id")).toVariant().toLongLong());
+                cand.providerId = QStringLiteral("lrclib");
+                cand.sourceName = QStringLiteral("LRCLIB");
+                cand.title = obj.value(QStringLiteral("trackName")).toString();
+                cand.artist = obj.value(QStringLiteral("artistName")).toString();
+                cand.durationMs = qRound(durSec * 1000.0);
+                const bool hasSynced = !obj.value(QStringLiteral("syncedLyrics")).toString().trimmed().isEmpty();
+                const bool hasPlain = !obj.value(QStringLiteral("plainLyrics")).toString().trimmed().isEmpty();
+                cand.syncType = hasSynced ? CandidateSyncType::Line : (hasPlain ? CandidateSyncType::None : CandidateSyncType::Unknown);
+                result.append(cand);
+            }
+        }
+        Q_EMIT candidatesFound(searchId, result);
+    });
+}
+
+void LrclibClient::fetchCandidate(const QString &candidateId, quint64 fetchId)
+{
+    if (m_candidateFetchReply) {
+        m_candidateFetchReply->abort();
+        m_candidateFetchReply->deleteLater();
+        m_candidateFetchReply = nullptr;
+    }
+
+    QUrl url = m_apiBase.resolved(QUrl(QStringLiteral("get/") + candidateId));
+    QNetworkRequest request(url);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("User-Agent", s_userAgent);
+    request.setTransferTimeout(kRequestTimeoutMs);
+
+    m_candidateFetchId = fetchId;
+    m_candidateFetchReply = m_network.get(request);
+    LyricsLimits::attachSizeLimitGuard(m_candidateFetchReply);
+
+    connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, reply = m_candidateFetchReply, fetchId] {
+        if (!reply) return;
+        reply->deleteLater();
+        if (reply == m_candidateFetchReply) {
+            m_candidateFetchReply = nullptr;
+        }
+        if (fetchId != m_candidateFetchId) {
+            return;
+        }
+        if (LyricsLimits::isSizeLimitExceeded(reply)) {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded);
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound);
+            return;
+        }
+
+        const QByteArray data = reply->readAll();
+        const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (!doc.isObject()) {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound);
+            return;
+        }
+
+        Lyrics lyrics;
+        if (parseCandidate(doc.object(), &lyrics)) {
+            Q_EMIT candidateLyricsLoaded(fetchId, lyrics);
+        } else {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound);
+        }
+    });
+}
+
+void LrclibClient::cancelCandidateSearch(quint64 searchId)
+{
+    if (m_candidateSearchReply && (searchId == 0 || searchId == m_candidateSearchId)) {
+        m_candidateSearchId = 0;
+        QPointer<QNetworkReply> reply = m_candidateSearchReply;
+        m_candidateSearchReply = nullptr;
+        if (reply) {
+            reply->abort();
+            if (reply) {
+                reply->deleteLater();
+            }
+        }
+    }
+}
+
+void LrclibClient::cancelCandidateFetch(quint64 fetchId)
+{
+    if (m_candidateFetchReply && (fetchId == 0 || fetchId == m_candidateFetchId)) {
+        m_candidateFetchId = 0;
+        QPointer<QNetworkReply> reply = m_candidateFetchReply;
+        m_candidateFetchReply = nullptr;
+        if (reply) {
+            reply->abort();
+            if (reply) {
+                reply->deleteLater();
+            }
+        }
+    }
 }

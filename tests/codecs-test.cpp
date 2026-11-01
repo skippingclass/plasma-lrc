@@ -406,6 +406,130 @@ int main()
         Lyrics qrcDurLyrics;
         check("duration check: QrcDecoder rejects >1.15x trackDurationMs",
               !QrcDecoder::parse(qrcOverDur, &qrcDurLyrics, 180000));
+
+        // --- Stage 1 & Stage 2 Limit and Filter Tests ---
+
+        // 1. Decompression bomb test (> 16 MiB decompressed)
+        {
+            // Compress 17 MiB of zeroes
+            const QByteArray bigZeros(17 * 1024 * 1024, 0);
+            const QByteArray bomb = compressZlib(bigZeros);
+            const QByteArray decompressed = ZlibCodec::decompress(bomb);
+            check("limits: decompression bomb (>16 MiB) rejected by ZlibCodec",
+                  decompressed.isEmpty(), QStringLiteral("decompressed size: %1").arg(decompressed.size()));
+        }
+
+        // 2. Line count limit (> 10 000 lines)
+        {
+            QString hugeLrc;
+            hugeLrc.reserve(10005 * 25);
+            for (int i = 0; i < 10005; ++i) {
+                hugeLrc += QStringLiteral("[%1:%2.%3] line\n")
+                    .arg(i / 60, 2, 10, QLatin1Char('0'))
+                    .arg(i % 60, 2, 10, QLatin1Char('0'))
+                    .arg(0, 2, 10, QLatin1Char('0'));
+            }
+            Lyrics hugeLyrics;
+            check("limits: LrcParser rejects >10000 lines", !LrcParser::parseLrc(hugeLrc, &hugeLyrics));
+        }
+
+        // 3. Line length limit (> 16 384 chars)
+        {
+            QString longLineLrc = QStringLiteral("[00:01.00] ");
+            longLineLrc.append(QString(17000, QLatin1Char('x')));
+            longLineLrc.append(QLatin1Char('\n'));
+            Lyrics longLineLyrics;
+            check("limits: LrcParser rejects line >16384 chars", !LrcParser::parseLrc(longLineLrc, &longLineLyrics));
+        }
+
+        // 4. Word count limit (> 100 000 words)
+        {
+            QString manyWordsLrc;
+            QString wordsPerLine;
+            for (int w = 0; w < 200; ++w) {
+                wordsPerLine += QStringLiteral(" word");
+            }
+            wordsPerLine += QLatin1Char('\n');
+            manyWordsLrc.reserve(600 * wordsPerLine.size() + 100);
+            for (int l = 0; l < 600; ++l) { // 600 * 200 = 120 000 words
+                manyWordsLrc += QStringLiteral("[%1:%2.%3]%4")
+                    .arg(l / 60, 2, 10, QLatin1Char('0'))
+                    .arg(l % 60, 2, 10, QLatin1Char('0'))
+                    .arg(0, 2, 10, QLatin1Char('0'))
+                    .arg(wordsPerLine);
+            }
+            Lyrics manyWordsLyrics;
+            check("limits: LrcParser rejects >100000 words", !LrcParser::parseLrc(manyWordsLrc, &manyWordsLyrics));
+        }
+
+        // 5. Service Line Filtering tests (LyricFilter::isCreditOrNotice)
+        {
+            // Standard section tags
+            check("filter: [Intro]", LyricFilter::isCreditOrNotice(QStringLiteral("[Intro]")));
+            check("filter: [Verse 1]", LyricFilter::isCreditOrNotice(QStringLiteral("[Verse 1]")));
+            check("filter: [Chorus]", LyricFilter::isCreditOrNotice(QStringLiteral("[Chorus]")));
+            check("filter: [Chorus: Artist]", LyricFilter::isCreditOrNotice(QStringLiteral("[Chorus: Eminem]")));
+            check("filter: [Pre-Chorus]", LyricFilter::isCreditOrNotice(QStringLiteral("[Pre-Chorus]")));
+            check("filter: [Hook]", LyricFilter::isCreditOrNotice(QStringLiteral("[Hook]")));
+            check("filter: [Bridge]", LyricFilter::isCreditOrNotice(QStringLiteral("[Bridge]")));
+            check("filter: [Instrumental]", LyricFilter::isCreditOrNotice(QStringLiteral("[Instrumental]")));
+
+            // Russian section tags
+            check("filter: [Куплет 1]", LyricFilter::isCreditOrNotice(QStringLiteral("[Куплет 1]")));
+            check("filter: [Припев]", LyricFilter::isCreditOrNotice(QStringLiteral("[Припев]")));
+            check("filter: [Бридж]", LyricFilter::isCreditOrNotice(QStringLiteral("[Бридж]")));
+            check("filter: [Интро]", LyricFilter::isCreditOrNotice(QStringLiteral("[Интро]")));
+            check("filter: [Аутро]", LyricFilter::isCreditOrNotice(QStringLiteral("[Аутро]")));
+            check("filter: [Вступление]", LyricFilter::isCreditOrNotice(QStringLiteral("[Вступление]")));
+
+            // Explicit credits with colon
+            check("filter: 作词：Имя", LyricFilter::isCreditOrNotice(QStringLiteral("作词：张三")));
+            check("filter: 作曲: Name", LyricFilter::isCreditOrNotice(QStringLiteral("作曲: 李四")));
+            check("filter: Written by: Name", LyricFilter::isCreditOrNotice(QStringLiteral("Written by: John Doe")));
+            check("filter: Produced by: Name", LyricFilter::isCreditOrNotice(QStringLiteral("Produced by: Dr. Dre")));
+            check("filter: 演唱：Name", LyricFilter::isCreditOrNotice(QStringLiteral("演唱：王五")));
+            check("filter: 词：Name", LyricFilter::isCreditOrNotice(QStringLiteral("词：赵六")));
+            check("filter: 曲：Name", LyricFilter::isCreditOrNotice(QStringLiteral("曲：钱七")));
+            check("filter: OP: Company", LyricFilter::isCreditOrNotice(QStringLiteral("OP: Music Corp")));
+            check("filter: SP: Company", LyricFilter::isCreditOrNotice(QStringLiteral("SP: Music Corp")));
+
+            // Explicit credits without colon (separated role + value)
+            check("filter: 作词 Name", LyricFilter::isCreditOrNotice(QStringLiteral("作词 张三")));
+            check("filter: Written by Name", LyricFilter::isCreditOrNotice(QStringLiteral("Written by John Doe")));
+            check("filter: Produced by Name", LyricFilter::isCreditOrNotice(QStringLiteral("Produced by Metro Boomin")));
+
+            // Negative tests: sung lyrics must NOT be filtered!
+            check("filter: (yeah) backing preserved", !LyricFilter::isCreditOrNotice(QStringLiteral("(yeah)")));
+            check("filter: (ah) backing preserved", !LyricFilter::isCreditOrNotice(QStringLiteral("(ah)")));
+            check("filter: embedded intro preserved", !LyricFilter::isCreditOrNotice(QStringLiteral("intro to my life")));
+            check("filter: embedded chorus preserved", !LyricFilter::isCreditOrNotice(QStringLiteral("sing the chorus again")));
+            check("filter: stop preserved (not op)", !LyricFilter::isCreditOrNotice(QStringLiteral("please don't stop the music")));
+            check("filter: hope preserved (not op)", !LyricFilter::isCreditOrNotice(QStringLiteral("I have a hope")));
+            check("filter: special preserved (not sp)", !LyricFilter::isCreditOrNotice(QStringLiteral("something special")));
+            check("filter: name without role preserved", !LyricFilter::isCreditOrNotice(QStringLiteral("Michael Jackson")));
+            check("filter: Chinese lyrics preserved", !LyricFilter::isCreditOrNotice(QStringLiteral("海阔天空 在我心中")));
+        }
+
+        // 6. LRC Time Boundary Preservation
+        {
+            // Lyric on 1s, credit on 3s, next lyric on 10s.
+            // Line 1 must end at 3s, NOT 10s!
+            const QString lrcWithCredit = QStringLiteral(
+                "[00:01.00]First line of song\n"
+                "[00:03.00]作词：Some Lyricist\n"
+                "[00:10.00]Second line of song\n"
+            );
+            Lyrics lrcRes;
+            check("boundary: parse LRC with credit", LrcParser::parseLrc(lrcWithCredit, &lrcRes, 30000));
+            check("boundary: exactly 2 lines in result (credit omitted)", lrcRes.lines.size() == 2);
+            if (lrcRes.lines.size() == 2) {
+                check("boundary: line 1 text matches", lrcRes.lines[0].text == QStringLiteral("First line of song"));
+                check("boundary: line 1 starts at 1000 ms", lrcRes.lines[0].startMs == 1000);
+                check("boundary: line 1 ends at 3000 ms (invisible boundary preserved)",
+                      lrcRes.lines[0].endMs == 3000, QString::number(lrcRes.lines[0].endMs));
+                check("boundary: line 2 starts at 10000 ms", lrcRes.lines[1].startMs == 10000);
+            }
+        }
     }
 
     if (s_failed > 0) {

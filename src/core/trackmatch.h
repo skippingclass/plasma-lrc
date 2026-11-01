@@ -324,12 +324,15 @@ inline bool matchCandidate(const TrackMetadata &target,
                            qint64 candidateDurationMs = 0,
                            qint64 maxDurationDiffMs = 4000)
 {
-    if (!matchTitles(candidateTitle, target.title)) {
+    const QString expTitle = target.effectiveExpectedTitle();
+    const QString expArtist = target.effectiveExpectedArtist();
+
+    if (!matchTitles(candidateTitle, expTitle)) {
         return false;
     }
 
-    if (!target.artist.trimmed().isEmpty()) {
-        if (!matchArtists(candidateArtist, target.artist)) {
+    if (!expArtist.trimmed().isEmpty()) {
+        if (!matchArtists(candidateArtist, expArtist)) {
             return false;
         }
     }
@@ -347,12 +350,15 @@ inline bool matchCandidate(const TrackMetadata &target,
                            qint64 candidateDurationMs = 0,
                            qint64 maxDurationDiffMs = 4000)
 {
-    if (!matchTitles(candidateTitle, target.title)) {
+    const QString expTitle = target.effectiveExpectedTitle();
+    const QString expArtist = target.effectiveExpectedArtist();
+
+    if (!matchTitles(candidateTitle, expTitle)) {
         return false;
     }
 
-    if (!target.artist.trimmed().isEmpty()) {
-        if (!matchArtists(candidateArtists, target.artist)) {
+    if (!expArtist.trimmed().isEmpty()) {
+        if (!matchArtists(candidateArtists, expArtist)) {
             return false;
         }
     }
@@ -370,16 +376,19 @@ inline bool validateExactLookupMetadata(const TrackMetadata &target,
                                         qint64 responseDurationMs = 0,
                                         qint64 maxDurationDiffMs = 4000)
 {
+    const QString expTitle = target.effectiveExpectedTitle();
+    const QString expArtist = target.effectiveExpectedArtist();
+
     const QString respTitleTrimmed = responseTitle.trimmed();
-    if (!respTitleTrimmed.isEmpty() && !target.title.trimmed().isEmpty()) {
-        if (!matchTitles(respTitleTrimmed, target.title)) {
+    if (!respTitleTrimmed.isEmpty() && !expTitle.trimmed().isEmpty()) {
+        if (!matchTitles(respTitleTrimmed, expTitle)) {
             return false;
         }
     }
 
     const QString respArtistTrimmed = responseArtist.trimmed();
-    if (!respArtistTrimmed.isEmpty() && !target.artist.trimmed().isEmpty()) {
-        if (!matchArtists(respArtistTrimmed, target.artist)) {
+    if (!respArtistTrimmed.isEmpty() && !expArtist.trimmed().isEmpty()) {
+        if (!matchArtists(respArtistTrimmed, expArtist)) {
             return false;
         }
     }

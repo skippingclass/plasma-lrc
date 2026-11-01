@@ -29,6 +29,12 @@
 
 ## Features
 
+- **Manual Match Selection ("Choose another match…")**:
+  Easily browse and select alternative lyrics from all enabled public providers (LRCLIB, lrc.red, AMLL TTML DB, NetEase Cloud Music, KuGou, QQ Music, and Unison). The dialog lists track candidates with their source, title, artist, duration, and sync quality (Word, Line, None). Manual selection locks the lyrics for the current playback session without affecting the automatic cache, and can be undone at any time via the context menu action **Use automatic selection**.
+- **Input Limits & Decompression Safety**:
+  Comprehensive bounds guarding all incoming payloads against oversized payloads and decompression bombs: 8 MiB max HTTP responses (aborted in flight via streaming guards), 16 MiB max decompressed text, 10 000 lines, 100 000 words, and 16 384 characters per line. Size limit violations are safely rejected without polluting cache or freezing the desktop.
+- **Service Line & Notice Filtering**:
+  Conservative filtering of non-sung section headers (`[Intro]`, `[Verse]`, `[Chorus]`, `[Куплет]`, `[Припев]`) and credits (`Written by:`, `作词：`, `Producer:`, etc.). Invisible time boundaries are preserved in LRC format so removing notice lines never artificially stretches preceding sung lyrics.
 - **Multi-Source Lyrics Pipeline**:  
   Modular lyrics engine with user-customizable priority ordering and toggles. Queries free, tokenless providers with Apple Music-grade TTML syllable sync (`lrc.red` and `AMLL TTML DB`), alongside `Spicy Lyrics` and `LRCLIB`. If a source has no timings or fails, it seamlessly falls back to the next active provider in the chain.
 - **Real-Time Word-by-Word Karaoke**:  

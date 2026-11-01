@@ -5,6 +5,7 @@
  */
 
 #include "zlibcodec.h"
+#include "lyriclimits.h"
 
 #include <cstring>
 #include <zlib.h>
@@ -34,7 +35,14 @@ static QByteArray decompressWithWindowBits(const QByteArray &data, int windowBit
             inflateEnd(&strm);
             return QByteArray();
         }
-        out.append(buffer, static_cast<int>(sizeof(buffer) - strm.avail_out));
+        const int produced = static_cast<int>(sizeof(buffer) - strm.avail_out);
+        if (produced > 0) {
+            if (static_cast<qint64>(out.size()) + produced > LyricsLimits::kMaxDecodedSizeBytes) {
+                inflateEnd(&strm);
+                return QByteArray();
+            }
+            out.append(buffer, produced);
+        }
     } while (strm.avail_out == 0 && ret != Z_STREAM_END);
 
     inflateEnd(&strm);

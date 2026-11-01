@@ -7,6 +7,7 @@
 #include "localprovider.h"
 #include "lrcparser.h"
 #include "ttmlparser.h"
+#include "lyriclimits.h"
 
 #include <QDir>
 #include <QFile>
@@ -37,6 +38,11 @@ void LocalProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
     }
 
     QFile file(filePath);
+    if (file.size() > LyricsLimits::kMaxInputSizeBytes) {
+        m_rejectionReason = QStringLiteral("Local file exceeds 8 MiB limit");
+        Q_EMIT lyricsFailed(generation, MissingReason::SizeLimitExceeded, id());
+        return;
+    }
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         Q_EMIT lyricsFailed(generation, MissingReason::NotFound, id());
         return;

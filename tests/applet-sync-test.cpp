@@ -7,12 +7,25 @@
 #include <QDateTime>
 #include <QGuiApplication>
 #include <KPluginMetaData>
+#include <KLocalizedContext>
 #include <QTemporaryDir>
 #include <QQmlEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QThread>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <cstdio>
+#include "http-test-server.h"
+#include "candidatesearchcontroller.h"
+#include "lrclibprovider.h"
+#include "lrcredprovider.h"
+#include "amllprovider.h"
+#include "neteaseprovider.h"
+#include "kugouprovider.h"
+#include "qqmusicprovider.h"
+#include "unisonprovider.h"
 
 class FakeSettingsProvider : public LyricsProvider
 {
@@ -2228,6 +2241,504 @@ public:
                 check("regression 20: clockElapsedMs scales with 1.5x rate", scaledClock >= age);
 
                 widget.m_playbackRate = 1.0;
+            }
+
+            // Regression 21: Stage 3 candidate search across all 7 adapters, integration, and ChooseMatchWindow.qml
+            {
+                widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("disabledProviders"), QString());
+                widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("providerOrder"), QStringLiteral("lrcred,amll,spicy,lrclib,netease,kugou,qqmusic,unison"));
+                widget.m_lyricsDiscarded = false;
+                widget.readSettings();
+
+                HttpTestServer server;
+                TrackMetadata meta;
+                meta.title = QStringLiteral("Hello");
+                meta.artist = QStringLiteral("Adele");
+                meta.durationMs = 200000;
+
+                const QByteArray validTtml = R"(<?xml version="1.0" encoding="utf-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml">
+  <body>
+    <div>
+      <p begin="00:01.000" end="00:03.000"><span>Hello</span></p>
+    </div>
+  </body>
+</tt>)";
+
+                // 1. LRCLIB candidate search & fetch
+                {
+                    server.responses.append({200, R"([{"id":101,"trackName":"Hello","artistName":"Adele","duration":200,"syncedLyrics":"[00:01.00]Hello world\n"}])", 0, {}});
+                    server.responses.append({200, R"({"id":101,"trackName":"Hello","artistName":"Adele","duration":200,"syncedLyrics":"[00:01.00]Hello world\n"})", 0, {}});
+
+                    LrclibProvider lrclib(nullptr, server.apiBase());
+                    QList<LyricCandidate> found;
+                    Lyrics loaded;
+                    QObject::connect(&lrclib, &LyricsProvider::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+                        found = c;
+                    });
+                    QObject::connect(&lrclib, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+
+                    lrclib.searchCandidates(meta, 1);
+                    check("regression 21: lrclib candidate search responds", waitFor([&] { return !found.isEmpty(); }));
+                    check("regression 21: lrclib candidate id matches", !found.isEmpty() && found.first().id == QStringLiteral("101"));
+                    check("regression 21: lrclib candidate syncType is Line", !found.isEmpty() && found.first().syncType == CandidateSyncType::Line);
+
+                    lrclib.fetchCandidateLyrics(QStringLiteral("101"), 1);
+                    check("regression 21: lrclib fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
+                    check("regression 21: lrclib candidate attribution is LRCLIB", loaded.attributionData.provider.compare(QStringLiteral("lrclib"), Qt::CaseInsensitive) == 0);
+                }
+
+                // 2. lrc.red candidate search & fetch
+                {
+                    const QString fileUrl = QStringLiteral("http://127.0.0.1:%1/101.ttml").arg(server.serverPort());
+                    server.responses.append({200, QStringLiteral(R"([{"title":"Hello","artist":"Adele","duration":200.0,"files":{"ttml":"%1"}}])").arg(fileUrl).toUtf8(), 0, {}});
+                    server.responses.append({200, validTtml, 0, {}});
+
+                    LrcRedProvider lrcred(nullptr, QStringLiteral("http://127.0.0.1:%1/").arg(server.serverPort()));
+                    QList<LyricCandidate> found;
+                    Lyrics loaded;
+                    QObject::connect(&lrcred, &LyricsProvider::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+                        found = c;
+                    });
+                    QObject::connect(&lrcred, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+
+                    lrcred.searchCandidates(meta, 2);
+                    check("regression 21: lrcred candidate search responds", waitFor([&] { return !found.isEmpty(); }));
+                    check("regression 21: lrcred candidate syncType is Unknown", !found.isEmpty() && found.first().syncType == CandidateSyncType::Unknown);
+
+                    if (!found.isEmpty()) {
+                        lrcred.fetchCandidateLyrics(found.first().id, 2);
+                        check("regression 21: lrcred fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
+                        check("regression 21: lrcred candidate attribution", loaded.attributionData.provider == QStringLiteral("lrc.red"));
+                    }
+                }
+
+                // 3. AMLL candidate search & fetch
+                {
+                    server.responses.append({200, R"([{"id":202,"name":"Hello","artist":"Adele","duration":200000}])", 0, {}});
+                    server.responses.append({200, validTtml, 0, {}});
+
+                    AmllProvider amll(nullptr, QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+                    QList<LyricCandidate> found;
+                    Lyrics loaded;
+                    QObject::connect(&amll, &LyricsProvider::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+                        found = c;
+                    });
+                    QObject::connect(&amll, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+
+                    amll.searchCandidates(meta, 3);
+                    check("regression 21: amll candidate search responds", waitFor([&] { return !found.isEmpty(); }));
+                    check("regression 21: amll candidate id is 202", !found.isEmpty() && found.first().id == QStringLiteral("202"));
+
+                    amll.fetchCandidateLyrics(QStringLiteral("202"), 3);
+                    check("regression 21: amll fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
+                    check("regression 21: amll candidate attribution is AMLL", loaded.attributionData.provider == QStringLiteral("AMLL"));
+                }
+
+                // 4. NetEase candidate search & fetch
+                {
+                    server.responses.append({200, R"({"result":{"songs":[{"id":303,"name":"Hello","ar":[{"name":"Adele"}],"dt":200000}]}})", 0, {}});
+                    server.responses.append({200, R"({"lrc":{"lyric":"[00:01.00]netease lyrics\n"}})", 0, {}});
+
+                    NeteaseProvider netease(nullptr, QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+                    QList<LyricCandidate> found;
+                    Lyrics loaded;
+                    QObject::connect(&netease, &LyricsProvider::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+                        found = c;
+                    });
+                    QObject::connect(&netease, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+
+                    netease.searchCandidates(meta, 4);
+                    check("regression 21: netease candidate search responds", waitFor([&] { return !found.isEmpty(); }));
+                    check("regression 21: netease candidate id is 303", !found.isEmpty() && found.first().id == QStringLiteral("303"));
+
+                    netease.fetchCandidateLyrics(QStringLiteral("303"), 4);
+                    check("regression 21: netease fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
+                    check("regression 21: netease candidate attribution is NetEase", loaded.attributionData.provider == QStringLiteral("NetEase"));
+                }
+
+                // 5. KuGou candidate search & fetch
+                {
+                    server.responses.append({200, R"({"data":{"info":[{"songname":"Hello","singername":"Adele","duration":200,"hash":"kghash123"}]}})", 0, {}});
+                    server.responses.append({200, R"({"candidates":[{"id":"cand99","accesskey":"ackey99"}]})", 0, {}});
+                    server.responses.append({200, R"({"data":{"content":"WzAwOjAxLjAwXWt1Z291IGx5cmljcw=="}})", 0, {}});
+
+                    KugouProvider kugou(nullptr, QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+                    QList<LyricCandidate> found;
+                    Lyrics loaded;
+                    QObject::connect(&kugou, &LyricsProvider::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+                        found = c;
+                    });
+                    QObject::connect(&kugou, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+
+                    kugou.searchCandidates(meta, 5);
+                    check("regression 21: kugou candidate search responds", waitFor([&] { return !found.isEmpty(); }));
+                    check("regression 21: kugou candidate id contains hash", !found.isEmpty() && found.first().id.startsWith(QStringLiteral("kghash123")));
+
+                    if (!found.isEmpty()) {
+                        kugou.fetchCandidateLyrics(found.first().id, 5);
+                        check("regression 21: kugou fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
+                        check("regression 21: kugou candidate attribution is KuGou", loaded.attributionData.provider == QStringLiteral("KuGou"));
+                    }
+                }
+
+                // 6. QQ Music candidate search & fetch
+                {
+                    server.responses.append({200, R"({"req_1":{"data":{"body":{"song":{"list":[{"mid":"mid007","name":"Hello","singer":[{"name":"Adele"}],"interval":200}]}}}}})", 0, {}});
+                    server.responses.append({200, R"({"lyric":"WzAwOjAxLjAwXXFxIGx5cmljcw=="})", 0, {}});
+
+                    QqMusicProvider qqmusic(nullptr, QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+                    QList<LyricCandidate> found;
+                    Lyrics loaded;
+                    QObject::connect(&qqmusic, &LyricsProvider::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+                        found = c;
+                    });
+                    QObject::connect(&qqmusic, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+
+                    qqmusic.searchCandidates(meta, 6);
+                    check("regression 21: qqmusic candidate search responds", waitFor([&] { return !found.isEmpty(); }));
+                    check("regression 21: qqmusic candidate id is mid007", !found.isEmpty() && found.first().id == QStringLiteral("mid007"));
+
+                    qqmusic.fetchCandidateLyrics(QStringLiteral("mid007"), 6);
+                    check("regression 21: qqmusic fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
+                    check("regression 21: qqmusic candidate attribution is QQ Music", loaded.attributionData.provider == QStringLiteral("QQ Music"));
+                }
+
+                // 7. Unison candidate search & fetch
+                {
+                    server.responses.append({200, R"([{"id":"uni88","song":"Hello","artist":"Adele","duration":200000}])", 0, {}});
+                    server.responses.append({200, R"({"data":{"lyrics":"[00:01.00]unison lyrics\n","format":"lrc"}})", 0, {}});
+
+                    UnisonProvider unison(nullptr, QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+                    QList<LyricCandidate> found;
+                    Lyrics loaded;
+                    QObject::connect(&unison, &LyricsProvider::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+                        found = c;
+                    });
+                    QObject::connect(&unison, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+
+                    unison.searchCandidates(meta, 7);
+                    check("regression 21: unison candidate search responds", waitFor([&] { return !found.isEmpty(); }));
+                    check("regression 21: unison candidate id is uni88", !found.isEmpty() && found.first().id == QStringLiteral("uni88"));
+
+                    unison.fetchCandidateLyrics(QStringLiteral("uni88"), 7);
+                    check("regression 21: unison fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
+                    check("regression 21: unison candidate attribution is Unison", loaded.attributionData.provider == QStringLiteral("Unison"));
+                }
+
+                // Integration tests on widget with fully isolated mock candidate providers
+                class MockCandProvider : public LyricsProvider {
+                public:
+                    MockCandProvider(const QString &id, const QString &name, QObject *parent = nullptr)
+                        : LyricsProvider(parent), m_id(id), m_name(name) {}
+
+                    QString id() const override { return m_id; }
+                    QString displayName() const override { return m_name; }
+                    Capabilities capabilities() const override { return Capability::LineSync; }
+                    bool isConfigured() const override { return true; }
+                    bool supportsCandidateSearch() const override { return true; }
+                    bool canHandle(const TrackMetadata &) const override { return true; }
+                    void requestLyrics(const TrackMetadata &, quint64) override {}
+                    void cancel() override {}
+
+                    void searchCandidates(const TrackMetadata &meta, quint64 searchId) override {
+                        m_activeSearchId = searchId;
+                        if (autoRespondCandidates) {
+                            LyricCandidate cand;
+                            cand.id = m_id + QStringLiteral("_cand_1");
+                            cand.title = meta.title;
+                            cand.artist = meta.artist;
+                            cand.providerId = m_id;
+                            cand.syncType = CandidateSyncType::Line;
+                            cand.durationMs = 180000;
+                            QTimer::singleShot(0, this, [this, searchId, cand]() {
+                                if (m_activeSearchId == searchId) {
+                                    Q_EMIT candidatesFound(searchId, {cand}, m_id);
+                                }
+                            });
+                        }
+                    }
+
+                    void cancelCandidateSearch(quint64 searchId) override {
+                        if (searchId == 0 || searchId == m_activeSearchId) {
+                            m_activeSearchId = 0;
+                            ++cancelSearchCount;
+                        }
+                    }
+
+                    void fetchCandidateLyrics(const QString &candidateId, quint64 fetchId) override {
+                        Q_UNUSED(candidateId);
+                        m_activeFetchId = fetchId;
+                        if (autoRespondFetch) {
+                            Lyrics l;
+                            l.type = LyricsType::Line;
+                            LyricLine line;
+                            line.text = m_name + QStringLiteral(" Lyrics");
+                            line.startMs = 0;
+                            line.endMs = 5000;
+                            l.lines.append(line);
+                            l.attributionData.provider = m_name;
+                            QTimer::singleShot(0, this, [this, fetchId, l]() {
+                                if (m_activeFetchId == fetchId) {
+                                    Q_EMIT candidateLyricsLoaded(fetchId, l, m_id);
+                                }
+                            });
+                        }
+                    }
+
+                    void cancelCandidateFetch(quint64 fetchId) override {
+                        if (fetchId == 0 || fetchId == m_activeFetchId) {
+                            m_activeFetchId = 0;
+                            ++cancelFetchCount;
+                        }
+                    }
+
+                    bool autoRespondCandidates = false;
+                    bool autoRespondFetch = false;
+                    quint64 m_activeSearchId = 0;
+                    quint64 m_activeFetchId = 0;
+                    int cancelSearchCount = 0;
+                    int cancelFetchCount = 0;
+                private:
+                    QString m_id;
+                    QString m_name;
+                };
+
+                auto *mockLrclib = new MockCandProvider(QStringLiteral("lrclib"), QStringLiteral("LRCLIB"), widget.m_candidateController);
+                auto *mockLrcred = new MockCandProvider(QStringLiteral("lrcred"), QStringLiteral("lrc.red"), widget.m_candidateController);
+                auto *mockAmll = new MockCandProvider(QStringLiteral("amll"), QStringLiteral("AMLL"), widget.m_candidateController);
+                auto *mockNetease = new MockCandProvider(QStringLiteral("netease"), QStringLiteral("NetEase"), widget.m_candidateController);
+                auto *mockKugou = new MockCandProvider(QStringLiteral("kugou"), QStringLiteral("KuGou"), widget.m_candidateController);
+                auto *mockQqmusic = new MockCandProvider(QStringLiteral("qqmusic"), QStringLiteral("QQ Music"), widget.m_candidateController);
+                auto *mockUnison = new MockCandProvider(QStringLiteral("unison"), QStringLiteral("Unison"), widget.m_candidateController);
+
+                widget.m_candidateController->registerProvider(mockLrclib);
+                widget.m_candidateController->registerProvider(mockLrcred);
+                widget.m_candidateController->registerProvider(mockAmll);
+                widget.m_candidateController->registerProvider(mockNetease);
+                widget.m_candidateController->registerProvider(mockKugou);
+                widget.m_candidateController->registerProvider(mockQqmusic);
+                widget.m_candidateController->registerProvider(mockUnison);
+
+                Lyrics candA;
+                candA.type = LyricsType::Line;
+                LyricLine lineA;
+                lineA.text = QStringLiteral("Candidate A line");
+                lineA.startMs = 1000;
+                lineA.endMs = 3000;
+                candA.lines.append(lineA);
+                candA.attributionData.provider = QStringLiteral("LRCLIB");
+
+                Lyrics candB;
+                candB.type = LyricsType::Line;
+                LyricLine lineB;
+                lineB.text = QStringLiteral("Candidate B line");
+                lineB.startMs = 1000;
+                lineB.endMs = 3000;
+                candB.lines.append(lineB);
+                candB.attributionData.provider = QStringLiteral("AMLL");
+
+                // Sequential selections
+                widget.m_trackTitle = QStringLiteral("Hello");
+                widget.m_trackArtist = QStringLiteral("Adele");
+                widget.openChooseMatchWindow();
+
+                widget.onCandidateLyricsLoaded(candA, QStringLiteral("lrclib"));
+                check("regression 21: isManualCandidateSelected is true after candidate loaded", widget.isManualCandidateSelected());
+                check("regression 21: active provider updated to lrclib", widget.provider() == QStringLiteral("LRCLIB"));
+
+                widget.onCandidateLyricsLoaded(candB, QStringLiteral("amll"));
+                check("regression 21: sequential selection updates provider to AMLL", widget.provider() == QStringLiteral("AMLL"));
+
+                // Track change during candidate search/fetch resets and ignores late candidate
+                widget.openChooseMatchWindow();
+                const quint64 candGen = widget.m_candidateLookupGeneration;
+                // Track change occurs
+                widget.m_trackTitle = QStringLiteral("New Song");
+                widget.m_trackArtist = QStringLiteral("New Artist");
+                ++widget.m_lookupGeneration;
+                check("regression 21: lookupGeneration advanced", widget.m_lookupGeneration != candGen);
+
+                // Late candidate response arrives
+                widget.onCandidateLyricsLoaded(candA, QStringLiteral("lrclib"));
+                check("regression 21: late candidate from old track is rejected", widget.m_lyrics.lines.isEmpty() || widget.m_lyrics.lines.first().text != candA.lines.first().text);
+
+                // Disabling provider in settings blocks acceptance
+                widget.useAutomaticSelection();
+                check("regression 21: manual selection reset", !widget.isManualCandidateSelected());
+                widget.openChooseMatchWindow();
+                widget.onCandidateLyricsLoaded(candA, QStringLiteral("non_existent_provider"));
+                check("regression 21: disabled/unknown provider candidate rejected", !widget.isManualCandidateSelected());
+
+                // Blacklist prevents candidate acceptance
+                widget.m_trackTitle = QStringLiteral("Blacklisted Candidate Song");
+                widget.m_trackArtist = QStringLiteral("Some Artist");
+                widget.toggleBlacklistCurrentTrack();
+                check("regression 21: track is blacklisted", widget.isCurrentTrackBlacklisted());
+                widget.openChooseMatchWindow();
+                widget.onCandidateLyricsLoaded(candA, QStringLiteral("lrclib"));
+                check("regression 21: blacklisted track rejects candidate", !widget.isManualCandidateSelected());
+                widget.toggleBlacklistCurrentTrack(); // unblacklist
+
+                // Error preserves previously displayed lyrics
+                widget.openChooseMatchWindow();
+                widget.onCandidateLyricsLoaded(candA, QStringLiteral("lrclib"));
+                check("regression 21: candA is active", widget.hasLyrics());
+                widget.onCandidateLyricsFailed(QStringLiteral("404 Not Found"));
+                check("regression 21: previous lyrics preserved on fetch failure", widget.hasLyrics());
+
+                // Returning to automatic selection
+                check("regression 21: isManualCandidateSelected is true before return", widget.isManualCandidateSelected());
+                widget.useAutomaticSelection();
+                check("regression 21: isManualCandidateSelected is false after useAutomaticSelection", !widget.isManualCandidateSelected());
+
+                // --- Specific lifecycle edge cases ---
+                // 1) Closing window during loading: status becomes idle, fetch cancelled, late reply ignored
+                {
+                    widget.openChooseMatchWindow();
+                    LyricCandidate c1;
+                    c1.id = QStringLiteral("c1");
+                    c1.title = QStringLiteral("Hello");
+                    c1.artist = QStringLiteral("Adele");
+                    c1.providerId = QStringLiteral("lrclib");
+                    c1.syncType = CandidateSyncType::Line;
+                    c1.durationMs = 200000;
+                    widget.m_candidateController->onCandidatesFound(widget.m_candidateController->m_searchId, {c1}, QStringLiteral("lrclib"));
+                    widget.m_candidateController->setSelectedIndex(0);
+                    widget.m_candidateController->useSelected();
+                    check("regression 21 lifecycle: status loading after useSelected", widget.m_candidateController->status() == QStringLiteral("loading"));
+                    const quint64 fetchId1 = widget.m_candidateController->m_fetchId;
+
+                    widget.m_candidateController->close();
+                    check("regression 21 lifecycle: close sets status to idle", widget.m_candidateController->status() == QStringLiteral("idle"));
+                    check("regression 21 lifecycle: cancelCandidateFetch called", mockLrclib->cancelFetchCount > 0);
+
+                    // Late candidate loaded for closed window
+                    widget.m_candidateController->onCandidateLyricsLoaded(fetchId1, candA, QStringLiteral("lrclib"));
+                    check("regression 21 lifecycle: late candidate after close ignored", !widget.isManualCandidateSelected());
+                }
+
+                // 2) Rapid selection A -> B: A cancelled, late reply for A dropped, B applied
+                {
+                    widget.openChooseMatchWindow();
+                    LyricCandidate cA;
+                    cA.id = QStringLiteral("cA");
+                    cA.title = QStringLiteral("Hello");
+                    cA.artist = QStringLiteral("Adele");
+                    cA.providerId = QStringLiteral("lrclib");
+                    cA.syncType = CandidateSyncType::Line;
+                    cA.durationMs = 200000;
+
+                    LyricCandidate cB;
+                    cB.id = QStringLiteral("cB");
+                    cB.title = QStringLiteral("Hello");
+                    cB.artist = QStringLiteral("Adele");
+                    cB.providerId = QStringLiteral("amll");
+                    cB.syncType = CandidateSyncType::Line;
+                    cB.durationMs = 200000;
+
+                    widget.m_candidateController->onCandidatesFound(widget.m_candidateController->m_searchId, {cA, cB}, QStringLiteral("lrclib"));
+                    widget.m_candidateController->setSelectedIndex(0);
+                    widget.m_candidateController->useSelected();
+                    const quint64 fetchIdA = widget.m_candidateController->m_fetchId;
+                    const int cancelsBeforeB = mockLrclib->cancelFetchCount;
+
+                    widget.m_candidateController->setSelectedIndex(1);
+                    widget.m_candidateController->useSelected();
+                    const quint64 fetchIdB = widget.m_candidateController->m_fetchId;
+                    check("regression 21 lifecycle: A cancelled on selecting B", mockLrclib->cancelFetchCount > cancelsBeforeB);
+                    check("regression 21 lifecycle: fetchId advanced for B", fetchIdB > fetchIdA);
+
+                    // Late response for A arrives
+                    widget.m_candidateController->onCandidateLyricsLoaded(fetchIdA, candA, QStringLiteral("lrclib"));
+                    check("regression 21 lifecycle: late A reply rejected", widget.provider() != QStringLiteral("LRCLIB"));
+
+                    // Response for B arrives
+                    widget.m_candidateController->onCandidateLyricsLoaded(fetchIdB, candB, QStringLiteral("amll"));
+                    check("regression 21 lifecycle: B applied", widget.isManualCandidateSelected() && widget.provider() == QStringLiteral("AMLL"));
+                }
+
+                // 3) Empty enabled list: status nomatches, 0 requests launched
+                {
+                    const quint64 sBefore = mockLrclib->m_activeSearchId;
+                    widget.m_candidateController->startSearch(meta, {QStringLiteral("lrclib")}, {});
+                    check("regression 21 lifecycle: empty enabled list sets nomatches", widget.m_candidateController->status() == QStringLiteral("nomatches"));
+                    check("regression 21 lifecycle: 0 provider requests launched", mockLrclib->m_activeSearchId == sBefore);
+                }
+
+                // 4) Repeat-one track change vs repeat same track
+                {
+                    widget.openChooseMatchWindow();
+                    widget.onCandidateLyricsLoaded(candA, QStringLiteral("lrclib"));
+                    check("regression 21 lifecycle: manual candidate active before repeat test", widget.isManualCandidateSelected());
+
+                    widget.m_repeatTrack = true;
+                    // Same track repeated: trackChanged is false
+                    QVariantMap sameMeta;
+                    sameMeta.insert(QStringLiteral("xesam:title"), widget.m_trackTitle);
+                    sameMeta.insert(QStringLiteral("xesam:artist"), QStringList{widget.m_trackArtist});
+                    widget.applyMetadata(sameMeta);
+                    check("regression 21 lifecycle: natural repeat of same track preserves manual candidate", widget.isManualCandidateSelected());
+
+                    // Track changes to different song
+                    QVariantMap otherMeta;
+                    otherMeta.insert(QStringLiteral("xesam:title"), QStringLiteral("Other Title"));
+                    otherMeta.insert(QStringLiteral("xesam:artist"), QStringList{QStringLiteral("Other Artist")});
+                    widget.applyMetadata(otherMeta);
+                    check("regression 21 lifecycle: different song resets manual candidate", !widget.isManualCandidateSelected());
+                    widget.m_repeatTrack = false;
+                }
+
+                // ChooseMatchWindow.qml component verification
+                QQmlEngine matchEngine;
+                QQmlEngine::setObjectOwnership(&widget, QQmlEngine::CppOwnership);
+                matchEngine.rootContext()->setContextObject(new KLocalizedContext(&matchEngine));
+                matchEngine.rootContext()->setContextProperty(QStringLiteral("Plasmoid"), &widget);
+
+                QString matchQmlPath;
+#ifdef SOURCE_DIR
+                matchQmlPath = QStringLiteral(SOURCE_DIR "/contents/ui/ChooseMatchWindow.qml");
+#endif
+                if (matchQmlPath.isEmpty() || !QFile::exists(matchQmlPath)) {
+                    const QStringList cands = {
+                        QDir::currentPath() + QStringLiteral("/contents/ui/ChooseMatchWindow.qml"),
+                        QCoreApplication::applicationDirPath() + QStringLiteral("/../contents/ui/ChooseMatchWindow.qml"),
+                        QCoreApplication::applicationDirPath() + QStringLiteral("/contents/ui/ChooseMatchWindow.qml")
+                    };
+                    for (const auto &c : cands) {
+                        if (QFile::exists(c)) {
+                            matchQmlPath = c;
+                            break;
+                        }
+                    }
+                }
+
+                QQmlComponent matchComp(&matchEngine, QUrl::fromLocalFile(matchQmlPath));
+                check("regression 21: ChooseMatchWindow.qml loads cleanly", !matchComp.isError(), matchComp.errorString());
+                QObject *matchObj = matchComp.create();
+                check("regression 21: ChooseMatchWindow object created", matchObj != nullptr);
+
+                if (matchObj) {
+                    QQmlEngine::setObjectOwnership(matchObj, QQmlEngine::CppOwnership);
+                    QMetaObject::invokeMethod(matchObj, "openWindow", Q_ARG(QVariant, QVariant::fromValue(static_cast<QObject*>(&widget))));
+                    check("regression 21: ChooseMatchWindow plasmoidApplet set", matchObj->property("plasmoidApplet").isValid());
+                    check("regression 21: ChooseMatchWindow controller property valid", matchObj->property("controller").isValid());
+                    delete matchObj;
+                }
             }
         }
 

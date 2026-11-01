@@ -144,3 +144,81 @@ void normalizeTrackMetadata(TrackMetadata *meta)
 
     meta->searchNormalized = true;
 }
+
+QVector<TrackMetadata> generateSearchVariants(const TrackMetadata &meta)
+{
+    QVector<TrackMetadata> variants;
+
+    auto addVariantIfUnique = [&variants](const TrackMetadata &v) {
+        if (v.title.trimmed().isEmpty()) {
+            return;
+        }
+        for (const auto &existing : variants) {
+            if (existing.title.compare(v.title, Qt::CaseInsensitive) == 0
+                && existing.artist.compare(v.artist, Qt::CaseInsensitive) == 0) {
+                return;
+            }
+        }
+        variants.append(v);
+    };
+
+    if (meta.isWebSession) {
+        // Variant 1: Cleaned original metadata (do not split title dash)
+        TrackMetadata v1 = meta;
+        v1.artist = cleanTrackArtist(meta.artist);
+        v1.title = cleanTrackTitle(meta.title);
+        v1.expectedArtist = !meta.expectedArtist.trimmed().isEmpty() ? meta.expectedArtist : meta.artist;
+        v1.expectedTitle = !meta.expectedTitle.trimmed().isEmpty() ? meta.expectedTitle : meta.title;
+        v1.searchNormalized = true;
+        addVariantIfUnique(v1);
+
+        // Variant 2: Split title "Artist - Title"
+        TrackMetadata v2 = meta;
+        QString splitArtist = meta.artist;
+        QString splitTitle = meta.title;
+        splitTrackArtistAndTitle(&splitArtist, &splitTitle, true);
+        v2.artist = cleanTrackArtist(splitArtist);
+        v2.title = cleanTrackTitle(splitTitle);
+        v2.expectedArtist = !meta.expectedArtist.trimmed().isEmpty() ? meta.expectedArtist
+                            : (!v2.artist.trimmed().isEmpty() ? v2.artist : meta.artist);
+        v2.expectedTitle = !meta.expectedTitle.trimmed().isEmpty() ? meta.expectedTitle
+                           : (!v2.title.trimmed().isEmpty() ? v2.title : meta.title);
+        v2.searchNormalized = true;
+        addVariantIfUnique(v2);
+
+        // Variant 3: Query without artist restriction, retaining expected identity
+        if (variants.size() < 3 && (!meta.artist.trimmed().isEmpty() || (!v2.artist.trimmed().isEmpty()))) {
+            TrackMetadata v3 = meta;
+            v3.expectedArtist = !meta.expectedArtist.trimmed().isEmpty() ? meta.expectedArtist
+                                : (!v2.artist.trimmed().isEmpty() ? v2.artist : meta.artist);
+            v3.expectedTitle = !meta.expectedTitle.trimmed().isEmpty() ? meta.expectedTitle
+                               : (!v2.title.trimmed().isEmpty() ? v2.title : v1.title);
+            v3.artist = QString();
+            v3.title = !v2.title.trimmed().isEmpty() ? v2.title : v1.title;
+            v3.searchNormalized = true;
+            addVariantIfUnique(v3);
+        }
+    } else {
+        // Native players: do NOT re-split title with dash as another artist
+        TrackMetadata v1 = meta;
+        if (v1.artist.trimmed().isEmpty()) {
+            splitTrackArtistAndTitle(&v1.artist, &v1.title, false);
+        }
+        v1.artist = cleanTrackArtist(v1.artist);
+        v1.title = cleanTrackTitle(v1.title);
+        v1.expectedArtist = !meta.expectedArtist.trimmed().isEmpty() ? meta.expectedArtist : v1.artist;
+        v1.expectedTitle = !meta.expectedTitle.trimmed().isEmpty() ? meta.expectedTitle : v1.title;
+        v1.searchNormalized = true;
+        addVariantIfUnique(v1);
+    }
+
+    if (variants.isEmpty()) {
+        TrackMetadata fallback = meta;
+        fallback.expectedArtist = !meta.expectedArtist.trimmed().isEmpty() ? meta.expectedArtist : meta.artist;
+        fallback.expectedTitle = !meta.expectedTitle.trimmed().isEmpty() ? meta.expectedTitle : meta.title;
+        fallback.searchNormalized = true;
+        variants.append(fallback);
+    }
+
+    return variants;
+}

@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.8.6 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.9.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -102,6 +102,8 @@ add_library(${PLUGIN_ID} SHARED
     src/providers/localprovider.h
     src/providers/customprovider.cpp
     src/providers/customprovider.h
+    src/providers/candidatesearchcontroller.cpp
+    src/providers/candidatesearchcontroller.h
 )
 
 set_target_properties(${PLUGIN_ID} PROPERTIES
@@ -262,7 +264,12 @@ if(PLASMA_LRC_TESTS)
     target_include_directories(applet-sync-test PRIVATE ${LRC_PLASMA_INCLUDE_DIR} ${LRC_INCLUDE_DIRS})
     target_compile_definitions(applet-sync-test PRIVATE SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(applet-sync-test PRIVATE ${PLUGIN_ID}
-        Qt6::Widgets Qt6::Qml Qt6::DBus Qt6::Network KF6::CoreAddons KF6::ConfigCore ${LRC_PLASMA_LIBRARY})
+        Qt6::Widgets Qt6::Qml Qt6::DBus Qt6::Network KF6::CoreAddons KF6::ConfigCore KF6::I18n ${LRC_PLASMA_LIBRARY})
     add_test(NAME applet-sync COMMAND applet-sync-test)
     set_tests_properties(applet-sync PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(benchmark-runner tests/benchmark.cpp)
+    target_include_directories(benchmark-runner PRIVATE ${LRC_PLASMA_INCLUDE_DIR} ${LRC_INCLUDE_DIRS})
+    target_link_libraries(benchmark-runner PRIVATE ${PLUGIN_ID}
+        Qt6::Widgets Qt6::Qml Qt6::DBus Qt6::Network KF6::CoreAddons KF6::ConfigCore KF6::I18n ${LRC_PLASMA_LIBRARY})
 endif()

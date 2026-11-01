@@ -7,6 +7,7 @@
 #include "customprovider.h"
 #include "lrcparser.h"
 #include "ttmlparser.h"
+#include "lyriclimits.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -76,6 +77,7 @@ void CustomProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
     }
 
     m_currentReply = m_network.get(req);
+    LyricsLimits::attachSizeLimitGuard(m_currentReply);
     connect(m_currentReply, &QNetworkReply::finished, this, &CustomProvider::onReplyFinished);
     m_watchdog.start(kTimeoutMs);
 }
@@ -108,6 +110,13 @@ void CustomProvider::onReplyFinished()
         return;
     }
     reply->deleteLater();
+
+    if (LyricsLimits::isSizeLimitExceeded(reply)) {
+        const quint64 gen = m_currentGeneration;
+        cancel();
+        Q_EMIT lyricsFailed(gen, MissingReason::SizeLimitExceeded, id());
+        return;
+    }
 
     if (reply->error() != QNetworkReply::NoError) {
         const quint64 gen = m_currentGeneration;

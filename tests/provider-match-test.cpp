@@ -6,6 +6,7 @@
 
 #include "trackmatch.h"
 #include "trackname.h"
+#include "lyricfilter.h"
 
 #include <iostream>
 #include <QCoreApplication>
@@ -431,6 +432,115 @@ int main(int argc, char *argv[])
               !TrackMatch::validateExactLookupMetadata(target, QStringLiteral("Yellow"), QStringLiteral("Wrong Artist"), 200000));
         check("unison exact-ID: mismatched duration in response rejected",
               !TrackMatch::validateExactLookupMetadata(target, QStringLiteral("Yellow"), QStringLiteral("Coldplay"), 300000));
+    }
+
+    // 8. Search Query Variants Tests
+    {
+        // YouTube title with artist and decorations
+        TrackMetadata ytMeta;
+        ytMeta.isWebSession = true;
+        ytMeta.artist = QStringLiteral("RickAstleyVEVO");
+        ytMeta.title = QStringLiteral("Rick Astley - Never Gonna Give You Up (Official Music Video)");
+        const auto ytVariants = generateSearchVariants(ytMeta);
+        check("variants: YouTube produced up to 3 variants", ytVariants.size() >= 2 && ytVariants.size() <= 3);
+        check("variants: YouTube variant 1 cleaned original",
+              ytVariants[0].artist == QStringLiteral("RickAstley")
+              && ytVariants[0].title == QStringLiteral("Rick Astley - Never Gonna Give You Up"));
+        check("variants: YouTube variant 2 split Artist - Title",
+              ytVariants[1].artist == QStringLiteral("Rick Astley")
+              && ytVariants[1].title == QStringLiteral("Never Gonna Give You Up"));
+        if (ytVariants.size() >= 3) {
+            check("variants: YouTube variant 3 no artist restriction",
+                  ytVariants[2].artist.isEmpty()
+                  && ytVariants[2].title == QStringLiteral("Never Gonna Give You Up"));
+        }
+
+        // Channel uploader instead of artist
+        TrackMetadata chanMeta;
+        chanMeta.isWebSession = true;
+        chanMeta.artist = QStringLiteral("CoolMusicUploader99");
+        chanMeta.title = QStringLiteral("Nirvana - Smells Like Teen Spirit");
+        const auto chanVariants = generateSearchVariants(chanMeta);
+        check("variants: channel uploader split recovers artist",
+              chanVariants.size() >= 2
+              && chanVariants[1].artist == QStringLiteral("Nirvana")
+              && chanVariants[1].title == QStringLiteral("Smells Like Teen Spirit"));
+
+        // Native player: "Song — Live" (dash in title must NOT be split into artist!)
+        TrackMetadata nativeMeta;
+        nativeMeta.isWebSession = false;
+        nativeMeta.artist = QStringLiteral("Iron Maiden");
+        nativeMeta.title = QStringLiteral("Fear of the Dark — Live");
+        const auto nativeVariants = generateSearchVariants(nativeMeta);
+        check("variants: native player keeps title dash and preserves version tag",
+              nativeVariants.size() == 1
+              && nativeVariants[0].artist == QStringLiteral("Iron Maiden")
+              && (nativeVariants[0].title.contains(QStringLiteral("Fear of the Dark")) && nativeVariants[0].title.contains(QStringLiteral("Live"))));
+
+        // AC/DC: embedded slash in band name preserved
+        check("variants: AC/DC slash preserved", cleanTrackArtist(QStringLiteral("AC/DC")) == QStringLiteral("AC/DC"));
+
+        // Numeric titles preserved
+        check("variants: 99 Problems preserved", cleanTrackTitle(QStringLiteral("99 Problems")) == QStringLiteral("99 Problems"));
+        check("variants: 1979 preserved", cleanTrackTitle(QStringLiteral("1979")) == QStringLiteral("1979"));
+        check("variants: 21 Guns preserved", cleanTrackTitle(QStringLiteral("21 Guns")) == QStringLiteral("21 Guns"));
+
+        // Candidate identity: Other track of same artist rejected
+        TrackMetadata eminemTarget;
+        eminemTarget.title = QStringLiteral("Stan");
+        eminemTarget.artist = QStringLiteral("Eminem");
+        eminemTarget.durationMs = 300000;
+        check("candidate: other track of same artist rejected",
+              !TrackMatch::matchCandidate(eminemTarget, QStringLiteral("Without Me"), QStringLiteral("Eminem"), 300000));
+
+        // Candidate identity: Other artist with same track title rejected
+        TrackMetadata adeleTarget;
+        adeleTarget.title = QStringLiteral("Hello");
+        adeleTarget.artist = QStringLiteral("Adele");
+        adeleTarget.durationMs = 240000;
+        check("candidate: other artist with same title rejected",
+              !TrackMatch::matchCandidate(adeleTarget, QStringLiteral("Hello"), QStringLiteral("Lionel Richie"), 240000));
+
+        // Deduplication: no dash in web title
+        TrackMetadata plainMeta;
+        plainMeta.isWebSession = true;
+        plainMeta.artist = QStringLiteral("Queen");
+        plainMeta.title = QStringLiteral("Bohemian Rhapsody");
+        const auto plainVariants = generateSearchVariants(plainMeta);
+        check("variants: deduplicated when no split dash present", plainVariants.size() <= 2);
+
+        // Variant 3 identity separation: empty search query artist MUST preserve expected identity
+        TrackMetadata v3Target;
+        v3Target.isWebSession = true;
+        v3Target.title = QStringLiteral("Rolling in the Deep");
+        v3Target.artist = QStringLiteral("Adele");
+        const auto v3Variants = generateSearchVariants(v3Target);
+        bool foundV3 = false;
+        for (const auto &v : v3Variants) {
+            if (v.artist.isEmpty()) {
+                foundV3 = true;
+                check("variants: v3 query artist is empty", v.artist.isEmpty());
+                check("variants: v3 effectiveExpectedArtist is preserved", v.effectiveExpectedArtist() == QStringLiteral("Adele"));
+                check("variants: v3 rejects wrong artist", !TrackMatch::matchCandidate(v, QStringLiteral("Rolling in the Deep"), QStringLiteral("Wrong Artist")));
+                check("variants: v3 accepts expected artist", TrackMatch::matchCandidate(v, QStringLiteral("Rolling in the Deep"), QStringLiteral("Adele")));
+                break;
+            }
+        }
+        check("variants: variant 3 generated", foundV3);
+
+        // LyricFilter tests: verify credit prefixes and legitimate sung lines
+        check("filter: I love music: it keeps me alive is NOT credit",
+              !LyricFilter::isCreditOrNotice(QStringLiteral("I love music: it keeps me alive")));
+        check("filter: Lyrics: John Doe IS credit",
+              LyricFilter::isCreditOrNotice(QStringLiteral("Lyrics: John Doe")));
+        check("filter: Lyrics / Music: John Doe IS credit",
+              LyricFilter::isCreditOrNotice(QStringLiteral("Lyrics / Music: John Doe")));
+        check("filter: 作词/作曲: 周杰伦 IS credit",
+              LyricFilter::isCreditOrNotice(QStringLiteral("作词/作曲: 周杰伦")));
+        check("filter: Words: keep me alive IS credit",
+              LyricFilter::isCreditOrNotice(QStringLiteral("Words: keep me alive")));
+        check("filter: Vocals: Jane IS credit",
+              LyricFilter::isCreditOrNotice(QStringLiteral("Vocals: Jane")));
     }
 
     if (s_failed == 0) {

@@ -37,6 +37,12 @@ public:
     void invalidateCache(const TrackMetadata &meta) override;
     void clearAllCaches() override;
 
+    bool supportsCandidateSearch() const override { return true; }
+    void searchCandidates(const TrackMetadata &meta, quint64 searchId) override;
+    void fetchCandidateLyrics(const QString &candidateId, quint64 fetchId) override;
+    void cancelCandidateSearch(quint64 searchId) override;
+    void cancelCandidateFetch(quint64 fetchId) override;
+
     QString confirmedRejectionReason(quint64 generation) const override
     {
         return (generation == m_diagGeneration) ? m_diagReason : QString();
@@ -85,4 +91,8 @@ private:
     quint64 m_diagGeneration = 0;
     QString m_diagReason;
     QString m_diagCache;
+    QPointer<QNetworkReply> m_candidateSearchReply;
+    QPointer<QNetworkReply> m_candidateFetchReply;
+    quint64 m_candidateSearchId = 0;
+    quint64 m_candidateFetchId = 0;
 };

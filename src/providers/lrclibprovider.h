@@ -31,6 +31,12 @@ public:
     void invalidateCache(const TrackMetadata &meta) override;
     void clearAllCaches() override;
 
+    bool supportsCandidateSearch() const override { return true; }
+    void searchCandidates(const TrackMetadata &meta, quint64 searchId) override;
+    void fetchCandidateLyrics(const QString &candidateId, quint64 fetchId) override;
+    void cancelCandidateSearch(quint64 searchId) override;
+    void cancelCandidateFetch(quint64 fetchId) override;
+
     QString confirmedRejectionReason(quint64 generation) const override
     {
         return (generation == m_currentGeneration && m_client) ? m_client->lastRejectionReason() : QString();
@@ -44,7 +50,7 @@ public:
 
 private Q_SLOTS:
     void onLoaded(const QString &requestKey, const Lyrics &lyrics);
-    void onMissing(const QString &requestKey);
+    void onMissing(const QString &requestKey, MissingReason reason);
 
 private:
     LrclibClient *m_client;

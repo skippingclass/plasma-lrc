@@ -21,5 +21,5 @@ namespace LrcParser
  * @param trackDurationMs Track duration in milliseconds (if known), used to bound the final line.
  * @return True if at least one usable line was parsed.
  */
-bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs = 0);
+bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs = 0, bool *outLimitExceeded = nullptr);
 }

@@ -49,3 +49,13 @@ struct TrackMetadata;
  * Idempotent: repeated calls do not re-split title dashes or alter normalized fields.
  */
 void normalizeTrackMetadata(TrackMetadata *meta);
+
+/**
+ * Generates search query variants:
+ * For browser sessions: up to 3 unique variants:
+ * 1. Cleaned original metadata
+ * 2. Split title "Artist — Title"
+ * 3. Title without artist restriction
+ * For native players: does not split title with dash into another artist; preserves version flags.
+ */
+QVector<TrackMetadata> generateSearchVariants(const TrackMetadata &meta);

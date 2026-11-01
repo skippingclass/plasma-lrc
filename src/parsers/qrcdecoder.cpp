@@ -7,6 +7,7 @@
 #include "qrcdecoder.h"
 #include "ttmlparser.h"
 #include "zlibcodec.h"
+#include "lyriclimits.h"
 
 #include <QRegularExpression>
 #include <QStringList>
@@ -527,6 +528,9 @@ QString toTtml(const QString &qrcText)
     if (qrcText.isEmpty()) {
         return QString();
     }
+    if (!LyricsLimits::checkDecodedSize(qrcText.size() * sizeof(QChar))) {
+        return QString();
+    }
 
     QString content = qrcText;
     static const QRegularExpression xmlContentRe(QStringLiteral("LyricContent=\"(.*?)\""), QRegularExpression::DotMatchesEverythingOption);
@@ -547,8 +551,14 @@ QString toTtml(const QString &qrcText)
     qint64 offset = 0;
     QStringList paragraphs;
     const QStringList lines = content.split(QLatin1Char('\n'));
+    if (lines.size() > LyricsLimits::kMaxLines) {
+        return QString();
+    }
 
     for (const QString &rawLine : lines) {
+        if (!LyricsLimits::checkLineLength(rawLine.size())) {
+            return QString();
+        }
         const QString line = rawLine.trimmed();
         const QRegularExpressionMatch offM = offsetRe.match(line);
         if (offM.hasMatch()) {
@@ -656,8 +666,11 @@ QString toTtml(const QString &qrcText)
         .arg(paragraphs.join(QString()));
 }
 
-bool parse(const QString &hexOrQrcText, Lyrics *outLyrics, qint64 trackDurationMs)
+bool parse(const QString &hexOrQrcText, Lyrics *outLyrics, qint64 trackDurationMs, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     QString qrc = hexOrQrcText.trimmed();
     if (!qrc.startsWith(QLatin1Char('[')) && !qrc.startsWith(QLatin1Char('<'))) {
         qrc = decryptHex(qrc);
@@ -669,7 +682,7 @@ bool parse(const QString &hexOrQrcText, Lyrics *outLyrics, qint64 trackDurationM
     if (ttml.isEmpty()) {
         return false;
     }
-    return TtmlParser::parseTtml(ttml, outLyrics, trackDurationMs);
+    return TtmlParser::parseTtml(ttml, outLyrics, trackDurationMs, outLimitExceeded);
 }
 
 } // namespace QrcDecoder

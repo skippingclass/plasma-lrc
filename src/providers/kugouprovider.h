@@ -19,8 +19,12 @@ class KugouProvider : public LyricsProvider
     Q_OBJECT
 
 public:
-    explicit KugouProvider(QObject *parent = nullptr);
+    explicit KugouProvider(QObject *parent = nullptr,
+                           const QString &apiBase = QString());
     ~KugouProvider() override;
+
+    void setApiBase(const QString &base) { m_apiBase = base; }
+    QString apiBase() const { return m_apiBase; }
 
     QString id() const override { return QStringLiteral("kugou"); }
     QString displayName() const override { return QStringLiteral("KuGou"); }
@@ -32,6 +36,12 @@ public:
     bool canHandle(const TrackMetadata &meta) const override;
     void requestLyrics(const TrackMetadata &meta, quint64 generation) override;
     void cancel() override;
+
+    bool supportsCandidateSearch() const override { return true; }
+    void searchCandidates(const TrackMetadata &meta, quint64 searchId) override;
+    void fetchCandidateLyrics(const QString &candidateId, quint64 fetchId) override;
+    void cancelCandidateSearch(quint64 searchId) override;
+    void cancelCandidateFetch(quint64 fetchId) override;
 
 private Q_SLOTS:
     void onReplyFinished();
@@ -63,4 +73,11 @@ private:
     TrackMetadata m_meta;
     QString m_currentId;
     QString m_currentAccessKey;
+    QString m_apiBase;
+
+    QPointer<QNetworkReply> m_candidateSearchReply;
+    QPointer<QNetworkReply> m_candidateFetchStep1Reply;
+    QPointer<QNetworkReply> m_candidateFetchStep2Reply;
+    quint64 m_candidateSearchId = 0;
+    quint64 m_candidateFetchId = 0;
 };

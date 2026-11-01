@@ -58,6 +58,24 @@ enum class MissingReason {
     Unsynced, ///< the track is there, the text has no timings
     NotFound, ///< the API does not know the track
     Unreachable, ///< no network, key rejected, rate limited, bad reply
+    SizeLimitExceeded, ///< response, file, or parsed content exceeds safe limits
+};
+
+enum class CandidateSyncType {
+    Unknown,
+    Word,
+    Line,
+    None
+};
+
+struct LyricCandidate {
+    QString id;
+    QString providerId;
+    QString sourceName;
+    QString title;
+    QString artist;
+    qint64 durationMs = 0;
+    CandidateSyncType syncType = CandidateSyncType::Unknown;
 };
 
 struct LyricContributor
@@ -152,4 +170,16 @@ struct TrackMetadata
     bool isWebSession = false;///< Browser/web page media session
     QString url;              ///< xesam:url from MPRIS (e.g. file:///path/to/song.flac)
     bool searchNormalized = false;
+    QString expectedTitle;    ///< Expected title for candidate validation when search query is modified
+    QString expectedArtist;   ///< Expected artist for candidate validation when search query is modified
+
+    QString effectiveExpectedTitle() const
+    {
+        return !expectedTitle.trimmed().isEmpty() ? expectedTitle : title;
+    }
+
+    QString effectiveExpectedArtist() const
+    {
+        return !expectedArtist.trimmed().isEmpty() ? expectedArtist : artist;
+    }
 };

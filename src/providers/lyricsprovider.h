@@ -49,9 +49,18 @@ public:
     virtual QString confirmedRejectionReason(quint64 generation) const { Q_UNUSED(generation); return QString(); }
     virtual QString cacheUsage(quint64 generation) const { Q_UNUSED(generation); return QString(); }
 
+    virtual bool supportsCandidateSearch() const { return false; }
+    virtual void searchCandidates(const TrackMetadata &meta, quint64 searchId) { Q_UNUSED(meta); Q_UNUSED(searchId); }
+    virtual void fetchCandidateLyrics(const QString &candidateId, quint64 fetchId) { Q_UNUSED(candidateId); Q_UNUSED(fetchId); }
+    virtual void cancelCandidateSearch(quint64 searchId) { Q_UNUSED(searchId); }
+    virtual void cancelCandidateFetch(quint64 fetchId) { Q_UNUSED(fetchId); }
+
 Q_SIGNALS:
     void lyricsLoaded(quint64 generation, const Lyrics &lyrics, const QString &providerId);
     void lyricsFailed(quint64 generation, MissingReason reason, const QString &providerId);
+    void candidatesFound(quint64 searchId, const QList<LyricCandidate> &candidates, const QString &providerId);
+    void candidateLyricsLoaded(quint64 fetchId, const Lyrics &lyrics, const QString &providerId);
+    void candidateLyricsFailed(quint64 fetchId, MissingReason reason, const QString &providerId);
 
 protected:
     bool m_enabled = true;

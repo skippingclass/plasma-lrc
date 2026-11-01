@@ -51,11 +51,23 @@ public:
     void clearCache();
     static QByteArray userAgent();
 
+    void searchCandidates(const TrackMetadata &meta, quint64 searchId);
+    void fetchCandidate(const QString &candidateId, quint64 fetchId);
+    void cancelCandidateSearch(quint64 searchId);
+    void cancelCandidateFetch(quint64 fetchId);
+
 Q_SIGNALS:
     void loaded(const QString &requestKey, const Lyrics &lyrics);
-    void missing(const QString &requestKey);
+    void missing(const QString &requestKey, MissingReason reason = MissingReason::NotFound);
+    void candidatesFound(quint64 searchId, const QList<LyricCandidate> &candidates);
+    void candidateLyricsLoaded(quint64 fetchId, const Lyrics &lyrics);
+    void candidateLyricsFailed(quint64 fetchId, MissingReason reason);
 
 private:
+    QPointer<QNetworkReply> m_candidateSearchReply;
+    QPointer<QNetworkReply> m_candidateFetchReply;
+    quint64 m_candidateSearchId = 0;
+    quint64 m_candidateFetchId = 0;
     struct SearchAttempt {
         QUrl url;
         bool isSearch = false;
@@ -65,7 +77,7 @@ private:
     void executeAttempt(const SearchAttempt &attempt);
     void handleReply(QNetworkReply *reply, const SearchAttempt &attempt);
     void finishWithCandidate(const QJsonObject &cand);
-    void finishWithMissing(bool writeNegativeCache = true);
+    void finishWithMissing(bool writeNegativeCache = true, MissingReason reason = MissingReason::NotFound);
     void cleanupAttemptState();
 
     QNetworkAccessManager m_network;

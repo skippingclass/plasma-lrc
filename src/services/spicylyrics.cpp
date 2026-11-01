@@ -5,6 +5,7 @@
  */
 
 #include "spicylyrics.h"
+#include "lyriclimits.h"
 
 #include <algorithm>
 #include <limits>
@@ -46,7 +47,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.6 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.0 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -609,6 +610,12 @@ void SpicyLyrics::load(const QString &trackId)
             return;
         }
 
+        if (QFileInfo(path).size() > LyricsLimits::kMaxInputSizeBytes) {
+            QFile::remove(path);
+            fetch(trackId);
+            return;
+        }
+
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
             QFile::remove(path);
@@ -812,6 +819,7 @@ void SpicyLyrics::fetch(const QString &trackId)
     request.setTransferTimeout(kRequestTimeoutMs);
 
     QNetworkReply *reply = m_network.get(request);
+    LyricsLimits::attachSizeLimitGuard(reply);
     m_activeReply = reply;
     connect(reply, &QNetworkReply::finished, this, [this, reply, trackId, generation = m_generation] {
         if (generation != m_generation || trackId != m_currentTrackId) {
@@ -825,6 +833,10 @@ void SpicyLyrics::fetch(const QString &trackId)
         m_watchdog->stop();
         m_lastHttpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QByteArray payload = reply->readAll();
+        if (LyricsLimits::isSizeLimitExceeded(reply) || payload.size() > LyricsLimits::kMaxInputSizeBytes) {
+            emitMissing(trackId, MissingReason::SizeLimitExceeded);
+            return;
+        }
 
         if (reply->error() != QNetworkReply::NoError) {
             // 404 means the API does not know the track, which is worth

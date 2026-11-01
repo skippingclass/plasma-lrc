@@ -5,6 +5,7 @@
  */
 
 #include "ttmlparser.h"
+#include "lyriclimits.h"
 
 #include <QRegularExpression>
 #include <QStringList>
@@ -174,9 +175,19 @@ bool parseTimestamp(const QString &timeStr, qint64 *outMs)
     return false;
 }
 
-bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationMs)
+bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationMs, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     if (!lyrics || ttmlContent.trimmed().isEmpty()) {
+        return false;
+    }
+
+    if (!LyricsLimits::checkDecodedSize(ttmlContent.size() * sizeof(QChar))) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return false;
     }
 
@@ -538,6 +549,15 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
     lyrics->attributionData.providerUrl = QStringLiteral("https://www.apple.com/apple-music/");
     lyrics->attribution = QStringLiteral("Apple Music (TTML)");
     lyrics->attributionUrl = lyrics->attributionData.providerUrl;
+
+    if (!LyricsLimits::validateLyricsLimits(*lyrics)) {
+        lyrics->lines.clear();
+        lyrics->type = LyricsType::None;
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return false;
+    }
 
     return lyrics->isUsable();
 }

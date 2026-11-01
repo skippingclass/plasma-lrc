@@ -20,6 +20,6 @@ QString toTtml(const QString &yrcText);
 /**
  * Parse NetEase YRC lyric text into Lyrics structure (LyricsType::Syllable).
  */
-bool parse(const QString &yrcText, Lyrics *outLyrics, qint64 trackDurationMs = 0);
+bool parse(const QString &yrcText, Lyrics *outLyrics, qint64 trackDurationMs = 0, bool *outLimitExceeded = nullptr);
 
 } // namespace YrcParser

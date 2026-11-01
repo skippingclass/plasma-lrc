@@ -22,7 +22,7 @@ namespace TtmlParser
  * @param trackDurationMs Optional duration to bound outro / last line.
  * @return True if at least one usable line was parsed.
  */
-bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationMs = 0);
+bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationMs = 0, bool *outLimitExceeded = nullptr);
 
 /**
  * Parses a TTML time expression (e.g. "00:03.760", "01:23.456", "00:01:23.456", "3.76s")

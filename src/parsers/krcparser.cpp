@@ -7,6 +7,7 @@
 #include "krcparser.h"
 #include "ttmlparser.h"
 #include "zlibcodec.h"
+#include "lyriclimits.h"
 
 #include <QRegularExpression>
 #include <QStringList>
@@ -341,14 +342,23 @@ QString toTtml(const QString &krcText)
     if (krcText.isEmpty()) {
         return QString();
     }
+    if (!LyricsLimits::checkDecodedSize(krcText.size() * sizeof(QChar))) {
+        return QString();
+    }
 
     static const QRegularExpression lineRe(QStringLiteral("^\\[(\\d+),(\\d+)\\](.*)$"));
     static const QRegularExpression wordRe(QStringLiteral("<(\\d+),(\\d+)(?:,\\d+)?>([^<]*)"));
 
     QStringList paragraphs;
     const QStringList lines = krcText.split(QLatin1Char('\n'));
+    if (lines.size() > LyricsLimits::kMaxLines) {
+        return QString();
+    }
 
     for (const QString &rawLine : lines) {
+        if (!LyricsLimits::checkLineLength(rawLine.size())) {
+            return QString();
+        }
         const QString line = rawLine.trimmed();
         const QRegularExpressionMatch m = lineRe.match(line);
         if (!m.hasMatch()) {
@@ -452,8 +462,11 @@ QString toTtml(const QString &krcText)
         .arg(paragraphs.join(QString()));
 }
 
-bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics, qint64 trackDurationMs)
+bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics, qint64 trackDurationMs, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     const QString decoded = decode(rawOrBase64Data);
     if (decoded.isEmpty()) {
         return false;
@@ -462,7 +475,7 @@ bool parse(const QByteArray &rawOrBase64Data, Lyrics *outLyrics, qint64 trackDur
     if (ttml.isEmpty()) {
         return false;
     }
-    return TtmlParser::parseTtml(ttml, outLyrics, trackDurationMs);
+    return TtmlParser::parseTtml(ttml, outLyrics, trackDurationMs, outLimitExceeded);
 }
 
 } // namespace KrcParser

@@ -7,6 +7,8 @@
 #include "amllprovider.h"
 #include "trackmatch.h"
 #include "ttmlparser.h"
+#include "lrcparser.h"
+#include "lyriclimits.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -27,7 +29,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.8.6 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.0 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
@@ -127,6 +129,8 @@ void AmllProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
     m_currentCacheKey.clear();
     m_currentGeneration = 0;
     m_currentStep = Step::Idle;
@@ -194,6 +198,7 @@ void AmllProvider::startGetBySpotifyId()
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 
     m_currentReply = m_network.get(request);
+    LyricsLimits::attachSizeLimitGuard(m_currentReply);
     connect(m_currentReply, &QNetworkReply::finished, this, &AmllProvider::onReplyFinished);
     m_watchdog.start(kRequestTimeoutMs);
 }
@@ -219,6 +224,7 @@ void AmllProvider::startSearchByTitleArtist()
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 
     m_currentReply = m_network.get(request);
+    LyricsLimits::attachSizeLimitGuard(m_currentReply);
     connect(m_currentReply, &QNetworkReply::finished, this, &AmllProvider::onReplyFinished);
     m_watchdog.start(kRequestTimeoutMs);
 }
@@ -245,6 +251,7 @@ void AmllProvider::startGetById(qint64 idVal, const QString &filename)
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 
     m_currentReply = m_network.get(request);
+    LyricsLimits::attachSizeLimitGuard(m_currentReply);
     connect(m_currentReply, &QNetworkReply::finished, this, &AmllProvider::onReplyFinished);
     m_watchdog.start(kRequestTimeoutMs);
 }
@@ -275,6 +282,11 @@ void AmllProvider::failCurrent(MissingReason reason, const QString &diagReason, 
 
 void AmllProvider::handlePayload(const QByteArray &data, quint64 gen)
 {
+    if (!LyricsLimits::checkInputSize(data.size())) {
+        failCurrent(MissingReason::SizeLimitExceeded, QStringLiteral("Response size limit exceeded (max 8 MiB)"));
+        return;
+    }
+
     QString ttmlContent;
 
     // Check if response is JSON (e.g. from api.amll.dev)
@@ -316,7 +328,12 @@ void AmllProvider::handlePayload(const QByteArray &data, quint64 gen)
     }
 
     Lyrics lyrics;
-    if (!TtmlParser::parseTtml(trimmed, &lyrics, m_currentMeta.durationMs) || !lyrics.isUsable()) {
+    bool limitExceeded = false;
+    if (!TtmlParser::parseTtml(trimmed, &lyrics, m_currentMeta.durationMs, &limitExceeded) || !lyrics.isUsable()) {
+        if (limitExceeded) {
+            failCurrent(MissingReason::SizeLimitExceeded, QStringLiteral("Lyrics exceed line or word limit"), /*is404=*/false);
+            return;
+        }
         failCurrent(MissingReason::Unsynced, QStringLiteral("No synchronized lyrics in TTML"), true);
         return;
     }
@@ -346,6 +363,11 @@ void AmllProvider::onReplyFinished()
 
     const quint64 gen = m_currentGeneration;
     if (m_currentCacheKey.isEmpty() || gen == 0) {
+        return;
+    }
+
+    if (LyricsLimits::isSizeLimitExceeded(reply)) {
+        failCurrent(MissingReason::SizeLimitExceeded, QStringLiteral("Response size limit exceeded (max 8 MiB)"));
         return;
     }
 
@@ -530,7 +552,7 @@ bool AmllProvider::checkDiskCache(const QString &cacheKey, qint64 durationMs, Ly
     }
 
     const qint64 ageMs = fi.lastModified().msecsTo(QDateTime::currentDateTime());
-    if (ageMs > kAmllCacheTtlMs) {
+    if (ageMs > kAmllCacheTtlMs || fi.size() > LyricsLimits::kMaxInputSizeBytes) {
         QFile::remove(path);
         return false;
     }
@@ -568,5 +590,229 @@ void AmllProvider::writeDiskCache(const QString &cacheKey, const QByteArray &dat
     QFile file(filePath);
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(data);
+    }
+}
+
+void AmllProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId)
+{
+    cancelCandidateSearch(0);
+
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) {
+        base.chop(1);
+    }
+    QUrl url(base + QStringLiteral("/v1/lyrics/search"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("musicName"), meta.title);
+    query.addQueryItem(QStringLiteral("title"), meta.title);
+    if (!meta.artist.isEmpty()) {
+        query.addQueryItem(QStringLiteral("artistName"), meta.artist);
+        query.addQueryItem(QStringLiteral("artist"), meta.artist);
+    }
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.0 (candidate-search)"));
+
+    m_candidateSearchId = searchId;
+    m_candidateSearchReply = m_network.get(req);
+    LyricsLimits::attachSizeLimitGuard(m_candidateSearchReply);
+
+    connect(m_candidateSearchReply, &QNetworkReply::finished, this, [this, reply = m_candidateSearchReply, meta, searchId] {
+        if (!reply) return;
+        reply->deleteLater();
+        if (reply == m_candidateSearchReply) {
+            m_candidateSearchReply = nullptr;
+        }
+        if (searchId != m_candidateSearchId) {
+            return;
+        }
+        if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
+            Q_EMIT candidatesFound(searchId, {}, id());
+            return;
+        }
+
+        const QByteArray data = reply->readAll();
+        const QJsonDocument doc = QJsonDocument::fromJson(data);
+        QList<LyricCandidate> result;
+
+        QJsonArray items;
+        if (doc.isObject()) {
+            const QJsonObject root = doc.object();
+            if (root.contains(QLatin1String("data"))) {
+                const QJsonObject dataObj = root.value(QLatin1String("data")).toObject();
+                items = dataObj.value(QLatin1String("items")).toArray();
+            } else if (root.contains(QLatin1String("items"))) {
+                items = root.value(QLatin1String("items")).toArray();
+            }
+        } else if (doc.isArray()) {
+            items = doc.array();
+        }
+
+        for (const QJsonValue &val : items) {
+            if (result.size() >= 10) {
+                break;
+            }
+            if (!val.isObject()) continue;
+            const QJsonObject item = val.toObject();
+
+            const qint64 itemId = item.value(QLatin1String("id")).toVariant().toLongLong();
+            const QString filename = item.value(QLatin1String("filename")).toString();
+            if (itemId <= 0 && filename.trimmed().isEmpty()) continue;
+
+            QString candTitle = item.value(QLatin1String("title")).toString().trimmed();
+            if (candTitle.isEmpty()) candTitle = item.value(QLatin1String("name")).toString().trimmed();
+            if (candTitle.isEmpty()) candTitle = item.value(QLatin1String("musicName")).toString().trimmed();
+
+            QStringList candArtists;
+            const QJsonValue artistsVal = item.value(QLatin1String("artists"));
+            if (artistsVal.isArray()) {
+                for (const QJsonValue &aVal : artistsVal.toArray()) {
+                    if (aVal.isString()) candArtists.append(aVal.toString());
+                    else if (aVal.isObject()) candArtists.append(aVal.toObject().value(QLatin1String("name")).toString());
+                }
+            } else if (artistsVal.isString()) {
+                candArtists.append(artistsVal.toString());
+            }
+            if (candArtists.isEmpty()) {
+                const QString singleArtist = item.value(QLatin1String("artist")).toString().trimmed();
+                if (!singleArtist.isEmpty()) candArtists.append(singleArtist);
+            }
+
+            const qint64 candDurationMs = item.value(QLatin1String("duration")).toVariant().toLongLong();
+            if (!TrackMatch::matchCandidate(meta, candTitle, candArtists, candDurationMs)) {
+                continue;
+            }
+
+            LyricCandidate cand;
+            cand.id = itemId > 0 ? QString::number(itemId) : filename;
+            cand.providerId = id();
+            cand.sourceName = displayName();
+            cand.title = candTitle;
+            cand.artist = candArtists.join(QStringLiteral(", "));
+            cand.durationMs = candDurationMs;
+            cand.syncType = CandidateSyncType::Unknown;
+            result.append(cand);
+        }
+
+        Q_EMIT candidatesFound(searchId, result, id());
+    });
+}
+
+void AmllProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fetchId)
+{
+    cancelCandidateFetch(0);
+
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) {
+        base.chop(1);
+    }
+    QUrl url(base + QStringLiteral("/v1/lyrics/get"));
+    QUrlQuery query;
+    bool isNumeric = false;
+    const qint64 numericId = candidateId.toLongLong(&isNumeric);
+    if (isNumeric && numericId > 0) {
+        query.addQueryItem(QStringLiteral("id"), QString::number(numericId));
+    } else {
+        query.addQueryItem(QStringLiteral("filename"), candidateId);
+    }
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.0 (candidate-fetch)"));
+
+    m_candidateFetchId = fetchId;
+    m_candidateFetchReply = m_network.get(req);
+    LyricsLimits::attachSizeLimitGuard(m_candidateFetchReply);
+
+    connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, reply = m_candidateFetchReply, fetchId] {
+        if (!reply) return;
+        reply->deleteLater();
+        if (reply == m_candidateFetchReply) {
+            m_candidateFetchReply = nullptr;
+        }
+        if (fetchId != m_candidateFetchId) {
+            return;
+        }
+        if (LyricsLimits::isSizeLimitExceeded(reply)) {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+            return;
+        }
+
+        const QByteArray payload = reply->readAll();
+        QString ttmlContent;
+
+        QJsonParseError jsonErr;
+        const QJsonDocument doc = QJsonDocument::fromJson(payload, &jsonErr);
+        if (jsonErr.error == QJsonParseError::NoError && doc.isObject()) {
+            const QJsonObject root = doc.object();
+            if (root.contains(QLatin1String("data"))) {
+                const QJsonValue dataVal = root.value(QLatin1String("data"));
+                if (dataVal.isObject()) {
+                    ttmlContent = dataVal.toObject().value(QLatin1String("lyrics")).toString();
+                } else if (dataVal.isString()) {
+                    ttmlContent = dataVal.toString();
+                }
+            } else if (root.contains(QLatin1String("lyrics"))) {
+                ttmlContent = root.value(QLatin1String("lyrics")).toString();
+            }
+        }
+        if (ttmlContent.isEmpty()) {
+            ttmlContent = QString::fromUtf8(payload);
+        }
+
+        Lyrics lyrics;
+        bool limitExceeded = false;
+        bool ok = TtmlParser::parseTtml(ttmlContent, &lyrics, 0, &limitExceeded);
+        if (!ok && !limitExceeded) {
+            ok = LrcParser::parseLrc(ttmlContent, &lyrics, 0, &limitExceeded);
+        }
+
+        if (limitExceeded) {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+            return;
+        }
+
+        if (ok && lyrics.isUsable()) {
+            lyrics.attributionData.provider = QStringLiteral("AMLL");
+            lyrics.attributionData.providerUrl = QStringLiteral("https://amll.top");
+            Q_EMIT candidateLyricsLoaded(fetchId, lyrics, id());
+        } else {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+        }
+    });
+}
+
+void AmllProvider::cancelCandidateSearch(quint64 searchId)
+{
+    if (m_candidateSearchReply && (searchId == 0 || searchId == m_candidateSearchId)) {
+        m_candidateSearchId = 0;
+        QPointer<QNetworkReply> reply = m_candidateSearchReply;
+        m_candidateSearchReply = nullptr;
+        if (reply) {
+            reply->abort();
+            if (reply) {
+                reply->deleteLater();
+            }
+        }
+    }
+}
+
+void AmllProvider::cancelCandidateFetch(quint64 fetchId)
+{
+    if (m_candidateFetchReply && (fetchId == 0 || fetchId == m_candidateFetchId)) {
+        m_candidateFetchId = 0;
+        QPointer<QNetworkReply> reply = m_candidateFetchReply;
+        m_candidateFetchReply = nullptr;
+        if (reply) {
+            reply->abort();
+            if (reply) {
+                reply->deleteLater();
+            }
+        }
     }
 }

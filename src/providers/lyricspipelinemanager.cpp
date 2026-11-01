@@ -5,6 +5,7 @@
  */
 
 #include "lyricspipelinemanager.h"
+#include "trackname.h"
 
 #include <QDir>
 #include <QStandardPaths>
@@ -146,6 +147,13 @@ void LyricsPipelineManager::requestLyrics(const TrackMetadata &meta, quint64 gen
     m_bestQuality = LyricsType::None;
     m_bestPriority = -1;
     m_bestProviderId.clear();
+
+    m_searchVariants = generateSearchVariants(meta);
+    m_currentVariantIndex = 0;
+    m_attemptedVariants.clear();
+    const TrackMetadata firstMeta = m_searchVariants.isEmpty() ? meta : m_searchVariants.first();
+    const QString varDesc = firstMeta.artist.isEmpty() ? firstMeta.title : QStringLiteral("%1 — %2").arg(firstMeta.artist, firstMeta.title);
+    m_attemptedVariants.append(varDesc);
 
     // Build candidate list based on user priority order and initialize diagnostics
     m_providerDiagnostics.clear();
@@ -393,6 +401,24 @@ void LyricsPipelineManager::pumpQueue()
         }
 
         if (inFlightCount == 0 && pendingIndex == -1) {
+            if (!m_hasEmittedResult && m_currentVariantIndex + 1 < m_searchVariants.size()) {
+                ++m_currentVariantIndex;
+                const TrackMetadata nextMeta = m_searchVariants.at(m_currentVariantIndex);
+                const QString nextDesc = nextMeta.artist.isEmpty() ? nextMeta.title : QStringLiteral("%1 — %2").arg(nextMeta.artist, nextMeta.title);
+                m_attemptedVariants.append(nextDesc);
+
+                for (auto &cand : m_candidates) {
+                    if (cand.provider && cand.provider->isEnabled()
+                        && cand.provider->capabilities().testFlag(LyricsProvider::Capability::SearchByTitleArtist)
+                        && cand.provider->canHandle(nextMeta)) {
+                        cand.completed = false;
+                        cand.inFlight = false;
+                        auto &diag = m_providerDiagnostics[cand.provider->id()];
+                        diag.status = QStringLiteral("pending");
+                    }
+                }
+                continue;
+            }
             finishLookup();
             continue;
         }
@@ -400,13 +426,17 @@ void LyricsPipelineManager::pumpQueue()
         if (inFlightCount < m_maxConcurrentLookups && pendingIndex != -1) {
             CandidateEntry &cand = m_candidates[pendingIndex];
             cand.inFlight = true;
-            if (cand.provider) {
-                m_providerDiagnostics[cand.provider->id()].status = QStringLiteral("searching");
-            }
             LyricsProvider *p = cand.provider;
-            const TrackMetadata meta = m_currentMeta;
+            const TrackMetadata effectiveMeta = (m_currentVariantIndex < m_searchVariants.size())
+                ? m_searchVariants.at(m_currentVariantIndex) : m_currentMeta;
 
-            p->requestLyrics(meta, gen);
+            if (p) {
+                auto &diag = m_providerDiagnostics[p->id()];
+                diag.status = QStringLiteral("searching");
+                diag.attemptedQuery = effectiveMeta.artist.isEmpty() ? effectiveMeta.title : QStringLiteral("%1 — %2").arg(effectiveMeta.artist, effectiveMeta.title);
+            }
+
+            p->requestLyrics(effectiveMeta, gen);
             continue;
         }
 
@@ -533,7 +563,9 @@ void LyricsPipelineManager::onProviderFailed(quint64 generation, MissingReason r
         }
     }
     if (diag.rejectionReason.isEmpty()) {
-        if (reason == MissingReason::Unsynced) {
+        if (reason == MissingReason::SizeLimitExceeded) {
+            diag.rejectionReason = QStringLiteral("Response size limit exceeded (max 8 MiB)");
+        } else if (reason == MissingReason::Unsynced) {
             diag.rejectionReason = QStringLiteral("Unsynced lyrics");
         } else if (reason == MissingReason::NotFound) {
             diag.rejectionReason = QStringLiteral("Not found in provider database");

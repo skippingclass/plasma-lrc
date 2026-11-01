@@ -6,6 +6,7 @@
 
 #include "lrcparser.h"
 #include "ttmlparser.h"
+#include "lyriclimits.h"
 
 #include <QRegularExpression>
 #include <QStringList>
@@ -28,9 +29,19 @@ struct RawLine
 
 namespace LrcParser
 {
-bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
+bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     if (!lyrics) {
+        return false;
+    }
+
+    if (!LyricsLimits::checkDecodedSize(lrcText.size() * sizeof(QChar))) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return false;
     }
 
@@ -45,12 +56,21 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
     if (lrcText.trimmed().isEmpty()) {
         return false;
     }
+    if (!LyricsLimits::checkDecodedSize(lrcText.size() * sizeof(QChar))) {
+        return false;
+    }
 
     qint64 globalOffsetMs = 0;
     QVector<RawLine> rawLines;
 
     const QStringList inputLines = lrcText.split(QLatin1Char('\n'));
+    if (inputLines.size() > LyricsLimits::kMaxLines) {
+        return false;
+    }
     for (const QString &rawInput : inputLines) {
+        if (!LyricsLimits::checkLineLength(rawInput.size())) {
+            return false;
+        }
         const QString line = rawInput.trimmed();
         if (line.isEmpty()) {
             continue;
@@ -103,6 +123,9 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
 
         const QString lyricText = line.mid(lastTagEnd).trimmed();
         if (TtmlParser::isCreditOrNotice(lyricText)) {
+            for (qint64 timeMs : timestamps) {
+                rawLines.append({timeMs, QString()});
+            }
             continue;
         }
         for (qint64 timeMs : timestamps) {
@@ -179,6 +202,15 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs)
     }
 
     if (lyrics->lines.isEmpty()) {
+        return false;
+    }
+
+    if (!LyricsLimits::validateLyricsLimits(*lyrics)) {
+        lyrics->lines.clear();
+        lyrics->type = LyricsType::None;
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return false;
     }
 

@@ -577,11 +577,29 @@ PlasmoidItem {
             text: i18n("Diagnostics…")
             icon.name: "dialog-information"
             onTriggered: diagnosticsWindow.openDiagnostics(Plasmoid)
+        },
+        PlasmaCore.Action {
+            text: i18n("Choose another match…")
+            icon.name: "system-search"
+            enabled: Plasmoid.trackInfo.length > 0
+            onTriggered: chooseMatchWindow.openWindow(Plasmoid)
+        },
+        PlasmaCore.Action {
+            text: i18n("Use automatic selection")
+            icon.name: "edit-undo"
+            visible: Plasmoid.isManualCandidateSelected
+            enabled: Plasmoid.isManualCandidateSelected
+            onTriggered: Plasmoid.useAutomaticSelection()
         }
     ]
 
     DiagnosticsWindow {
         id: diagnosticsWindow
+        plasmoidApplet: Plasmoid
+    }
+
+    ChooseMatchWindow {
+        id: chooseMatchWindow
         plasmoidApplet: Plasmoid
     }
 

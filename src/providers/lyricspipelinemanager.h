@@ -54,10 +54,12 @@ public:
         QString rejectionReason; // Confirmed reason e.g. "Candidate duration mismatch (>4s)", "Unsynced lyrics", etc.
         QString cacheUsage;      // "Hit (disk)", "Hit (negative cache)", "Miss", "None"
         QString syncQuality;     // "Syllable", "Line", "Unsynced", "None"
+        QString attemptedQuery;
         int priority = -1;
     };
 
     QList<ProviderDiagnostic> providerDiagnostics() const;
+    QStringList attemptedVariants() const { return m_attemptedVariants; }
     TrackMetadata currentMeta() const { return m_currentMeta; }
     quint64 currentGeneration() const { return m_currentGeneration; }
     bool isLookupActive() const { return m_isLookupActive; }
@@ -91,6 +93,9 @@ private:
 
     quint64 m_currentGeneration = 0;
     TrackMetadata m_currentMeta;
+    QVector<TrackMetadata> m_searchVariants;
+    int m_currentVariantIndex = 0;
+    QStringList m_attemptedVariants;
     QList<CandidateEntry> m_candidates;
     QTimer *m_deadlineTimer = nullptr;
 

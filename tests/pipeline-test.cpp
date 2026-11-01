@@ -806,6 +806,91 @@ int main(int argc, char *argv[])
         check("clear-cache-real-http: line text verified", !resolvedLyrics.lines.isEmpty() && resolvedLyrics.lines[0].text == QStringLiteral("Real line from delayed LRCLIB"));
     }
 
+    // Test 19: Streaming HTTP response without Content-Length exceeding 8 MiB
+    {
+        QTcpServer chunkedServer;
+        check("chunked-server: listen on localhost", chunkedServer.listen(QHostAddress::LocalHost));
+
+        QObject::connect(&chunkedServer, &QTcpServer::newConnection, &chunkedServer, [&chunkedServer] {
+            while (chunkedServer.hasPendingConnections()) {
+                QTcpSocket *sock = chunkedServer.nextPendingConnection();
+                QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
+                QObject::connect(sock, &QTcpSocket::readyRead, sock, [sock]() {
+                    const QByteArray req = sock->readAll();
+                    if (req.contains("\r\n\r\n")) {
+                        sock->write("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n");
+                        // Stream 1 MiB chunks up to 9 MiB
+                        const QByteArray chunk(1024 * 1024, 'A');
+                        const QByteArray chunkHeader = QByteArray::number(chunk.size(), 16).toUpper() + "\r\n";
+                        for (int i = 0; i < 9; ++i) {
+                            if (sock->state() != QAbstractSocket::ConnectedState) {
+                                break;
+                            }
+                            sock->write(chunkHeader);
+                            sock->write(chunk);
+                            sock->write("\r\n");
+                            sock->flush();
+                        }
+                    }
+                });
+            }
+        });
+
+        const QUrl serverBase(QStringLiteral("http://127.0.0.1:%1/api/").arg(chunkedServer.serverPort()));
+        LyricsPipelineManager pipeline;
+        auto *lrclibProv = new LrclibProvider(&pipeline, serverBase);
+        auto *backupProv = new FakeDelayedProvider(QStringLiteral("backup"),
+                                                   LyricsProvider::Capability::LineSync | LyricsProvider::Capability::SearchByTitleArtist,
+                                                   20, true, LyricsType::Line, &pipeline);
+
+        pipeline.registerProvider(lrclibProv);
+        pipeline.registerProvider(backupProv);
+        pipeline.setProviderOrder({QStringLiteral("lrclib"), QStringLiteral("backup")});
+
+        bool resolved = false;
+        QString resolvedId;
+        QObject::connect(&pipeline, &LyricsPipelineManager::lyricsResolved,
+                         [&](quint64, const Lyrics &, const QString &id) {
+            resolved = true;
+            resolvedId = id;
+        });
+
+        TrackMetadata meta;
+        meta.title = QStringLiteral("StreamBombTitle");
+        meta.artist = QStringLiteral("StreamBombArtist");
+        meta.durationMs = 200000;
+        pipeline.requestLyrics(meta, 600);
+
+        // LRCLIB streaming should exceed 8 MiB limit, abort in flight, and pipeline should fall back to backup provider!
+        check("streaming-limit: pipeline falls back to backup when size limit exceeded", waitFor([&] { return resolved; }, 3000));
+        check("streaming-limit: resolved by backup provider", resolvedId == QStringLiteral("backup"));
+
+        // Verify diagnostic for LRCLIB reflects size limit exceeded
+        const auto diags = pipeline.providerDiagnostics();
+        bool lrclibDiagFound = false;
+        for (const auto &d : diags) {
+            if (d.id == QLatin1String("lrclib")) {
+                lrclibDiagFound = true;
+                check("streaming-limit: lrclib diagnostic reports size limit exceeded",
+                      d.rejectionReason.contains(QStringLiteral("limit exceeded")) || d.rejectionReason.contains(QStringLiteral("8 MiB")),
+                      d.rejectionReason);
+            }
+        }
+        check("streaming-limit: lrclib diagnostic present", lrclibDiagFound);
+
+        // Verify no disk cache was written (neither positive nor negative)
+        const QString cacheDir = LrclibClient::cacheDirectory();
+        QDir dir(cacheDir);
+        const QStringList cacheFiles = dir.entryList(QDir::Files);
+        bool bombCached = false;
+        for (const QString &f : cacheFiles) {
+            if (f.contains(QStringLiteral("StreamBomb"))) {
+                bombCached = true;
+            }
+        }
+        check("streaming-limit: no positive or negative cache written on limit exceeded", !bombCached);
+    }
+
     if (s_failed == 0) {
         std::cout << "\nAll pipeline tests passed successfully.\n";
         return 0;
