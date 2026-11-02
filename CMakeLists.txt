@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.9.1 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.9.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,6 +57,8 @@ add_library(${PLUGIN_ID} SHARED
     src/applet/lrcapplet.cpp
     src/applet/lrcapplet.h
     src/core/lyrictypes.h
+    src/core/candidatesearcherror.h
+    src/core/providerdefaults.h
     src/core/lyricselection.h
     src/core/trackmatch.h
     src/core/trackname.cpp

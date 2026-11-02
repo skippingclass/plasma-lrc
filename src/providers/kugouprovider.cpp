@@ -5,6 +5,7 @@
  */
 
 #include "kugouprovider.h"
+#include "candidatesearcherror.h"
 #include "krcparser.h"
 #include "lrcparser.h"
 #include "trackmatch.h"
@@ -348,12 +349,16 @@ void KugouProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId
             return;
         }
         if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
-            Q_EMIT candidatesFound(searchId, {}, id());
+            Q_EMIT candidateSearchFailed(searchId, CandidateSearchError::reason(reply), id(), CandidateSearchError::retryAfterSeconds(reply));
             return;
         }
 
         const QByteArray data = reply->readAll();
         const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (doc.isNull()) {
+            Q_EMIT candidateSearchFailed(searchId, MissingReason::Unreachable, id(), 0);
+            return;
+        }
         QList<LyricCandidate> result;
 
         if (doc.isObject()) {

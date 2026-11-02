@@ -63,6 +63,9 @@ public:
 
     QList<LyricCandidate> rawCandidates() const { return m_candidates; }
 
+    int providerTimeoutMs() const { return m_providerTimeoutMs; }
+    void setProviderTimeoutMs(int timeoutMs) { m_providerTimeoutMs = qMax(0, timeoutMs); }
+
     static constexpr int kFreshTtlMs = 5 * 60 * 1000;    // 5 minutes
     static constexpr int kStaleTtlMs = 30 * 60 * 1000;   // 30 minutes
     static constexpr int kNegativeTtlMs = 60 * 1000;     // 60 seconds
@@ -112,11 +115,13 @@ private:
         bool failed = false;
         bool isCached = false;
         bool isStale = false;
+        quint64 attemptToken = 0;
         QList<LyricCandidate> foundCandidates;
     };
 
     void startSearchInternal(bool isRefresh);
     void pumpQueue();
+    void onProviderTimeout(quint64 searchId, quint64 token, const QString &providerId);
     void finishSearch();
     void rebuildCandidatesList();
     QString formatDuration(qint64 ms) const;
@@ -155,6 +160,8 @@ private:
     QTimer *m_deadlineTimer = nullptr;
     QTimer *m_fetchDeadlineTimer = nullptr;
     int m_maxConcurrent = 2;
+    int m_providerTimeoutMs = 4000;
+    quint64 m_nextAttemptToken = 0;
     static constexpr int kDeadlineMs = 20000;
     static constexpr int kFetchDeadlineMs = 15000;
 

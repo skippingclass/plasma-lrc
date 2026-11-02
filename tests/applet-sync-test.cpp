@@ -2440,6 +2440,35 @@ public:
                     check("regression 21: unison candidate attribution is Unison", loaded.attributionData.provider == QStringLiteral("Unison"));
                 }
 
+                // Real HTTP failures must not masquerade as valid empty results in any adapter.
+                {
+                    const QString base = QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort());
+                    QList<LyricsProvider *> adapters{
+                        new LrclibProvider(nullptr, server.apiBase()), new LrcRedProvider(nullptr, base + '/'),
+                        new AmllProvider(nullptr, base), new NeteaseProvider(nullptr, base),
+                        new KugouProvider(nullptr, base), new QqMusicProvider(nullptr, base), new UnisonProvider(nullptr, base)};
+                    for (auto *adapter : adapters) {
+                        int successes = 0, errors = 0, retryAfter = 0;
+                        QObject::connect(adapter, &LyricsProvider::candidatesFound, adapter,
+                                         [&](quint64, const QList<LyricCandidate> &, const QString &) { ++successes; });
+                        QObject::connect(adapter, &LyricsProvider::candidateSearchFailed, adapter,
+                                         [&](quint64, MissingReason, const QString &, int retry) { ++errors; retryAfter = retry; });
+                        server.responses.append({429, "{}", 0, "Retry-After: 42\r\n"});
+                        adapter->searchCandidates(meta, 80);
+                        check(qPrintable(adapter->id() + ": HTTP 429 reaches failure signal with retry-after"),
+                              waitFor([&] { return errors == 1; }) && successes == 0 && retryAfter == 42);
+                        server.responses.append({503, "{}", 0, {}});
+                        adapter->searchCandidates(meta, 81);
+                        check(qPrintable(adapter->id() + ": HTTP 503 does not become negative cache or rate-limit"),
+                              waitFor([&] { return errors == 2; }) && successes == 0 && retryAfter == 0);
+                        server.responses.append({200, "not JSON", 0, {}});
+                        adapter->searchCandidates(meta, 82);
+                        check(qPrintable(adapter->id() + ": malformed JSON is a failure"),
+                              waitFor([&] { return errors == 3; }) && successes == 0);
+                        delete adapter;
+                    }
+                }
+
                 // Integration tests on widget with fully isolated mock candidate providers
                 class MockCandProvider : public LyricsProvider {
                 public:
@@ -2611,7 +2640,9 @@ public:
                 // --- Specific lifecycle edge cases ---
                 // 1) Closing window during loading: status becomes idle, fetch cancelled, late reply ignored
                 {
-                    widget.openChooseMatchWindow();
+                    widget.m_candidateController->close();
+                    widget.m_candidateController->clearCache();
+                    widget.m_candidateController->startSearch(meta, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
                     LyricCandidate c1;
                     c1.id = QStringLiteral("c1");
                     c1.title = QStringLiteral("Hello");
@@ -2636,7 +2667,9 @@ public:
 
                 // 2) Rapid selection A -> B: A cancelled, late reply for A dropped, B applied
                 {
-                    widget.openChooseMatchWindow();
+                    widget.m_candidateController->close();
+                    widget.m_candidateController->clearCache();
+                    widget.m_candidateController->startSearch(meta, {QStringLiteral("lrclib"), QStringLiteral("amll")}, {QStringLiteral("lrclib"), QStringLiteral("amll")});
                     LyricCandidate cA;
                     cA.id = QStringLiteral("cA");
                     cA.title = QStringLiteral("Hello");
@@ -2902,6 +2935,97 @@ public:
                     QMetaObject::invokeMethod(matchObj, "openWindow", Q_ARG(QVariant, QVariant::fromValue(static_cast<QObject*>(&widget))));
                     check("regression 21: ChooseMatchWindow plasmoidApplet set", matchObj->property("plasmoidApplet").isValid());
                     check("regression 21: ChooseMatchWindow controller property valid", matchObj->property("controller").isValid());
+
+                    // Exercise the real button while an uncached source is still pending.
+                    auto *controller = widget.m_candidateController;
+                    controller->close();
+                    controller->clearCache();
+                    controller->setProviderTimeoutMs(80);
+                    mockLrclib->autoRespondCandidates = true;
+                    mockLrclib->autoRespondFetch = false;
+                    mockAmll->autoRespondCandidates = false;
+                    TrackMetadata earlyMeta;
+                    earlyMeta.title = QStringLiteral("Early selection");
+                    earlyMeta.artist = QStringLiteral("Test Artist");
+                    controller->startSearch(earlyMeta, {"lrclib", "amll"}, {"lrclib", "amll"});
+                    check("early-choice: first candidate arrives before slow source finishes",
+                          waitFor([&] { return controller->hasUsableResults(); }));
+                    check("early-choice: background search is still active", controller->isSearching());
+                    QObject *useButton = matchObj->findChild<QObject *>(QStringLiteral("useSelectedButton"));
+                    check("early-choice: real QML button enabled during background search",
+                          useButton && useButton->property("enabled").toBool());
+                    const quint64 earlySearchId = controller->m_searchId;
+                    const int previousCancels = mockAmll->cancelSearchCount;
+                    if (useButton) QMetaObject::invokeMethod(useButton, "clicked");
+                    check("early-choice: button starts download immediately", controller->isLoading());
+                    check("early-choice: slow source cancelled", mockAmll->cancelSearchCount > previousCancels);
+                    check("early-choice: late search callbacks invalidated", controller->m_searchId != earlySearchId);
+                    mockAmll->candidatesFound(earlySearchId, {}, QStringLiteral("amll"));
+                    check("early-choice: late callback cannot interrupt download", controller->isLoading());
+                    controller->close();
+                    const int callsBeforeCache = mockLrclib->searchCalls;
+                    controller->startSearch(earlyMeta, {"lrclib", "amll"}, {"lrclib", "amll"});
+                    check("early-choice: completed source cache survives early selection",
+                          mockLrclib->searchCalls == callsBeforeCache && controller->hasUsableResults());
+                    check("early-choice: cached result selectable while missing source refreshes",
+                          useButton && useButton->property("enabled").toBool());
+                    controller->close();
+
+                    // Two stuck requests must release their slots for a fast reserve.
+                    controller->clearCache();
+                    mockNetease->autoRespondCandidates = false;
+                    TrackMetadata timeoutMeta;
+                    timeoutMeta.title = QStringLiteral("Provider budget fallback");
+                    timeoutMeta.artist = QStringLiteral("Test Artist");
+                    controller->startSearch(timeoutMeta, {"amll", "netease", "lrclib"}, {"amll", "netease", "lrclib"});
+                    check("candidate-budget: fast reserve runs after slow sources expire",
+                          waitFor([&] { return controller->status() == QStringLiteral("ready"); }, 800));
+                    check("candidate-budget: reserve candidate available", controller->rawCandidates().size() == 1);
+                    check("candidate-budget: scheduling timeout is not a rate limit",
+                          !controller->m_providerRateLimitUntilMs.contains(QStringLiteral("amll"))
+                          && !controller->m_providerRateLimitUntilMs.contains(QStringLiteral("netease")));
+
+                    // A stale successful result remains usable while it is refreshed.
+                    controller->close();
+                    controller->m_trackCache[controller->m_currentContextKey].providerResults[QStringLiteral("lrclib")].timestampMs
+                        -= CandidateSearchController::kFreshTtlMs + 1000;
+                    mockLrclib->autoRespondCandidates = false;
+                    controller->startSearch(timeoutMeta, {"lrclib"}, {"lrclib"});
+                    check("stale-choice: cached candidates shown during refresh",
+                          controller->isSearching() && controller->hasUsableResults());
+                    check("stale-choice: cached result remains selectable",
+                          useButton && useButton->property("enabled").toBool());
+                    check("stale-choice: timeout preserves last successful candidates",
+                          waitFor([&] { return controller->status() == QStringLiteral("ready"); }, 800)
+                          && controller->rawCandidates().size() == 1);
+                    controller->close();
+
+                    // Empty results expire after one minute, not the five-minute positive TTL.
+                    controller->clearCache();
+                    controller->startSearch(earlyMeta, {"lrclib"}, {"lrclib"});
+                    controller->onCandidatesFound(controller->m_searchId, {}, QStringLiteral("lrclib"));
+                    controller->m_trackCache[controller->m_currentContextKey].providerResults[QStringLiteral("lrclib")].timestampMs
+                        -= CandidateSearchController::kNegativeTtlMs + 1000;
+                    const int callsBeforeNegativeExpiry = mockLrclib->searchCalls;
+                    controller->startSearch(earlyMeta, {"lrclib"}, {"lrclib"});
+                    check("negative-candidate-cache: one-minute expiry triggers new request",
+                          mockLrclib->searchCalls == callsBeforeNegativeExpiry + 1);
+                    controller->close();
+                    controller->clearCache();
+                    mockLrclib->autoRespondCandidates = true;
+                    mockAmll->autoRespondCandidates = true;
+                    controller->startSearch(earlyMeta, {"lrclib", "amll"}, {"lrclib", "amll"});
+                    check("partial-refresh: initial sources succeed", waitFor([&] { return controller->status() == "ready"; }));
+                    mockAmll->autoRespondCandidates = false;
+                    controller->searchAgain();
+                    Q_EMIT mockAmll->candidateSearchFailed(controller->m_searchId, MissingReason::Unreachable, "amll", 42);
+                    check("partial-refresh: successful and failed source results retained",
+                          waitFor([&] { return controller->status() == "ready"; }) && controller->rawCandidates().size() == 2);
+                    check("partial-refresh: real rate-limit signal sets cooldown", controller->m_providerRateLimitUntilMs.contains("amll"));
+                    check("candidate-cache: byte accounting stays bounded", controller->m_totalCacheSizeBytes > 0
+                          && controller->m_totalCacheSizeBytes <= CandidateSearchController::kMaxCacheSizeBytes);
+                    controller->close();
+                    controller->setProviderTimeoutMs(4000);
                     delete matchObj;
                 }
             }

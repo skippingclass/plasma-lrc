@@ -38,6 +38,7 @@ CandidateSearchController::CandidateSearchController(QObject *parent)
 
     for (LyricsProvider *p : m_allProviders) {
         connect(p, &LyricsProvider::candidatesFound, this, &CandidateSearchController::onCandidatesFound);
+        connect(p, &LyricsProvider::candidateSearchFailed, this, &CandidateSearchController::onCandidateSearchFailed);
         connect(p, &LyricsProvider::candidateLyricsLoaded, this, &CandidateSearchController::onCandidateLyricsLoaded);
         connect(p, &LyricsProvider::candidateLyricsFailed, this, &CandidateSearchController::onCandidateLyricsFailed);
     }
@@ -58,6 +59,7 @@ void CandidateSearchController::registerProvider(LyricsProvider *provider)
             m_allProviders[i]->deleteLater();
             m_allProviders[i] = provider;
             connect(provider, &LyricsProvider::candidatesFound, this, &CandidateSearchController::onCandidatesFound);
+            connect(provider, &LyricsProvider::candidateSearchFailed, this, &CandidateSearchController::onCandidateSearchFailed);
             connect(provider, &LyricsProvider::candidateLyricsLoaded, this, &CandidateSearchController::onCandidateLyricsLoaded);
             connect(provider, &LyricsProvider::candidateLyricsFailed, this, &CandidateSearchController::onCandidateLyricsFailed);
             return;
@@ -65,6 +67,7 @@ void CandidateSearchController::registerProvider(LyricsProvider *provider)
     }
     m_allProviders.append(provider);
     connect(provider, &LyricsProvider::candidatesFound, this, &CandidateSearchController::onCandidatesFound);
+    connect(provider, &LyricsProvider::candidateSearchFailed, this, &CandidateSearchController::onCandidateSearchFailed);
     connect(provider, &LyricsProvider::candidateLyricsLoaded, this, &CandidateSearchController::onCandidateLyricsLoaded);
     connect(provider, &LyricsProvider::candidateLyricsFailed, this, &CandidateSearchController::onCandidateLyricsFailed);
 }
@@ -355,7 +358,8 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                 const qint64 ageMs = now - res.timestampMs;
 
                 // 1. Fresh hit (<5 min)
-                if (res.isValidResponse && ageMs < kFreshTtlMs) {
+                const int ttlMs = res.candidates.isEmpty() ? kNegativeTtlMs : kFreshTtlMs;
+                if (res.isValidResponse && ageMs < ttlMs) {
                     entry.completed = true;
                     entry.isCached = true;
                     entry.isStale = false;
@@ -380,13 +384,14 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                     continue;
                 }
 
-                // 3. Negative cache: valid empty response within 60s
-                if (res.isValidResponse && res.candidates.isEmpty() && ageMs < kNegativeTtlMs) {
-                    entry.completed = true;
+                if (res.isValidResponse && !res.candidates.isEmpty() && ageMs < kStaleTtlMs) {
                     entry.isCached = true;
-                    entry.foundCandidates.clear();
+                    entry.isStale = true;
+                    entry.foundCandidates = res.candidates;
                     anyCached = true;
-                    continue;
+                    for (const auto &c : res.candidates) {
+                        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = true;
+                    }
                 }
             } else if (isRateLimitedGlobal) {
                 entry.completed = true;
@@ -431,6 +436,14 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
 
             if (cacheEntry.providerResults.contains(pid)) {
                 const CachedProviderResult &res = cacheEntry.providerResults.value(pid);
+                if (res.isValidResponse && now - res.timestampMs < kStaleTtlMs) {
+                    entry.isCached = true;
+                    entry.isStale = true;
+                    entry.foundCandidates = res.candidates;
+                    for (const auto &c : res.candidates) {
+                        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = true;
+                    }
+                }
                 if (isRateLimitedGlobal || (res.isRateLimited && now < res.retryAfterUntilMs)) {
                     entry.completed = true;
                     entry.isCached = true;
@@ -450,9 +463,9 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
             }
             entry.completed = false;
             entry.inFlight = false;
-            entry.foundCandidates.clear();
         }
 
+        rebuildCandidatesList();
         m_deadlineTimer->start(kDeadlineMs);
         pumpQueue();
     }
@@ -483,6 +496,13 @@ void CandidateSearchController::pumpQueue()
     while (inFlightCount < m_maxConcurrent && pendingIndex != -1) {
         ProviderEntry &entry = m_activeProviders[pendingIndex];
         entry.inFlight = true;
+        entry.attemptToken = ++m_nextAttemptToken;
+        if (m_providerTimeoutMs > 0) {
+            QTimer::singleShot(m_providerTimeoutMs, this,
+                               [this, sid = m_searchId, token = entry.attemptToken, id = entry.provider->id()] {
+                onProviderTimeout(sid, token, id);
+            });
+        }
         entry.provider->searchCandidates(m_currentMeta, m_searchId);
         ++inFlightCount;
 
@@ -496,24 +516,58 @@ void CandidateSearchController::pumpQueue()
     }
 }
 
+void CandidateSearchController::onProviderTimeout(quint64 searchId, quint64 token, const QString &providerId)
+{
+    if (searchId != m_searchId || m_status != QLatin1String("searching")) {
+        return;
+    }
+    for (auto &entry : m_activeProviders) {
+        if (!entry.provider || entry.provider->id() != providerId
+            || !entry.inFlight || entry.attemptToken != token) {
+            continue;
+        }
+        entry.inFlight = false;
+        entry.completed = true;
+        entry.failed = true;
+        LyricsProvider *p = entry.provider;
+        p->cancelCandidateSearch(searchId);
+        // A local scheduling timeout is transient, not an API rate-limit or a
+        // successful empty response. Preserve previous cached results unchanged.
+        if (searchId == m_searchId && m_status == QLatin1String("searching")) {
+            pumpQueue();
+        }
+        return;
+    }
+}
+
 void CandidateSearchController::onCandidatesFound(quint64 searchId, const QList<LyricCandidate> &candidates, const QString &providerId)
 {
     if (searchId != m_searchId || m_status != QLatin1String("searching")) {
         return;
     }
 
-    m_hadSuccessfulResponseInSearch = true;
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-
+    bool found = false;
     for (auto &entry : m_activeProviders) {
         if (entry.provider && entry.provider->id() == providerId) {
+            if (!entry.inFlight) {
+                return;
+            }
             entry.inFlight = false;
             entry.completed = true;
             entry.failed = false;
+            entry.isCached = false;
+            entry.isStale = false;
             entry.foundCandidates = candidates;
+            found = true;
             break;
         }
     }
+    if (!found) {
+        return;
+    }
+
+    m_hadSuccessfulResponseInSearch = true;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
 
     for (const auto &c : candidates) {
         m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = false;
@@ -532,10 +586,12 @@ void CandidateSearchController::onCandidatesFound(quint64 searchId, const QList<
     res.retryAfterUntilMs = 0;
     m_providerRateLimitUntilMs.remove(providerId);
 
+    m_totalCacheSizeBytes -= cacheEntry.estimatedSizeBytes;
     cacheEntry.estimatedSizeBytes = 0;
     for (const auto &r : cacheEntry.providerResults) {
         cacheEntry.estimatedSizeBytes += estimateCandidateSizeBytes(r.candidates);
     }
+    m_totalCacheSizeBytes += cacheEntry.estimatedSizeBytes;
     evictCacheIfNeeded();
 
     rebuildCandidatesList();
@@ -561,17 +617,25 @@ void CandidateSearchController::onCandidateSearchFailed(quint64 searchId, Missin
         return;
     }
 
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool found = false;
     for (auto &entry : m_activeProviders) {
         if (entry.provider && entry.provider->id() == providerId) {
+            if (!entry.inFlight) {
+                return;
+            }
             entry.inFlight = false;
             entry.completed = true;
             entry.failed = true;
+            found = true;
             break;
         }
     }
+    if (!found) {
+        return;
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
 
-    if (reason == MissingReason::Unreachable) {
+    if (reason == MissingReason::Unreachable && retryAfterSec > 0) {
         const int cooldownMs = (retryAfterSec > 0 ? retryAfterSec * 1000 : kDefaultRateLimitCooldownMs);
         TrackCandidateCache &cacheEntry = m_trackCache[m_currentContextKey];
         cacheEntry.trackContextKey = m_currentContextKey;
@@ -727,6 +791,20 @@ void CandidateSearchController::useSelected()
         Q_EMIT statusChanged();
         Q_EMIT candidateLyricsFailed(m_errorMessage);
         return;
+    }
+
+    if (m_status == QLatin1String("searching")) {
+        // The user chose an available result. Do not wait for slower sources,
+        // and do not let their late callbacks disturb the candidate download.
+        const quint64 oldSearchId = m_searchId++;
+        m_deadlineTimer->stop();
+        for (auto &entry : m_activeProviders) {
+            if (entry.inFlight && entry.provider) {
+                entry.inFlight = false;
+                entry.completed = true;
+                entry.provider->cancelCandidateSearch(oldSearchId);
+            }
+        }
     }
 
     // Cancel any previous in-flight candidate fetch

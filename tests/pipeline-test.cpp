@@ -9,6 +9,7 @@
 #include "localprovider.h"
 #include "lrclibprovider.h"
 #include "http-test-server.h"
+#include "providerdefaults.h"
 
 #include <iostream>
 #include <QCoreApplication>
@@ -865,6 +866,8 @@ int main(int argc, char *argv[])
         check("streaming-limit: pipeline falls back to backup when size limit exceeded", waitFor([&] { return resolved; }, 3000));
         check("streaming-limit: resolved by backup provider", resolvedId == QStringLiteral("backup"));
 
+        // A provisional line result may arrive before the other request finishes.
+        check("streaming-limit: lookup finishes", waitFor([&] { return !pipeline.isLookupActive(); }, 3000));
         // Verify diagnostic for LRCLIB reflects size limit exceeded
         const auto diags = pipeline.providerDiagnostics();
         bool lrclibDiagFound = false;
@@ -889,6 +892,77 @@ int main(int argc, char *argv[])
             }
         }
         check("streaming-limit: no positive or negative cache written on limit exceeded", !bombCached);
+    }
+
+    // A provider's multi-step request must not monopolize a network slot.
+    {
+        LyricsPipelineManager pipeline;
+        pipeline.setProviderTimeoutMs(60);
+        pipeline.setLookupTimeoutMs(1000);
+        auto *hung1 = new FakeDelayedProvider("hung1", LyricsProvider::Capability::WordSync,
+                                             1000, true, LyricsType::Syllable, &pipeline);
+        auto *hung2 = new FakeDelayedProvider("hung2", LyricsProvider::Capability::WordSync,
+                                             1000, true, LyricsType::Syllable, &pipeline);
+        auto *fast = new FakeDelayedProvider("fast", LyricsProvider::Capability::LineSync,
+                                            5, true, LyricsType::Line, &pipeline);
+        pipeline.registerProvider(hung1);
+        pipeline.registerProvider(hung2);
+        pipeline.registerProvider(fast);
+        pipeline.setProviderOrder({"hung1", "hung2", "fast"});
+        bool finished = false;
+        QString selected;
+        QObject::connect(&pipeline, &LyricsPipelineManager::lyricsResolved,
+                         [&](quint64, const Lyrics &, const QString &id) { selected = id; });
+        QObject::connect(&pipeline, &LyricsPipelineManager::lookupFinished,
+                         [&](quint64) { finished = true; });
+        TrackMetadata meta;
+        meta.title = "Artist - Song";
+        meta.artist = "Uploader";
+        meta.isWebSession = true;
+        pipeline.requestLyrics(meta, 700);
+        check("provider-budget: fast fallback finishes without global deadline",
+              waitFor([&] { return finished; }, 500));
+        check("provider-budget: fast fallback selected", selected == QLatin1String("fast"));
+        check("provider-budget: expired sources cancelled", !hung1->isInFlight() && !hung2->isInFlight());
+        check("provider-budget: timed-out sources not retried for other query variants",
+              hung1->callCount() == 1 && hung2->callCount() == 1);
+        bool timedOut = false;
+        for (const auto &diag : pipeline.providerDiagnostics()) {
+            if (diag.id == QLatin1String("hung1")) {
+                timedOut = diag.rejectionReason.contains(QLatin1String("time budget"));
+            }
+        }
+        check("provider-budget: diagnostic distinguishes local timeout", timedOut);
+    }
+
+    // Timers from an earlier generation must not abort a new request.
+    {
+        LyricsPipelineManager pipeline;
+        pipeline.setProviderTimeoutMs(120);
+        auto *slow = new FakeDelayedProvider("slow", LyricsProvider::Capability::LineSync,
+                                            80, true, LyricsType::Line, &pipeline);
+        pipeline.registerProvider(slow);
+        bool resolvedNew = false;
+        QObject::connect(&pipeline, &LyricsPipelineManager::lyricsResolved,
+                         [&](quint64 generation, const Lyrics &, const QString &) {
+            if (generation == 702) resolvedNew = true;
+        });
+        TrackMetadata meta;
+        meta.title = "Old request";
+        pipeline.requestLyrics(meta, 701);
+        advanceEvents(60);
+        meta.title = "New request";
+        pipeline.requestLyrics(meta, 702);
+        check("provider-budget: old timer does not expire new generation",
+              waitFor([&] { return resolvedNew; }, 300));
+    }
+
+    {
+        LyricsPipelineManager pipeline;
+        check("default-order: all C++ defaults share the same source order",
+              pipeline.providerOrder() == ProviderDefaults::order());
+        check("default-order: lrc.red and LRCLIB lead the network order",
+              pipeline.providerOrder().mid(1, 5) == QStringList({"lrcred", "lrclib", "netease", "kugou", "unison"}));
     }
 
     if (s_failed == 0) {

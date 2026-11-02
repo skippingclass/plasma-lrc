@@ -47,6 +47,9 @@ public:
     int maxConcurrentLookups() const { return m_maxConcurrentLookups; }
     void setMaxConcurrentLookups(int max) { m_maxConcurrentLookups = max; }
 
+    int providerTimeoutMs() const { return m_providerTimeoutMs; }
+    void setProviderTimeoutMs(int timeoutMs) { m_providerTimeoutMs = qMax(0, timeoutMs); }
+
     struct ProviderDiagnostic {
         QString id;
         QString displayName;
@@ -82,11 +85,14 @@ private:
         int priority = -1;
         bool inFlight = false;
         bool completed = false;
+        bool timedOut = false;
+        quint64 attemptToken = 0;
     };
 
     void pumpQueue();
     void pruneIrrelevantCandidates();
     void finishLookup();
+    void onProviderTimeout(quint64 generation, quint64 token, const QString &providerId);
 
     QList<LyricsProvider *> m_providers;
     QStringList m_providerOrder;
@@ -101,6 +107,8 @@ private:
 
     int m_lookupTimeoutMs = 20000;
     int m_maxConcurrentLookups = 2;
+    int m_providerTimeoutMs = 4000;
+    quint64 m_nextAttemptToken = 0;
     MissingReason m_lastReason = MissingReason::NotFound;
 
     bool m_hasEmittedResult = false;

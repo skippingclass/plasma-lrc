@@ -62,6 +62,7 @@ public:
 Q_SIGNALS:
     void loaded(const QString &requestKey, const Lyrics &lyrics);
     void missing(const QString &requestKey, MissingReason reason = MissingReason::NotFound);
+    void candidateSearchFailed(quint64 searchId, MissingReason reason, int retryAfterSec);
     void candidatesFound(quint64 searchId, const QList<LyricCandidate> &candidates);
     void candidateLyricsLoaded(quint64 fetchId, const Lyrics &lyrics);
     void candidateLyricsFailed(quint64 fetchId, MissingReason reason);

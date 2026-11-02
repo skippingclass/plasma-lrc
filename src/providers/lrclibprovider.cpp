@@ -12,6 +12,9 @@ LrclibProvider::LrclibProvider(QObject *parent, const QUrl &apiBase)
 {
     connect(m_client, &LrclibClient::loaded, this, &LrclibProvider::onLoaded);
     connect(m_client, &LrclibClient::missing, this, &LrclibProvider::onMissing);
+    connect(m_client, &LrclibClient::candidateSearchFailed, this, [this](quint64 sid, MissingReason reason, int retryAfter) {
+        Q_EMIT candidateSearchFailed(sid, reason, id(), retryAfter);
+    });
     connect(m_client, &LrclibClient::candidatesFound, this, [this](quint64 sid, const QList<LyricCandidate> &cands) {
         Q_EMIT candidatesFound(sid, cands, id());
     });

@@ -73,7 +73,7 @@
 
         <entry name="providerOrder" type="String">
             <label>Order of lyrics providers to query, separated by commas.</label>
-            <default>local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom</default>
+            <default>local,lrcred,lrclib,netease,kugou,unison,spicy,amll,qqmusic,custom</default>
         </entry>
 
         <entry name="localLyricsFolder" type="String">

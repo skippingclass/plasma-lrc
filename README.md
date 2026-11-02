@@ -31,6 +31,7 @@
 
 - **Manual Match Selection ("Choose another match…")**:
   Easily browse and select alternative lyrics from all enabled public providers (LRCLIB, lrc.red, AMLL TTML DB, NetEase Cloud Music, KuGou, QQ Music, and Unison). The dialog lists track candidates with their source, title, artist, duration, and sync quality (Word, Line, None). Manual selection locks the lyrics for the current playback session without affecting the automatic cache, and can be undone at any time via the context menu action **Use automatic selection**.
+  Results are cached per track and source (five minutes fresh, up to 30 minutes available during refresh; valid empty results: one minute). Reopening reuses successful searches. Cached and newly arrived candidates can be selected while remaining sources search. Failed refreshes preserve previous matches. Each source gets four seconds per search attempt, with at most two concurrent requests and a 20-second overall deadline.
 - **Input Limits & Decompression Safety**:
   Comprehensive bounds guarding all incoming payloads against oversized payloads and decompression bombs: 8 MiB max HTTP responses (aborted in flight via streaming guards), 16 MiB max decompressed text, 10 000 lines, 100 000 words, and 16 384 characters per line. Size limit violations are safely rejected without polluting cache or freezing the desktop.
 - **Service Line & Notice Filtering**:
@@ -197,7 +198,7 @@ Right-click the widget on your panel → **Configure Plasma LRC...**:
 
 | Setting | Default | Description |
 |---|---|---|
-| **Provider Pipeline** | `lrc.red → AMLL → Spicy → LRCLIB` | Drag-and-drop priority ordering and individual enable/disable checkboxes for all supported providers (`lrc.red`, `AMLL TTML DB`, `Spicy Lyrics`, `LRCLIB`, `KuGou`, `NetEase`, `QQ Music`, `Unison`, `Local Files`, `Custom URL`). |
+| **Provider Pipeline** | `lrc.red → LRCLIB → NetEase → KuGou → Unison → Spicy → AMLL → QQ Music` | Drag-and-drop priority ordering and individual enable/disable checkboxes for all supported providers (`lrc.red`, `AMLL TTML DB`, `Spicy Lyrics`, `LRCLIB`, `KuGou`, `NetEase`, `QQ Music`, `Unison`, `Local Files`, `Custom URL`). |
 | **Spicy Lyrics API key** | *(empty)* | Personal client key `sl_pk_…` obtained through an application template in the catalog. |
 | **Local lyrics folder** | *(empty)* | Custom local folder searched for `.lrc` and `.ttml` files alongside track directory, `~/.lyrics/`, and `~/Music/lyrics/`. |
 | **Custom lyrics URL** | *(empty)* | Custom HTTP endpoint with `{title}`, `{artist}`, `{album}`, `{durationMs}`, and `{spotifyId}` macros and custom headers. |

@@ -5,6 +5,7 @@
  */
 
 #include "lrcredprovider.h"
+#include "candidatesearcherror.h"
 #include "lrcparser.h"
 #include "lrclib.h"
 #include "trackmatch.h"
@@ -32,7 +33,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.1 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.2 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -888,12 +889,16 @@ void LrcRedProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
             return;
         }
         if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
-            Q_EMIT candidatesFound(searchId, {}, id());
+            Q_EMIT candidateSearchFailed(searchId, CandidateSearchError::reason(reply), id(), CandidateSearchError::retryAfterSeconds(reply));
             return;
         }
 
         const QByteArray data = reply->readAll();
         const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (doc.isNull()) {
+            Q_EMIT candidateSearchFailed(searchId, MissingReason::Unreachable, id(), 0);
+            return;
+        }
         QList<LyricCandidate> result;
 
         QJsonArray hits;

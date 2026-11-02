@@ -5,6 +5,7 @@
  */
 
 #include "unisonprovider.h"
+#include "candidatesearcherror.h"
 #include "lrcparser.h"
 #include "trackmatch.h"
 #include "trackname.h"
@@ -354,7 +355,7 @@ void UnisonProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -370,12 +371,16 @@ void UnisonProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
             return;
         }
         if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
-            Q_EMIT candidatesFound(searchId, {}, id());
+            Q_EMIT candidateSearchFailed(searchId, CandidateSearchError::reason(reply), id(), CandidateSearchError::retryAfterSeconds(reply));
             return;
         }
 
         const QByteArray data = reply->readAll();
         const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (doc.isNull()) {
+            Q_EMIT candidateSearchFailed(searchId, MissingReason::Unreachable, id(), 0);
+            return;
+        }
         QList<LyricCandidate> result;
 
         if (doc.isArray()) {
@@ -416,7 +421,7 @@ void UnisonProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
     while (base.endsWith(QLatin1Char('/'))) base.chop(1);
     QUrl url(QStringLiteral("%1/lyrics/%2").arg(base, candidateId));
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);

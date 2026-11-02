@@ -5,6 +5,7 @@
  */
 
 #include "lrclib.h"
+#include "candidatesearcherror.h"
 #include "trackmatch.h"
 #include "trackname.h"
 #include "lyriclimits.h"
@@ -29,7 +30,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.1 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.2 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -725,12 +726,16 @@ void LrclibClient::searchCandidates(const TrackMetadata &meta, quint64 searchId)
             return;
         }
         if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
-            Q_EMIT candidatesFound(searchId, {});
+            Q_EMIT candidateSearchFailed(searchId, CandidateSearchError::reason(reply), CandidateSearchError::retryAfterSeconds(reply));
             return;
         }
 
         const QByteArray data = reply->readAll();
         const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (!doc.isArray()) {
+            Q_EMIT candidateSearchFailed(searchId, MissingReason::Unreachable, 0);
+            return;
+        }
         QList<LyricCandidate> result;
 
         const QString expTitle = meta.effectiveExpectedTitle();

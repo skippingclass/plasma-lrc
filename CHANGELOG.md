@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.2 — 2026-11-02
+
+- Faster automatic and manual search: each source gets a four-second total attempt budget, freeing one of the two lookup slots for the next source instead of waiting for multiple network timeouts. The overall search deadline remains 20 seconds.
+- New default network order: lrc.red → LRCLIB → NetEase → KuGou → Unison → Spicy Lyrics → AMLL → QQ Music → Custom URL. Local files stay first; existing custom orders are preserved.
+- Choose another match: available candidates can be selected while other sources are still searching. Early selection cancels background requests without discarding completed search caches.
+- Show cached candidates immediately during refresh and retain successful source results when another source fails. Empty search results expire after one minute.
+- Propagate candidate HTTP errors and malformed JSON as failures rather than caching them as successful empty searches. Respect HTTP 429 Retry-After without treating ordinary network errors as rate limits.
+- Correct candidate cache byte accounting and cover timeout, late callback, partial refresh and real HTTP failure paths with regression tests.
+
 ## 1.9.1 — 2026-11-02
 
 - Кэширование ручного поиска совпадений («Choose another match…»):

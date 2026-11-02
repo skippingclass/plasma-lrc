@@ -5,6 +5,7 @@
  */
 
 #include "amllprovider.h"
+#include "candidatesearcherror.h"
 #include "trackmatch.h"
 #include "ttmlparser.h"
 #include "lrcparser.h"
@@ -29,7 +30,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.1 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.2 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
@@ -669,7 +670,7 @@ void AmllProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId)
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -685,12 +686,16 @@ void AmllProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId)
             return;
         }
         if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
-            Q_EMIT candidatesFound(searchId, {}, id());
+            Q_EMIT candidateSearchFailed(searchId, CandidateSearchError::reason(reply), id(), CandidateSearchError::retryAfterSeconds(reply));
             return;
         }
 
         const QByteArray data = reply->readAll();
         const QJsonDocument doc = QJsonDocument::fromJson(data);
+        if (doc.isNull()) {
+            Q_EMIT candidateSearchFailed(searchId, MissingReason::Unreachable, id(), 0);
+            return;
+        }
         QList<LyricCandidate> result;
 
         QJsonArray items;
@@ -776,7 +781,7 @@ void AmllProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fetc
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.1 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);

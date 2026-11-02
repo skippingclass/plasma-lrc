@@ -12,6 +12,7 @@
 #include "trackname.h"
 #include "lyricselection.h"
 #include "candidatesearchcontroller.h"
+#include "providerdefaults.h"
 
 #include <KLocalizedString>
 #include <KPluginFactory>
@@ -541,7 +542,7 @@ void LrcApplet::readSettings()
     m_blacklistedTracks = blacklistedTracks;
     m_showNoteDuringPauses = showNoteDuringPauses;
 
-    const QString defaultOrder = QStringLiteral("local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom");
+    const QString defaultOrder = ProviderDefaults::order().join(QLatin1Char(','));
     const QString providerOrderRaw = setting(QStringLiteral("providerOrder"), defaultOrder).trimmed();
     const QString disabledProvidersRaw = setting(QStringLiteral("disabledProviders")).trimmed();
     const QString localFolder = setting(QStringLiteral("localLyricsFolder")).trimmed();

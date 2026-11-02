@@ -6,6 +6,7 @@
 
 #include "lyricspipelinemanager.h"
 #include "trackname.h"
+#include "providerdefaults.h"
 
 #include <QDir>
 #include <QStandardPaths>
@@ -14,12 +15,7 @@
 LyricsPipelineManager::LyricsPipelineManager(QObject *parent)
     : QObject(parent)
 {
-    m_providerOrder = {
-        QStringLiteral("lrcred"),
-        QStringLiteral("amll"),
-        QStringLiteral("spicy"),
-        QStringLiteral("lrclib")
-    };
+    m_providerOrder = ProviderDefaults::order();
 
     m_deadlineTimer = new QTimer(this);
     m_deadlineTimer->setSingleShot(true);
@@ -409,7 +405,7 @@ void LyricsPipelineManager::pumpQueue()
                 m_attemptedVariants.append(nextDesc);
 
                 for (auto &cand : m_candidates) {
-                    if (cand.provider && cand.provider->isEnabled()
+                    if (cand.provider && !cand.timedOut && cand.provider->isEnabled()
                         && cand.provider->capabilities().testFlag(LyricsProvider::Capability::SearchByTitleArtist)
                         && cand.provider->canHandle(nextMeta)) {
                         if (m_hasEmittedResult && m_bestQuality == LyricsType::Line
@@ -431,6 +427,7 @@ void LyricsPipelineManager::pumpQueue()
         if (inFlightCount < m_maxConcurrentLookups && pendingIndex != -1) {
             CandidateEntry &cand = m_candidates[pendingIndex];
             cand.inFlight = true;
+            cand.attemptToken = ++m_nextAttemptToken;
             LyricsProvider *p = cand.provider;
             const TrackMetadata effectiveMeta = (m_currentVariantIndex < m_searchVariants.size())
                 ? m_searchVariants.at(m_currentVariantIndex) : m_currentMeta;
@@ -441,6 +438,12 @@ void LyricsPipelineManager::pumpQueue()
                 diag.attemptedQuery = effectiveMeta.artist.isEmpty() ? effectiveMeta.title : QStringLiteral("%1 — %2").arg(effectiveMeta.artist, effectiveMeta.title);
             }
 
+            if (m_providerTimeoutMs > 0) {
+                QTimer::singleShot(m_providerTimeoutMs, this,
+                                   [this, gen, token = cand.attemptToken, id = p->id()] {
+                    onProviderTimeout(gen, token, id);
+                });
+            }
             p->requestLyrics(effectiveMeta, gen);
             continue;
         }
@@ -449,6 +452,33 @@ void LyricsPipelineManager::pumpQueue()
     }
 
     m_pumping = false;
+}
+
+void LyricsPipelineManager::onProviderTimeout(quint64 generation, quint64 token, const QString &providerId)
+{
+    if (!m_isLookupActive || generation != m_currentGeneration) {
+        return;
+    }
+    for (auto &candidate : m_candidates) {
+        if (!candidate.provider || candidate.provider->id() != providerId
+            || !candidate.inFlight || candidate.attemptToken != token) {
+            continue;
+        }
+        // Retire the attempt before abort(), which may emit a synchronous failure.
+        candidate.inFlight = false;
+        candidate.completed = true;
+        candidate.timedOut = true;
+        LyricsProvider *p = candidate.provider;
+        auto &diag = m_providerDiagnostics[providerId];
+        diag.status = QStringLiteral("failed");
+        diag.rejectionReason = QStringLiteral("Provider search time budget exceeded (%1 ms)").arg(m_providerTimeoutMs);
+        m_lastReason = MissingReason::Unreachable;
+        p->cancel();
+        if (m_isLookupActive && generation == m_currentGeneration) {
+            pumpQueue();
+        }
+        return;
+    }
 }
 
 void LyricsPipelineManager::onProviderLoaded(quint64 generation, const Lyrics &lyrics, const QString &providerId)

@@ -150,7 +150,7 @@ KCM.SimpleKCM {
         }
 
         if (orderStr.length === 0) {
-            orderStr = "local,unison,lrcred,netease,kugou,qqmusic,amll,spicy,lrclib,custom";
+            orderStr = "local,lrcred,lrclib,netease,kugou,unison,spicy,amll,qqmusic,custom";
             rawOrderField.text = orderStr;
         }
 

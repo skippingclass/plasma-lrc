@@ -296,10 +296,12 @@ Window {
             }
 
             Controls.Button {
+                objectName: "useSelectedButton"
                 text: i18n("Use selected")
                 icon.name: "dialog-ok"
                 highlighted: true
-                enabled: root.controller ? (root.controller.selectedIndex >= 0 && (root.controller.status === "ready" || root.controller.status === "error")) : false
+                enabled: root.controller ? (root.controller.selectedIndex >= 0
+                    && (root.controller.status === "searching" || root.controller.status === "ready" || root.controller.status === "error")) : false
                 onClicked: {
                     if (root.controller) {
                         root.controller.useSelected();
