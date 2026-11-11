@@ -365,6 +365,7 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                     entry.isStale = false;
                     entry.foundCandidates = res.candidates;
                     anyCached = true;
+                    m_hadSuccessfulResponseInSearch = true;
                     for (const auto &c : res.candidates) {
                         m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = false;
                     }
@@ -721,7 +722,7 @@ void CandidateSearchController::finishSearch()
     if (m_isExplicitRefresh) {
         bool anyProviderSucceeded = false;
         for (const auto &entry : m_activeProviders) {
-            if (!entry.failed) {
+            if (!entry.failed && !entry.isCached) {
                 anyProviderSucceeded = true;
                 break;
             }

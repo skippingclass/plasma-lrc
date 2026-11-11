@@ -14,6 +14,6 @@ namespace ZlibCodec {
  * Decompress zlib, gzip or raw deflate data.
  * Returns empty QByteArray on failure.
  */
-QByteArray decompress(const QByteArray &data);
+QByteArray decompress(const QByteArray &data, bool *outLimitExceeded = nullptr);
 
 } // namespace ZlibCodec

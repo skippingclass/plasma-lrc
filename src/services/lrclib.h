@@ -41,7 +41,7 @@ public:
     QString lastRejectionReason() const { return m_lastRejectionReason; }
 
     static int scoreSearchMatch(const QJsonObject &cand, qint64 targetDurationMs, const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
-    static bool parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs = 0, const QString &expectedTitle = QString(), const QString &expectedArtist = QString());
+    static bool parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs = 0, const QString &expectedTitle = QString(), const QString &expectedArtist = QString(), bool *outLimitExceeded = nullptr);
     static bool isDurationCompatible(double candDurationSec, qint64 targetDurationMs);
     static double maxAllowedDurationDiffSec(qint64 targetDurationMs);
     static bool validateCandidateIdentity(const QJsonObject &cand, const QString &expectedTitle, const QString &expectedArtist);

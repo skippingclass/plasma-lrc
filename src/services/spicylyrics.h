@@ -65,7 +65,7 @@ public:
     static QString trackIdFromMpris(const QString &trackId);
 
     /// Parses an API response. Exposed for testing.
-    static bool parse(const QByteArray &json, Lyrics *lyrics, QString *error);
+    static bool parse(const QByteArray &json, Lyrics *lyrics, QString *error, bool *outLimitExceeded = nullptr);
 
     static bool isSafeHttpUrl(const QString &url);
     static QString escapeHtml(const QString &text);

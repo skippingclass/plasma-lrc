@@ -47,7 +47,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.2 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.3 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -870,7 +870,12 @@ void SpicyLyrics::fetch(const QString &trackId)
 
         Lyrics lyrics;
         QString parseError;
-        if (!parse(payload, &lyrics, &parseError) || !lyrics.isUsable()) {
+        bool limitExceeded = false;
+        if (!parse(payload, &lyrics, &parseError, &limitExceeded) || !lyrics.isUsable()) {
+            if (limitExceeded) {
+                emitMissing(trackId, MissingReason::SizeLimitExceeded);
+                return;
+            }
             // The reply was fine but there is nothing to time: plain text with no
             // timings, which is what Apple Music and Spotify answer for a track
             // nobody has made a sync for. Remembering it keeps us from asking
@@ -912,8 +917,11 @@ void SpicyLyrics::fetch(const QString &trackId)
     m_watchdog->start(kRequestTimeoutMs + 5000);
 }
 
-bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
+bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     const auto fail = [error](const QString &message) {
         if (error) {
             *error = message;
@@ -923,6 +931,13 @@ bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
 
     if (!lyrics) {
         return fail(QStringLiteral("null lyrics output pointer"));
+    }
+
+    if (!LyricsLimits::checkInputSize(json.size())) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return fail(QStringLiteral("response size limit exceeded"));
     }
 
     QJsonParseError parseError{};
@@ -991,6 +1006,15 @@ bool SpicyLyrics::parse(const QByteArray &json, Lyrics *lyrics, QString *error)
 
     if (lyrics->lines.isEmpty()) {
         return fail(QStringLiteral("no usable lines"));
+    }
+
+    if (!LyricsLimits::validateLyricsLimits(*lyrics)) {
+        lyrics->lines.clear();
+        lyrics->type = LyricsType::None;
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return fail(QStringLiteral("lyrics limits exceeded"));
     }
 
     std::sort(lyrics->lines.begin(), lyrics->lines.end(), [](const LyricLine &lhs, const LyricLine &rhs) {

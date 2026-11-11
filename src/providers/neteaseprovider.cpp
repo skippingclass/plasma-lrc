@@ -36,6 +36,8 @@ NeteaseProvider::NeteaseProvider(QObject *parent, const QString &apiBase)
 NeteaseProvider::~NeteaseProvider()
 {
     cancel();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 bool NeteaseProvider::canHandle(const TrackMetadata &meta) const
@@ -63,8 +65,6 @@ void NeteaseProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-    cancelCandidateSearch(0);
-    cancelCandidateFetch(0);
     m_step = Step::Idle;
 }
 
@@ -116,7 +116,10 @@ void NeteaseProvider::onReplyFinished()
 
 void NeteaseProvider::startSearch()
 {
-    QUrl url(QStringLiteral("https://music.163.com/api/cloudsearch/pc"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    if (base.isEmpty()) base = QStringLiteral("https://music.163.com");
+    QUrl url(base + QStringLiteral("/api/cloudsearch/pc"));
     QUrlQuery query;
     const QString kw = (m_meta.artist.trimmed() + QLatin1Char(' ') + m_meta.title.trimmed()).trimmed();
     query.addQueryItem(QStringLiteral("s"), kw);
@@ -204,7 +207,10 @@ void NeteaseProvider::handleSearchReply(const QByteArray &data)
 
 void NeteaseProvider::startFetchLyrics(const QString &songId)
 {
-    QUrl url(QStringLiteral("https://music.163.com/api/song/lyric"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    if (base.isEmpty()) base = QStringLiteral("https://music.163.com");
+    QUrl url(base + QStringLiteral("/api/song/lyric"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("os"), QStringLiteral("pc"));
     query.addQueryItem(QStringLiteral("id"), songId);

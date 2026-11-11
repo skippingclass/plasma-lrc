@@ -484,7 +484,8 @@ Window {
                             Layout.alignment: Qt.AlignRight
                         }
                         Controls.Label {
-                            text: "-" + (root.syncData.userOffsetMs !== undefined ? root.syncData.userOffsetMs : 0) + " ms"
+                            readonly property int uOff: root.syncData.userOffsetMs !== undefined ? root.syncData.userOffsetMs : 0
+                            text: (uOff < 0 ? ("+" + (-uOff)) : ("-" + uOff)) + " ms"
                             Layout.fillWidth: true
                         }
 

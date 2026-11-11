@@ -220,8 +220,18 @@ static QString formatSeconds(qint64 ms)
     return QString::asprintf("%.3fs", ms / 1000.0);
 }
 
-QString decryptHex(const QString &hexStr)
+QString decryptHex(const QString &hexStr, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
+    if (!LyricsLimits::checkDecodedSize(static_cast<qint64>(hexStr.size()) * sizeof(QChar))) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return QString();
+    }
+
     QString clean;
     clean.reserve(hexStr.size());
     for (const QChar c : hexStr) {
@@ -231,6 +241,12 @@ QString decryptHex(const QString &hexStr)
     }
 
     if (clean.size() < 16 || clean.size() % 2 != 0) {
+        return QString();
+    }
+    if (!LyricsLimits::checkInputSize(clean.size() / 2)) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return QString();
     }
 
@@ -250,22 +266,35 @@ QString decryptHex(const QString &hexStr)
         return QString();
     }
 
-    const QByteArray inflated = ZlibCodec::decompress(plainBytes);
+    const QByteArray inflated = ZlibCodec::decompress(plainBytes, outLimitExceeded);
     if (inflated.isEmpty()) {
         return QString();
     }
 
-    return QString::fromUtf8(inflated);
+    const QString text = QString::fromUtf8(inflated);
+    if (!LyricsLimits::checkDecodedSize(static_cast<qint64>(text.size()) * sizeof(QChar))) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return QString();
+    }
+    return text;
 }
 
 using namespace TokenPunctuationHelper;
 
-QString toTtml(const QString &qrcText)
+QString toTtml(const QString &qrcText, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     if (qrcText.isEmpty()) {
         return QString();
     }
-    if (!LyricsLimits::checkDecodedSize(qrcText.size() * sizeof(QChar))) {
+    if (!LyricsLimits::checkDecodedSize(static_cast<qint64>(qrcText.size()) * sizeof(QChar))) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return QString();
     }
 
@@ -289,11 +318,17 @@ QString toTtml(const QString &qrcText)
     QStringList paragraphs;
     const QStringList lines = content.split(QLatin1Char('\n'));
     if (lines.size() > LyricsLimits::kMaxLines) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return QString();
     }
 
     for (const QString &rawLine : lines) {
         if (!LyricsLimits::checkLineLength(rawLine.size())) {
+            if (outLimitExceeded) {
+                *outLimitExceeded = true;
+            }
             return QString();
         }
         const QString line = rawLine.trimmed();
@@ -408,14 +443,27 @@ bool parse(const QString &hexOrQrcText, Lyrics *outLyrics, qint64 trackDurationM
     if (outLimitExceeded) {
         *outLimitExceeded = false;
     }
+    bool limitExceeded = false;
     QString qrc = hexOrQrcText.trimmed();
     if (!qrc.startsWith(QLatin1Char('[')) && !qrc.startsWith(QLatin1Char('<'))) {
-        qrc = decryptHex(qrc);
+        qrc = decryptHex(qrc, &limitExceeded);
+        if (limitExceeded) {
+            if (outLimitExceeded) {
+                *outLimitExceeded = true;
+            }
+            return false;
+        }
     }
     if (qrc.isEmpty()) {
         return false;
     }
-    const QString ttml = toTtml(qrc);
+    const QString ttml = toTtml(qrc, &limitExceeded);
+    if (limitExceeded) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return false;
+    }
     if (ttml.isEmpty()) {
         return false;
     }

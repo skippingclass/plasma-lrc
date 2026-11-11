@@ -1007,25 +1007,27 @@ PlasmoidItem {
         showTrackInfo: Plasmoid.showTrackInfo
 
         line: {
-            if (root.hasLyrics) {
-                if (root.showBackingVocals && root.hasBackingLyrics) {
-                    const bgFmt = "<font size=\"-1\" color=\"" + root.grayColorHex + "\">" + root.fullBackingLine + "</font>";
-                    if (root.hasPrimaryLyrics) {
-                        return root.fullLine + " " + bgFmt;
+            if (!Plasmoid.pauseHidden && !Plasmoid.isLyricsDiscarded && !Plasmoid.isCurrentTrackBlacklisted) {
+                if (root.hasLyrics) {
+                    if (root.showBackingVocals && root.hasBackingLyrics) {
+                        const bgFmt = "<font size=\"-1\" color=\"" + root.grayColorHex + "\">" + root.fullBackingLine + "</font>";
+                        if (root.hasPrimaryLyrics) {
+                            return root.fullLine + " " + bgFmt;
+                        }
+                        return bgFmt;
                     }
-                    return bgFmt;
+                    return root.fullLine;
                 }
-                return root.fullLine;
-            }
-            if (Plasmoid.isIntro) {
-                return Plasmoid.showNoteDuringPauses
-                    ? ("<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Intro ♪") + "</font>")
-                    : ("<font color=\"" + root.grayColorHex + "\">" + i18n("Intro") + "</font>");
-            }
-            if (Plasmoid.isBreak) {
-                return Plasmoid.showNoteDuringPauses
-                    ? ("<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Instrumental ♪") + "</font>")
-                    : ("<font color=\"" + root.grayColorHex + "\">" + i18n("Instrumental") + "</font>");
+                if (Plasmoid.isIntro) {
+                    return Plasmoid.showNoteDuringPauses
+                        ? ("<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Intro ♪") + "</font>")
+                        : ("<font color=\"" + root.grayColorHex + "\">" + i18n("Intro") + "</font>");
+                }
+                if (Plasmoid.isBreak) {
+                    return Plasmoid.showNoteDuringPauses
+                        ? ("<font color=\"" + root.grayColorHex + "\">" + i18n("♪ Instrumental ♪") + "</font>")
+                        : ("<font color=\"" + root.grayColorHex + "\">" + i18n("Instrumental") + "</font>");
+                }
             }
             return "";
         }
@@ -1050,7 +1052,7 @@ PlasmoidItem {
             }
             return i18n("No active player");
         }
-        hasLyrics: Plasmoid.hasLyrics
+        hasLyrics: Plasmoid.hasLyrics && !Plasmoid.pauseHidden && !Plasmoid.isLyricsDiscarded && !Plasmoid.isCurrentTrackBlacklisted
 
         attribution: Plasmoid.attribution
         attributionUrl: Plasmoid.attributionUrl

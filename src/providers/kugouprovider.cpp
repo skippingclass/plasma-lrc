@@ -36,6 +36,8 @@ KugouProvider::KugouProvider(QObject *parent, const QString &apiBase)
 KugouProvider::~KugouProvider()
 {
     cancel();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 bool KugouProvider::canHandle(const TrackMetadata &meta) const
@@ -63,8 +65,6 @@ void KugouProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-    cancelCandidateSearch(0);
-    cancelCandidateFetch(0);
     m_step = Step::Idle;
 }
 
@@ -122,7 +122,11 @@ void KugouProvider::onReplyFinished()
 
 void KugouProvider::startSongSearch()
 {
-    QUrl url(QStringLiteral("https://mobileservice.kugou.com/api/v3/search/song"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    QUrl url(base.isEmpty()
+        ? QStringLiteral("https://mobileservice.kugou.com/api/v3/search/song")
+        : (base + QStringLiteral("/api/v3/search/song")));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
     const QString kw = (m_meta.artist.trimmed() + QLatin1Char(' ') + m_meta.title.trimmed()).trimmed();
@@ -195,7 +199,11 @@ void KugouProvider::handleSearchSongReply(const QByteArray &data)
 
 void KugouProvider::startCandidateSearch(const QString &hash, qint64 songDurationSec)
 {
-    QUrl url(QStringLiteral("https://krcs.kugou.com/search"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    QUrl url(base.isEmpty()
+        ? QStringLiteral("https://krcs.kugou.com/search")
+        : (base + QStringLiteral("/search")));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("ver"), QStringLiteral("1"));
     query.addQueryItem(QStringLiteral("man"), QStringLiteral("yes"));
@@ -241,7 +249,11 @@ void KugouProvider::handleCandidatesReply(const QByteArray &data)
 
 void KugouProvider::startDownload(const QString &idStr, const QString &accesskey, bool isKrc)
 {
-    QUrl url(QStringLiteral("https://lyrics.kugou.com/download"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    QUrl url(base.isEmpty()
+        ? QStringLiteral("https://lyrics.kugou.com/download")
+        : (base + QStringLiteral("/download")));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("ver"), QStringLiteral("1"));
     query.addQueryItem(QStringLiteral("client"), QStringLiteral("pc"));

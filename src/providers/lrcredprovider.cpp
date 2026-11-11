@@ -33,7 +33,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.2 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.3 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -47,6 +47,8 @@ LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
 LrcRedProvider::~LrcRedProvider()
 {
     cancel();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 QString LrcRedProvider::cacheDirectory()
@@ -170,8 +172,6 @@ void LrcRedProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-    cancelCandidateSearch(0);
-    cancelCandidateFetch(0);
     m_currentCacheKey.clear();
     m_currentGeneration = 0;
     m_currentMeta = TrackMetadata{};
@@ -189,6 +189,9 @@ void LrcRedProvider::invalidateCache(const TrackMetadata &meta)
     const QVector<TrackMetadata> variants = generateSearchVariants(meta);
     QVector<TrackMetadata> allMetas = variants;
     allMetas.append(meta);
+    TrackMetadata normMeta = meta;
+    normalizeTrackMetadata(&normMeta);
+    allMetas.append(normMeta);
 
     for (const auto &v : allMetas) {
         QStringList keysToInvalidate;
@@ -949,8 +952,10 @@ void LrcRedProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
 
             if (!ttmlUrl.isEmpty()) {
                 item.id = ttmlUrl;
+                item.syncType = CandidateSyncType::Word;
             } else if (!lrcUrl.isEmpty()) {
                 item.id = lrcUrl;
+                item.syncType = CandidateSyncType::Line;
             } else if (!candIsrc.isEmpty()) {
                 item.id = QStringLiteral("isrc:") + candIsrc;
             } else {
@@ -970,12 +975,15 @@ void LrcRedProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
 
     QUrl fetchUrl;
     bool isTtml = true;
+    const bool isIsrcCandidate = candidateId.startsWith(QLatin1String("isrc:"));
+    QString isrcFallbackUrlStr;
 
-    if (candidateId.startsWith(QLatin1String("isrc:"))) {
+    if (isIsrcCandidate) {
         const QString isrc = candidateId.mid(5);
         QString base = m_apiBase;
         if (!base.endsWith(QLatin1Char('/'))) base.append(QLatin1Char('/'));
         fetchUrl = QUrl(base + isrc + QStringLiteral(".ttml"));
+        isrcFallbackUrlStr = base + isrc + QStringLiteral(".lrc");
         isTtml = true;
     } else {
         fetchUrl = QUrl(candidateId);
@@ -993,7 +1001,7 @@ void LrcRedProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
     m_candidateFetchReply = m_network.get(request);
     LyricsLimits::attachSizeLimitGuard(m_candidateFetchReply);
 
-    connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, reply = m_candidateFetchReply, isTtml, fetchId] {
+    connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, reply = m_candidateFetchReply, isTtml, isIsrcCandidate, isrcFallbackUrlStr, fetchId] {
         if (!reply) return;
         reply->deleteLater();
         if (reply == m_candidateFetchReply) {
@@ -1006,35 +1014,81 @@ void LrcRedProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
             Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
             return;
         }
-        if (reply->error() != QNetworkReply::NoError) {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+
+        if (reply->error() == QNetworkReply::NoError) {
+            const QByteArray payload = reply->readAll();
+            Lyrics lyrics;
+            bool limitExceeded = false;
+            bool ok = false;
+            if (isTtml) {
+                ok = TtmlParser::parseTtml(QString::fromUtf8(payload), &lyrics, 0, &limitExceeded);
+            } else {
+                ok = LrcParser::parseLrc(QString::fromUtf8(payload), &lyrics, 0, &limitExceeded);
+            }
+
+            if (limitExceeded) {
+                Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+                return;
+            }
+
+            if (ok && lyrics.isUsable()) {
+                lyrics.attributionData.provider = QStringLiteral("lrc.red");
+                lyrics.attributionData.providerUrl = QStringLiteral("https://lrc.red");
+                lyrics.attribution = QStringLiteral("lrc.red");
+                lyrics.attributionUrl = lyrics.attributionData.providerUrl;
+                Q_EMIT candidateLyricsLoaded(fetchId, lyrics, id());
+                return;
+            }
+        }
+
+        if (isIsrcCandidate && !isrcFallbackUrlStr.isEmpty()) {
+            QNetworkRequest lrcReq{QUrl(isrcFallbackUrlStr)};
+            lrcReq.setHeader(QNetworkRequest::UserAgentHeader, s_userAgent);
+            lrcReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+
+            m_candidateFetchReply = m_network.get(lrcReq);
+            LyricsLimits::attachSizeLimitGuard(m_candidateFetchReply);
+
+            connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, lrcReply = m_candidateFetchReply, fetchId] {
+                if (!lrcReply) return;
+                lrcReply->deleteLater();
+                if (lrcReply == m_candidateFetchReply) {
+                    m_candidateFetchReply = nullptr;
+                }
+                if (fetchId != m_candidateFetchId) {
+                    return;
+                }
+                if (LyricsLimits::isSizeLimitExceeded(lrcReply)) {
+                    Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+                    return;
+                }
+                if (lrcReply->error() != QNetworkReply::NoError) {
+                    Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+                    return;
+                }
+
+                const QByteArray lrcPayload = lrcReply->readAll();
+                Lyrics lrcLyrics;
+                bool limitExceeded = false;
+                const bool ok = LrcParser::parseLrc(QString::fromUtf8(lrcPayload), &lrcLyrics, 0, &limitExceeded);
+                if (limitExceeded) {
+                    Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+                    return;
+                }
+                if (ok && lrcLyrics.isUsable()) {
+                    lrcLyrics.attributionData.provider = QStringLiteral("lrc.red");
+                    lrcLyrics.attributionData.providerUrl = QStringLiteral("https://lrc.red");
+                    lrcLyrics.attribution = QStringLiteral("lrc.red");
+                    lrcLyrics.attributionUrl = lrcLyrics.attributionData.providerUrl;
+                    Q_EMIT candidateLyricsLoaded(fetchId, lrcLyrics, id());
+                } else {
+                    Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+                }
+            });
             return;
         }
 
-        const QByteArray payload = reply->readAll();
-        Lyrics lyrics;
-        bool limitExceeded = false;
-        bool ok = false;
-        if (isTtml) {
-            ok = TtmlParser::parseTtml(QString::fromUtf8(payload), &lyrics, 0, &limitExceeded);
-        } else {
-            ok = LrcParser::parseLrc(QString::fromUtf8(payload), &lyrics, 0, &limitExceeded);
-        }
-
-        if (limitExceeded) {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
-            return;
-        }
-
-        if (ok && lyrics.isUsable()) {
-            lyrics.attributionData.provider = QStringLiteral("lrc.red");
-            lyrics.attributionData.providerUrl = QStringLiteral("https://lrc.red");
-            lyrics.attribution = QStringLiteral("lrc.red");
-            lyrics.attributionUrl = lyrics.attributionData.providerUrl;
-            Q_EMIT candidateLyricsLoaded(fetchId, lyrics, id());
-        } else {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
-        }
+        Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
     });
 }
 

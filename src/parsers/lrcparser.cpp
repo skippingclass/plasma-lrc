@@ -56,19 +56,22 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs, bo
     if (lrcText.trimmed().isEmpty()) {
         return false;
     }
-    if (!LyricsLimits::checkDecodedSize(lrcText.size() * sizeof(QChar))) {
-        return false;
-    }
 
     qint64 globalOffsetMs = 0;
     QVector<RawLine> rawLines;
 
     const QStringList inputLines = lrcText.split(QLatin1Char('\n'));
     if (inputLines.size() > LyricsLimits::kMaxLines) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return false;
     }
     for (const QString &rawInput : inputLines) {
         if (!LyricsLimits::checkLineLength(rawInput.size())) {
+            if (outLimitExceeded) {
+                *outLimitExceeded = true;
+            }
             return false;
         }
         const QString line = rawInput.trimmed();

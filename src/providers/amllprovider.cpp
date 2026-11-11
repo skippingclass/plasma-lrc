@@ -30,7 +30,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.2 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.3 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
@@ -44,6 +44,8 @@ AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
 AmllProvider::~AmllProvider()
 {
     cancel();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 QString AmllProvider::cacheDirectory()
@@ -137,8 +139,6 @@ void AmllProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-    cancelCandidateSearch(0);
-    cancelCandidateFetch(0);
     m_currentCacheKey.clear();
     m_currentGeneration = 0;
     m_currentStep = Step::Idle;
@@ -149,6 +149,9 @@ void AmllProvider::invalidateCache(const TrackMetadata &meta)
     const QVector<TrackMetadata> variants = generateSearchVariants(meta);
     QVector<TrackMetadata> allMetas = variants;
     allMetas.append(meta);
+    TrackMetadata normMeta = meta;
+    normalizeTrackMetadata(&normMeta);
+    allMetas.append(normMeta);
 
     for (const auto &v : allMetas) {
         QStringList keys;
@@ -670,7 +673,7 @@ void AmllProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId)
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.3 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -781,7 +784,7 @@ void AmllProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fetc
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.3 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);

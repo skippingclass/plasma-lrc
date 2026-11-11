@@ -12,7 +12,7 @@
 
 namespace ZlibCodec {
 
-static QByteArray decompressWithWindowBits(const QByteArray &data, int windowBits)
+static QByteArray decompressWithWindowBits(const QByteArray &data, int windowBits, bool *outLimitExceeded = nullptr)
 {
     z_stream strm;
     std::memset(&strm, 0, sizeof(strm));
@@ -38,6 +38,9 @@ static QByteArray decompressWithWindowBits(const QByteArray &data, int windowBit
         const int produced = static_cast<int>(sizeof(buffer) - strm.avail_out);
         if (produced > 0) {
             if (static_cast<qint64>(out.size()) + produced > LyricsLimits::kMaxDecodedSizeBytes) {
+                if (outLimitExceeded) {
+                    *outLimitExceeded = true;
+                }
                 inflateEnd(&strm);
                 return QByteArray();
             }
@@ -49,26 +52,52 @@ static QByteArray decompressWithWindowBits(const QByteArray &data, int windowBit
     return (ret == Z_STREAM_END || !out.isEmpty()) ? out : QByteArray();
 }
 
-QByteArray decompress(const QByteArray &data)
+QByteArray decompress(const QByteArray &data, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     if (data.isEmpty()) {
+        return QByteArray();
+    }
+    if (!LyricsLimits::checkInputSize(data.size())) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return QByteArray();
     }
 
     // Try standard zlib / gzip header (15 + 32)
-    QByteArray result = decompressWithWindowBits(data, 15 + 32);
+    bool limitExceeded = false;
+    QByteArray result = decompressWithWindowBits(data, 15 + 32, &limitExceeded);
+    if (limitExceeded) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return QByteArray();
+    }
     if (!result.isEmpty()) {
         return result;
     }
 
     // Try standard zlib (15)
-    result = decompressWithWindowBits(data, 15);
+    result = decompressWithWindowBits(data, 15, &limitExceeded);
+    if (limitExceeded) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return QByteArray();
+    }
     if (!result.isEmpty()) {
         return result;
     }
 
     // Try raw deflate (-15)
-    return decompressWithWindowBits(data, -15);
+    result = decompressWithWindowBits(data, -15, &limitExceeded);
+    if (limitExceeded && outLimitExceeded) {
+        *outLimitExceeded = true;
+    }
+    return result;
 }
 
 } // namespace ZlibCodec

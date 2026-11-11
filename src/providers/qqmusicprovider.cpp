@@ -36,6 +36,8 @@ QqMusicProvider::QqMusicProvider(QObject *parent, const QString &apiBase)
 QqMusicProvider::~QqMusicProvider()
 {
     cancel();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 bool QqMusicProvider::canHandle(const TrackMetadata &meta) const
@@ -63,8 +65,6 @@ void QqMusicProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-    cancelCandidateSearch(0);
-    cancelCandidateFetch(0);
     m_step = Step::Idle;
 }
 
@@ -137,7 +137,12 @@ void QqMusicProvider::startSearch()
 
     const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
 
-    QNetworkRequest req(QUrl(QStringLiteral("https://u.y.qq.com/cgi-bin/musicu.fcg")));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    const QUrl url(base.isEmpty()
+        ? QStringLiteral("https://u.y.qq.com/cgi-bin/musicu.fcg")
+        : (base + QStringLiteral("/cgi-bin/musicu.fcg")));
+    QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) QQMusic"));
     req.setRawHeader("Referer", "https://y.qq.com/");
@@ -244,7 +249,12 @@ void QqMusicProvider::startFetchQrc(const QString &songMid)
 
     const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
 
-    QNetworkRequest req(QUrl(QStringLiteral("https://u.y.qq.com/cgi-bin/musicu.fcg")));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    const QUrl url(base.isEmpty()
+        ? QStringLiteral("https://u.y.qq.com/cgi-bin/musicu.fcg")
+        : (base + QStringLiteral("/cgi-bin/musicu.fcg")));
+    QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) QQMusic"));
     req.setRawHeader("Referer", "https://y.qq.com/");
@@ -263,7 +273,8 @@ void QqMusicProvider::handleQrcReply(const QByteArray &data)
                               .value(QStringLiteral("lyric")).toString();
 
     Lyrics lyrics;
-    if (!lyric.isEmpty() && QrcDecoder::parse(lyric, &lyrics, m_meta.durationMs) && lyrics.isUsable()) {
+    bool limitExceeded = false;
+    if (!lyric.isEmpty() && QrcDecoder::parse(lyric, &lyrics, m_meta.durationMs, &limitExceeded) && lyrics.isUsable()) {
         lyrics.attribution = QStringLiteral("QQ Music (QQ音乐)");
         lyrics.attributionData.provider = QStringLiteral("QQ Music");
         lyrics.attributionData.providerUrl = QStringLiteral("https://y.qq.com");
@@ -274,6 +285,13 @@ void QqMusicProvider::handleQrcReply(const QByteArray &data)
         return;
     }
 
+    if (limitExceeded) {
+        const quint64 gen = m_currentGeneration;
+        cancel();
+        Q_EMIT lyricsFailed(gen, MissingReason::SizeLimitExceeded, id());
+        return;
+    }
+
     // Fallback to LRC
     m_step = Step::FetchLrcFallback;
     startFetchLrcFallback(m_currentMid);
@@ -281,7 +299,11 @@ void QqMusicProvider::handleQrcReply(const QByteArray &data)
 
 void QqMusicProvider::startFetchLrcFallback(const QString &songMid)
 {
-    QUrl url(QStringLiteral("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    QUrl url(base.isEmpty()
+        ? QStringLiteral("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg")
+        : (base + QStringLiteral("/lyric/fcgi-bin/fcg_query_lyric_new.fcg")));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("songmid"), songMid);
     query.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
@@ -449,24 +471,44 @@ void QqMusicProvider::fetchCandidateLyrics(const QString &candidateId, quint64 f
 
     QString base = m_apiBase;
     while (base.endsWith(QLatin1Char('/'))) base.chop(1);
-    QUrl url(base.isEmpty()
-        ? QStringLiteral("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg")
-        : (base + QStringLiteral("/lyric/fcgi-bin/fcg_query_lyric_new.fcg")));
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("songmid"), candidateId);
-    query.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
-    query.addQueryItem(QStringLiteral("nobase64"), QStringLiteral("0"));
-    url.setQuery(query);
+    const QUrl qrcUrl(base.isEmpty()
+        ? QStringLiteral("https://u.y.qq.com/cgi-bin/musicu.fcg")
+        : (base + QStringLiteral("/cgi-bin/musicu.fcg")));
 
-    QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) QQMusic/1873"));
-    req.setRawHeader("Referer", "https://y.qq.com");
+    QJsonObject comm;
+    comm[QStringLiteral("ct")] = QStringLiteral("19");
+    comm[QStringLiteral("cv")] = QStringLiteral("1873");
+    comm[QStringLiteral("uin")] = QStringLiteral("0");
+
+    QJsonObject param;
+    param[QStringLiteral("songMID")] = candidateId;
+    param[QStringLiteral("qrc")] = 1;
+    param[QStringLiteral("qrc_t")] = 0;
+    param[QStringLiteral("trans")] = 1;
+    param[QStringLiteral("roma")] = 1;
+    param[QStringLiteral("crypt")] = 1;
+
+    QJsonObject reqObj;
+    reqObj[QStringLiteral("module")] = QStringLiteral("music.musichallSong.PlayLyricInfo");
+    reqObj[QStringLiteral("method")] = QStringLiteral("GetPlayLyricInfo");
+    reqObj[QStringLiteral("param")] = param;
+
+    QJsonObject root;
+    root[QStringLiteral("comm")] = comm;
+    root[QStringLiteral("req")] = reqObj;
+
+    const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
+
+    QNetworkRequest qrcReq(qrcUrl);
+    qrcReq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    qrcReq.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) QQMusic/1873"));
+    qrcReq.setRawHeader("Referer", "https://y.qq.com/");
 
     m_candidateFetchId = fetchId;
-    m_candidateFetchReply = m_network.get(req);
+    m_candidateFetchReply = m_network.post(qrcReq, payload);
     LyricsLimits::attachSizeLimitGuard(m_candidateFetchReply);
 
-    connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, reply = m_candidateFetchReply, fetchId] {
+    connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, reply = m_candidateFetchReply, candidateId, fetchId, base] {
         if (!reply) return;
         reply->deleteLater();
         if (reply == m_candidateFetchReply) {
@@ -479,48 +521,102 @@ void QqMusicProvider::fetchCandidateLyrics(const QString &candidateId, quint64 f
             Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
             return;
         }
-        if (reply->error() != QNetworkReply::NoError) {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
-            return;
-        }
 
-        const QByteArray data = reply->readAll();
-        const QJsonDocument doc = QJsonDocument::fromJson(data);
-        if (!doc.isObject()) {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
-            return;
-        }
-
-        const QString lyric = doc.object().value(QStringLiteral("lyric")).toString();
-        const QString qrc = doc.object().value(QStringLiteral("qrc")).toString();
-
-        Lyrics lyrics;
-        bool limitExceeded = false;
-        bool ok = false;
-        if (!qrc.isEmpty()) {
-            const QByteArray decodedQrc = QByteArray::fromBase64(qrc.toUtf8());
-            ok = QrcDecoder::parse(decodedQrc, &lyrics, 0, &limitExceeded);
-        }
-        if (!ok && !limitExceeded) {
-            if (!lyric.isEmpty()) {
-                const QByteArray decodedLrc = QByteArray::fromBase64(lyric.toUtf8());
-                ok = LrcParser::parseLrc(QString::fromUtf8(decodedLrc), &lyrics, 0, &limitExceeded);
+        if (reply->error() == QNetworkReply::NoError) {
+            const QByteArray data = reply->readAll();
+            const QJsonDocument doc = QJsonDocument::fromJson(data);
+            if (doc.isObject()) {
+                const QString qrcLyric = doc.object().value(QStringLiteral("req")).toObject()
+                                             .value(QStringLiteral("data")).toObject()
+                                             .value(QStringLiteral("lyric")).toString();
+                Lyrics lyrics;
+                bool limitExceeded = false;
+                if (!qrcLyric.isEmpty() && QrcDecoder::parse(qrcLyric, &lyrics, 0, &limitExceeded) && lyrics.isUsable()) {
+                    lyrics.attribution = QStringLiteral("QQ Music (QQ音乐)");
+                    lyrics.attributionData.provider = QStringLiteral("QQ Music");
+                    lyrics.attributionData.providerUrl = QStringLiteral("https://y.qq.com");
+                    Q_EMIT candidateLyricsLoaded(fetchId, lyrics, id());
+                    return;
+                }
+                if (limitExceeded) {
+                    Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+                    return;
+                }
             }
         }
 
-        if (limitExceeded) {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
-            return;
-        }
+        // Step 2: Fallback to LRC endpoint
+        QUrl lrcUrl(base.isEmpty()
+            ? QStringLiteral("https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg")
+            : (base + QStringLiteral("/lyric/fcgi-bin/fcg_query_lyric_new.fcg")));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("songmid"), candidateId);
+        query.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
+        query.addQueryItem(QStringLiteral("nobase64"), QStringLiteral("1"));
+        lrcUrl.setQuery(query);
 
-        if (ok && lyrics.isUsable()) {
-            lyrics.attribution = QStringLiteral("QQ Music (QQ音乐)");
-            lyrics.attributionData.provider = QStringLiteral("QQ Music");
-            lyrics.attributionData.providerUrl = QStringLiteral("https://y.qq.com");
-            Q_EMIT candidateLyricsLoaded(fetchId, lyrics, id());
-        } else {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
-        }
+        QNetworkRequest lrcReq(lrcUrl);
+        lrcReq.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) QQMusic/1873"));
+        lrcReq.setRawHeader("Referer", "https://y.qq.com/");
+
+        m_candidateFetchReply = m_network.get(lrcReq);
+        LyricsLimits::attachSizeLimitGuard(m_candidateFetchReply);
+
+        connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, lrcReply = m_candidateFetchReply, fetchId] {
+            if (!lrcReply) return;
+            lrcReply->deleteLater();
+            if (lrcReply == m_candidateFetchReply) {
+                m_candidateFetchReply = nullptr;
+            }
+            if (fetchId != m_candidateFetchId) {
+                return;
+            }
+            if (LyricsLimits::isSizeLimitExceeded(lrcReply)) {
+                Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+                return;
+            }
+            if (lrcReply->error() != QNetworkReply::NoError) {
+                Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+                return;
+            }
+
+            const QByteArray lrcData = lrcReply->readAll();
+            const QJsonDocument lrcDoc = QJsonDocument::fromJson(lrcData);
+            if (!lrcDoc.isObject()) {
+                Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+                return;
+            }
+
+            QString lyric = lrcDoc.object().value(QStringLiteral("lyric")).toString();
+            if (lyric.isEmpty()) {
+                Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+                return;
+            }
+
+            if (!lyric.trimmed().startsWith(QLatin1Char('['))) {
+                const QByteArray decoded = QByteArray::fromBase64(lyric.toUtf8());
+                if (!decoded.isEmpty()) {
+                    lyric = QString::fromUtf8(decoded);
+                }
+            }
+
+            Lyrics lyrics;
+            bool limitExceeded = false;
+            const bool ok = LrcParser::parseLrc(lyric, &lyrics, 0, &limitExceeded);
+            if (limitExceeded) {
+                Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+                return;
+            }
+
+            if (ok && lyrics.isUsable()) {
+                lyrics.attribution = QStringLiteral("QQ Music (QQ音乐)");
+                lyrics.attributionData.provider = QStringLiteral("QQ Music");
+                lyrics.attributionData.providerUrl = QStringLiteral("https://y.qq.com");
+                Q_EMIT candidateLyricsLoaded(fetchId, lyrics, id());
+            } else {
+                Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
+            }
+        });
     });
 }
 

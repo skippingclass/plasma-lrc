@@ -94,6 +94,8 @@ void SpicyLyricsProvider::onMissing(const QString &trackId, MissingReason reason
             m_diagReason = QStringLiteral("Application suspended");
         } else if (errCode == QLatin1String("invalid_response")) {
             m_diagReason = QStringLiteral("Invalid response format");
+        } else if (reason == MissingReason::SizeLimitExceeded) {
+            m_diagReason = QStringLiteral("Response size limit exceeded");
         } else if (reason == MissingReason::Unsynced) {
             m_diagReason = QStringLiteral("No synchronized lyrics available");
         } else if (reason == MissingReason::NotFound) {

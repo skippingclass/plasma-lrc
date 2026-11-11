@@ -280,11 +280,11 @@ public:
     }
     bool isIntro() const
     {
-        return hasLyrics() && !m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs;
+        return !m_pauseHidden && !m_lyricsDiscarded && hasLyrics() && !m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs;
     }
     bool isBreak() const
     {
-        return hasLyrics() && !m_lyrics.lines.isEmpty() && m_lineIndex < 0 && !isIntro() && m_positionMs <= m_lyrics.lines.last().endMs;
+        return !m_pauseHidden && !m_lyricsDiscarded && hasLyrics() && !m_lyrics.lines.isEmpty() && m_lineIndex < 0 && !isIntro() && m_positionMs <= m_lyrics.lines.last().endMs;
     }
     QString fullLyrics() const;
     QString attribution() const;

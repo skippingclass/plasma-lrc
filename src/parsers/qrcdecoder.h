@@ -16,12 +16,12 @@ namespace QrcDecoder {
 /**
  * Decrypt hexadecimal QRC payload using Tencent 3DES-ECB and decompress via zlib.
  */
-QString decryptHex(const QString &hexStr);
+QString decryptHex(const QString &hexStr, bool *outLimitExceeded = nullptr);
 
 /**
  * Convert decrypted QRC text into standard Apple-compatible TTML.
  */
-QString toTtml(const QString &qrcText);
+QString toTtml(const QString &qrcText, bool *outLimitExceeded = nullptr);
 
 /**
  * Convenience method: decrypt and parse into Lyrics structure (LyricsType::Syllable).

@@ -362,11 +362,8 @@ void LrcApplet::refresh()
     meta.url = m_trackUrl;
     meta.isWebSession = m_webPageSession;
 
-    TrackMetadata searchMeta = meta;
-    normalizeTrackMetadata(&searchMeta);
-
     if (m_pipeline) {
-        m_pipeline->invalidateCaches(searchMeta);
+        m_pipeline->invalidateCaches(meta);
     }
     // The API lyrics have to go as well: poll() returns early while they are
     // usable, so the button would do nothing at all on a track that has them.
@@ -938,7 +935,7 @@ void LrcApplet::onProcessFinished()
     m_fetchingLrc = false;
 
     // If the track changed while the process was running, discard output from the old track.
-    if (!m_process || m_processGeneration != m_lookupGeneration || isCurrentTrackBlacklisted()) {
+    if (!m_process || m_processGeneration != m_lookupGeneration || isCurrentTrackBlacklisted() || m_manualCandidateSelected) {
         return;
     }
 
@@ -1426,8 +1423,16 @@ void LrcApplet::handleLyricsExpired()
 
     m_expiryTimer.stop();
 
+    if (m_manualCandidateSelected) {
+        m_manualCandidateSelected = false;
+        Q_EMIT manualCandidateSelectedChanged();
+    }
+
     // Discard active lyrics and cached full/current lyric strings
     m_lyrics = Lyrics();
+    ++m_lyricsRevision;
+    m_cachedProjectedLineIndex = -1;
+    m_cachedProjectedLine = ProjectedLine();
     m_fromSpicy = false;
     m_wordSynced = false;
     m_lineIndex = -1;
@@ -2068,6 +2073,9 @@ void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason
     // Safely clear lyrics and attribution/expiry state without changing generation
     m_expiryTimer.stop();
     m_lyrics = Lyrics();
+    ++m_lyricsRevision;
+    m_cachedProjectedLineIndex = -1;
+    m_cachedProjectedLine = ProjectedLine();
     m_word.clear();
     m_wordStart = 0;
     m_wordEnd = 0;
@@ -4287,7 +4295,10 @@ QString LrcApplet::diagnosticReport() const
     ts << QStringLiteral("  Measurement Age (elapsed):          +%1 ms\n").arg(y.value(QStringLiteral("clockElapsedMs")).toLongLong());
     ts << QStringLiteral("  Gapless Lead Buffer (gaplessLead):  -%1 ms\n").arg(y.value(QStringLiteral("gaplessLeadMs")).toLongLong());
     ts << QStringLiteral("  Audio Lead Latency (audioLeadComp): -%1 ms\n").arg(y.value(QStringLiteral("audioLeadCompensationMs")).toLongLong());
-    ts << QStringLiteral("  User Lyric Offset (userOffset):     -%1 ms\n").arg(y.value(QStringLiteral("userOffsetMs")).toLongLong());
+    const qint64 userOffsetVal = y.value(QStringLiteral("userOffsetMs")).toLongLong();
+    ts << QStringLiteral("  User Lyric Offset (userOffset):     %1%2 ms\n")
+        .arg(userOffsetVal < 0 ? QStringLiteral("+") : QStringLiteral("-"))
+        .arg(qAbs(userOffsetVal));
     ts << QStringLiteral("  -------------------------------------------\n");
     ts << QStringLiteral("  Final Filtered Position:             %1 ms\n").arg(y.value(QStringLiteral("filteredPositionMs")).toLongLong());
     ts << QStringLiteral("  Formula: %1\n\n").arg(y.value(QStringLiteral("calculationFormula")).toString());
@@ -4390,9 +4401,22 @@ void LrcApplet::onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &pro
     }
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (providerId == QLatin1String("spicy") && lyrics.validUntilMs <= 0) {
+        return;
+    }
     if (lyrics.validUntilMs > 0 && now >= lyrics.validUntilMs) {
         return;
     }
+
+    if (m_pipeline) {
+        m_pipeline->cancel();
+    }
+    cancelProcess();
+    m_spicy->cancel();
+    m_lrclib->cancel();
+    m_fetchingFromSpicy = false;
+    m_fetchingLrc = false;
+    m_lyricsLookupDone = true;
 
     m_manualCandidateSelected = true;
     Q_EMIT manualCandidateSelectedChanged();
@@ -4407,13 +4431,24 @@ void LrcApplet::onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &pro
 
     m_lyrics = lyrics;
     ++m_lyricsRevision;
+    m_cachedProjectedLineIndex = -1;
+    m_cachedProjectedLine = ProjectedLine();
     m_wordSynced = (lyrics.type == LyricsType::Syllable);
     m_lineIndex = -1;
     m_wordCursor = 0;
     clearWordHighlight();
     clearBacking();
 
-    if (m_lyrics.validUntilMs > 0) {
+    if (m_fromSpicy) {
+        m_expiryGeneration = m_lookupGeneration;
+        m_expiryRetryCount = 0;
+        if (m_lyrics.validUntilMs > 0) {
+            armExpiryTimer();
+        } else {
+            m_expiryTimer.stop();
+        }
+    } else if (m_lyrics.validUntilMs > 0) {
+        m_expiryGeneration = m_lookupGeneration;
         const qint64 remainingMs = m_lyrics.validUntilMs - now;
         if (remainingMs > 0) {
             m_expiryTimer.start(qBound(1000LL, remainingMs, 86400000LL));

@@ -414,9 +414,11 @@ int main()
             // Compress 17 MiB of zeroes
             const QByteArray bigZeros(17 * 1024 * 1024, 0);
             const QByteArray bomb = compressZlib(bigZeros);
-            const QByteArray decompressed = ZlibCodec::decompress(bomb);
+            bool limitExceeded = false;
+            const QByteArray decompressed = ZlibCodec::decompress(bomb, &limitExceeded);
             check("limits: decompression bomb (>16 MiB) rejected by ZlibCodec",
                   decompressed.isEmpty(), QStringLiteral("decompressed size: %1").arg(decompressed.size()));
+            check("limits: ZlibCodec sets outLimitExceeded on decompression bomb", limitExceeded);
         }
 
         // 2. Line count limit (> 10 000 lines)
@@ -430,7 +432,9 @@ int main()
                     .arg(0, 2, 10, QLatin1Char('0'));
             }
             Lyrics hugeLyrics;
-            check("limits: LrcParser rejects >10000 lines", !LrcParser::parseLrc(hugeLrc, &hugeLyrics));
+            bool limitExceeded = false;
+            check("limits: LrcParser rejects >10000 lines", !LrcParser::parseLrc(hugeLrc, &hugeLyrics, 0, &limitExceeded));
+            check("limits: LrcParser sets outLimitExceeded on >10000 lines", limitExceeded);
         }
 
         // 3. Line length limit (> 16 384 chars)
@@ -439,7 +443,26 @@ int main()
             longLineLrc.append(QString(17000, QLatin1Char('x')));
             longLineLrc.append(QLatin1Char('\n'));
             Lyrics longLineLyrics;
-            check("limits: LrcParser rejects line >16384 chars", !LrcParser::parseLrc(longLineLrc, &longLineLyrics));
+            bool limitExceeded = false;
+            check("limits: LrcParser rejects line >16384 chars", !LrcParser::parseLrc(longLineLrc, &longLineLyrics, 0, &limitExceeded));
+            check("limits: LrcParser sets outLimitExceeded on line >16384 chars", limitExceeded);
+
+            QString longLineYrc = QStringLiteral("[1000,2000](1000,2000,0)") + QString(17000, QLatin1Char('y')) + QLatin1Char('\n');
+            Lyrics longYrcLyrics;
+            bool yrcLimitExceeded = false;
+            check("limits: YrcParser rejects line >16384 chars and sets outLimitExceeded",
+                  !YrcParser::parse(longLineYrc, &longYrcLyrics, 0, &yrcLimitExceeded) && yrcLimitExceeded);
+
+            QString longLineQrc = QStringLiteral("[1000,2000]") + QString(17000, QLatin1Char('q')) + QStringLiteral("(1000,2000)\n");
+            Lyrics longQrcLyrics;
+            bool qrcLimitExceeded = false;
+            check("limits: QrcDecoder rejects line >16384 chars and sets outLimitExceeded",
+                  !QrcDecoder::parse(longLineQrc, &longQrcLyrics, 0, &qrcLimitExceeded) && qrcLimitExceeded);
+
+            QString longLineKrc = QStringLiteral("[1000,2000]<0,2000,0>") + QString(17000, QLatin1Char('k')) + QLatin1Char('\n');
+            bool krcLimitExceeded = false;
+            check("limits: KrcParser::toTtml rejects line >16384 chars and sets outLimitExceeded",
+                  KrcParser::toTtml(longLineKrc, &krcLimitExceeded).isEmpty() && krcLimitExceeded);
         }
 
         // 4. Word count limit (> 100 000 words)

@@ -234,5 +234,34 @@ int main(int argc, char **argv)
         check("bad cache file was replaced on disk", QFile::exists(diskPath));
     }
 
+    // 8. Pipeline cancel() must NOT abort active manual candidate search
+    {
+        HttpTestServer candServer;
+        candServer.responses.append({200, R"([{"id":77,"trackName":"Manual Song","artistName":"Artist","duration":200,"syncedLyrics":"[00:01.00] manual line"}])", 150, {}});
+
+        LrclibClient client(nullptr, candServer.apiBase());
+        QList<LyricCandidate> foundCands;
+        bool searchFailed = false;
+        QObject::connect(&client, &LrclibClient::candidatesFound, [&](quint64, const QList<LyricCandidate> &c) {
+            foundCands = c;
+        });
+        QObject::connect(&client, &LrclibClient::candidateSearchFailed, [&](quint64, MissingReason, int) {
+            searchFailed = true;
+        });
+
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Manual Song");
+        meta.artist = QStringLiteral("Artist");
+        meta.durationMs = 200000;
+
+        client.searchCandidates(meta, 999);
+        advanceEvents(30);
+        // Simulate main pipeline calling cancel() while ChooseMatchWindow candidate search is in flight
+        client.cancel();
+
+        check("pipeline cancel() does not abort in-flight searchCandidates()",
+              waitFor([&] { return !foundCands.isEmpty(); }, 600) && !searchFailed);
+    }
+
     return failures ? 1 : 0;
 }

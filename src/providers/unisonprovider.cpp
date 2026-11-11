@@ -35,6 +35,8 @@ UnisonProvider::UnisonProvider(QObject *parent, const QString &apiBase)
 UnisonProvider::~UnisonProvider()
 {
     cancel();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 bool UnisonProvider::canHandle(const TrackMetadata &meta) const
@@ -62,8 +64,6 @@ void UnisonProvider::cancel()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-    cancelCandidateSearch(0);
-    cancelCandidateFetch(0);
     m_step = Step::Idle;
 }
 
@@ -122,7 +122,10 @@ void UnisonProvider::onReplyFinished()
 
 void UnisonProvider::startDirectLookup()
 {
-    QUrl url(QStringLiteral("https://unison.boidu.dev/lyrics"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    if (base.isEmpty()) base = QStringLiteral("https://unison.boidu.dev");
+    QUrl url(base + QStringLiteral("/lyrics"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("song"), m_meta.title.trimmed());
     query.addQueryItem(QStringLiteral("artist"), m_meta.artist.trimmed());
@@ -176,7 +179,10 @@ void UnisonProvider::handleDirectReply(const QByteArray &data, int httpCode)
 
 void UnisonProvider::startSearch()
 {
-    QUrl url(QStringLiteral("https://unison.boidu.dev/lyrics/search"));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    if (base.isEmpty()) base = QStringLiteral("https://unison.boidu.dev");
+    QUrl url(base + QStringLiteral("/lyrics/search"));
     QUrlQuery query;
     const QString kw = (m_meta.artist.trimmed() + QLatin1Char(' ') + m_meta.title.trimmed()).trimmed();
     query.addQueryItem(QStringLiteral("q"), kw);
@@ -243,7 +249,10 @@ void UnisonProvider::handleSearchReply(const QByteArray &data)
 
 void UnisonProvider::startFetchDetails(const QString &lyricsId)
 {
-    QUrl url(QStringLiteral("https://unison.boidu.dev/lyrics/%1").arg(lyricsId));
+    QString base = m_apiBase;
+    while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    if (base.isEmpty()) base = QStringLiteral("https://unison.boidu.dev");
+    QUrl url(QStringLiteral("%1/lyrics/%2").arg(base, lyricsId));
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (X11; Linux x86_64) Plasma-LRC/1.7"));
 
@@ -348,14 +357,15 @@ void UnisonProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
 
     QString base = m_apiBase;
     while (base.endsWith(QLatin1Char('/'))) base.chop(1);
+    if (base.isEmpty()) base = QStringLiteral("https://unison.boidu.dev");
     QUrl url(base + QStringLiteral("/lyrics/search"));
     QUrlQuery query;
     const QString q = (meta.artist.trimmed() + QLatin1Char(' ') + meta.title.trimmed()).trimmed();
-    query.addQueryItem(QStringLiteral("query"), q);
+    query.addQueryItem(QStringLiteral("q"), q);
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.3 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -383,30 +393,44 @@ void UnisonProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
         }
         QList<LyricCandidate> result;
 
+        QJsonArray arr;
         if (doc.isArray()) {
-            for (const QJsonValue &v : doc.array()) {
-                if (result.size() >= 10) break;
-                const QJsonObject obj = v.toObject();
-                const QString song = obj.value(QStringLiteral("song")).toString();
-                const QString artist = obj.value(QStringLiteral("artist")).toString();
-                const QString idStr = obj.value(QStringLiteral("id")).toString();
-                const qint64 duration = obj.value(QStringLiteral("duration")).toVariant().toLongLong();
-                if (idStr.isEmpty()) continue;
+            arr = doc.array();
+        } else if (doc.isObject()) {
+            arr = doc.object().value(QStringLiteral("data")).toArray();
+        }
 
-                if (!TrackMatch::matchCandidate(meta, song, artist, duration, 4000)) {
-                    continue;
+        for (const QJsonValue &v : arr) {
+            if (result.size() >= 10) break;
+            const QJsonObject obj = v.toObject();
+            const QString song = obj.value(QStringLiteral("song")).toString();
+            const QString artist = obj.value(QStringLiteral("artist")).toString();
+            const QString idStr = obj.value(QStringLiteral("id")).toString();
+            if (idStr.isEmpty()) continue;
+
+            qint64 duration = 0;
+            if (obj.contains(QStringLiteral("duration"))) {
+                const double d = obj.value(QStringLiteral("duration")).toDouble();
+                if (d > 0) {
+                    duration = d > 10000 ? static_cast<qint64>(d) : static_cast<qint64>(d * 1000);
                 }
-
-                LyricCandidate cand;
-                cand.id = idStr;
-                cand.providerId = id();
-                cand.sourceName = displayName();
-                cand.title = song;
-                cand.artist = artist;
-                cand.durationMs = duration;
-                cand.syncType = CandidateSyncType::Unknown;
-                result.append(cand);
+            } else if (obj.contains(QStringLiteral("durationMs"))) {
+                duration = obj.value(QStringLiteral("durationMs")).toVariant().toLongLong();
             }
+
+            if (!TrackMatch::matchCandidate(meta, song, artist, duration, 4000)) {
+                continue;
+            }
+
+            LyricCandidate cand;
+            cand.id = idStr;
+            cand.providerId = id();
+            cand.sourceName = displayName();
+            cand.title = song;
+            cand.artist = artist;
+            cand.durationMs = duration;
+            cand.syncType = CandidateSyncType::Unknown;
+            result.append(cand);
         }
 
         Q_EMIT candidatesFound(searchId, result, id());
@@ -421,7 +445,7 @@ void UnisonProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
     while (base.endsWith(QLatin1Char('/'))) base.chop(1);
     QUrl url(QStringLiteral("%1/lyrics/%2").arg(base, candidateId));
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.2 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.9.3 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);

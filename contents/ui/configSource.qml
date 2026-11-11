@@ -165,7 +165,7 @@ KCM.SimpleKCM {
         }
 
         let orderList = orderStr.split(",").map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
-        const allKnown = ["local", "unison", "lrcred", "netease", "kugou", "qqmusic", "amll", "spicy", "lrclib", "custom"];
+        const allKnown = ["local", "lrcred", "lrclib", "netease", "kugou", "unison", "spicy", "amll", "qqmusic", "custom"];
         for (let i = 0; i < allKnown.length; ++i) {
             if (orderList.indexOf(allKnown[i]) === -1) {
                 orderList.push(allKnown[i]);
@@ -279,12 +279,13 @@ KCM.SimpleKCM {
     }
 
     function isSpicyEnabled() {
+        const fallbackChecked = useSpicyHiddenBox.checked;
         for (let i = 0; i < providersModel.count; ++i) {
             if (providersModel.get(i).providerId === "spicy") {
                 return providersModel.get(i).providerEnabled;
             }
         }
-        return useSpicyHiddenBox.checked;
+        return fallbackChecked;
     }
 
     Component.onCompleted: {
@@ -470,7 +471,7 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("API key:")
             echoMode: TextInput.PasswordEchoOnEdit
             placeholderText: i18n("Client key: sl_pk_…")
-            enabled: root.isSpicyEnabled()
+            enabled: useSpicyHiddenBox.checked && root.isSpicyEnabled()
             Layout.fillWidth: true
         }
 

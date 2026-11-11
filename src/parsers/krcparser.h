@@ -16,12 +16,12 @@ namespace KrcParser {
 /**
  * Decrypt and decompress raw or base64-encoded KRC data to plain text.
  */
-QString decode(const QByteArray &rawOrBase64Data);
+QString decode(const QByteArray &rawOrBase64Data, bool *outLimitExceeded = nullptr);
 
 /**
  * Convert decrypted KRC text into standard Apple-compatible TTML.
  */
-QString toTtml(const QString &krcText);
+QString toTtml(const QString &krcText, bool *outLimitExceeded = nullptr);
 
 /**
  * Convenience method: decode and parse into Lyrics structure (LyricsType::Syllable).

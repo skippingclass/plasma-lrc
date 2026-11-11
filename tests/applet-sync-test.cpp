@@ -2308,7 +2308,7 @@ public:
 
                     lrcred.searchCandidates(meta, 2);
                     check("regression 21: lrcred candidate search responds", waitFor([&] { return !found.isEmpty(); }));
-                    check("regression 21: lrcred candidate syncType is Unknown", !found.isEmpty() && found.first().syncType == CandidateSyncType::Unknown);
+                    check("regression 21: lrcred candidate syncType is Word", !found.isEmpty() && found.first().syncType == CandidateSyncType::Word);
 
                     if (!found.isEmpty()) {
                         lrcred.fetchCandidateLyrics(found.first().id, 2);
@@ -2395,6 +2395,7 @@ public:
                 // 6. QQ Music candidate search & fetch
                 {
                     server.responses.append({200, R"({"req_1":{"data":{"body":{"song":{"list":[{"mid":"mid007","name":"Hello","singer":[{"name":"Adele"}],"interval":200}]}}}}})", 0, {}});
+                    server.responses.append({200, R"({"req":{"data":{"lyric":""}}})", 0, {}});
                     server.responses.append({200, R"({"lyric":"WzAwOjAxLjAwXXFxIGx5cmljcw=="})", 0, {}});
 
                     QqMusicProvider qqmusic(nullptr, QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
@@ -2418,7 +2419,7 @@ public:
 
                 // 7. Unison candidate search & fetch
                 {
-                    server.responses.append({200, R"([{"id":"uni88","song":"Hello","artist":"Adele","duration":200000}])", 0, {}});
+                    server.responses.append({200, R"({"data":[{"id":"uni88","song":"Hello","artist":"Adele","duration":200}]})", 0, {}});
                     server.responses.append({200, R"({"data":{"lyrics":"[00:01.00]unison lyrics\n","format":"lrc"}})", 0, {}});
 
                     UnisonProvider unison(nullptr, QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
@@ -2434,10 +2435,25 @@ public:
                     unison.searchCandidates(meta, 7);
                     check("regression 21: unison candidate search responds", waitFor([&] { return !found.isEmpty(); }));
                     check("regression 21: unison candidate id is uni88", !found.isEmpty() && found.first().id == QStringLiteral("uni88"));
+                    check("regression 21: unison candidate duration converted from seconds to ms", !found.isEmpty() && found.first().durationMs == 200000);
 
                     unison.fetchCandidateLyrics(QStringLiteral("uni88"), 7);
                     check("regression 21: unison fetch candidate loads lyrics", waitFor([&] { return loaded.isUsable(); }));
                     check("regression 21: unison candidate attribution is Unison", loaded.attributionData.provider == QStringLiteral("Unison"));
+                }
+
+                // 7b. lrc.red ISRC candidate fallback from .ttml to .lrc
+                {
+                    server.responses.append({404, "not found", 0, {}});
+                    server.responses.append({200, "[00:01.00]isrc fallback lrc\n", 0, {}});
+
+                    LrcRedProvider lrcred(nullptr, QStringLiteral("http://127.0.0.1:%1/").arg(server.serverPort()));
+                    Lyrics loaded;
+                    QObject::connect(&lrcred, &LyricsProvider::candidateLyricsLoaded, [&](quint64, const Lyrics &l) {
+                        loaded = l;
+                    });
+                    lrcred.fetchCandidateLyrics(QStringLiteral("isrc:USRC17607839"), 71);
+                    check("regression 21: lrcred isrc candidate falls back from .ttml to .lrc", waitFor([&] { return loaded.isUsable(); }));
                 }
 
                 // Real HTTP failures must not masquerade as valid empty results in any adapter.
@@ -3024,6 +3040,66 @@ public:
                     check("partial-refresh: real rate-limit signal sets cooldown", controller->m_providerRateLimitUntilMs.contains("amll"));
                     check("candidate-cache: byte accounting stays bounded", controller->m_totalCacheSizeBytes > 0
                           && controller->m_totalCacheSizeBytes <= CandidateSearchController::kMaxCacheSizeBytes);
+
+                    // Refresh when one provider is in 429 cooldown and the other fails must preserve previous candidates
+                    mockLrclib->autoRespondCandidates = false;
+                    controller->searchAgain();
+                    Q_EMIT mockLrclib->candidateSearchFailed(controller->m_searchId, MissingReason::Unreachable, "lrclib", 0);
+                    check("cooldown-refresh-failure: status stays ready and preserves previous candidates",
+                          controller->status() == QStringLiteral("ready") && controller->rawCandidates().size() == 2);
+                    check("cooldown-refresh-failure: refreshErrorMessage set when only rate-limited cached entry exists",
+                          !controller->refreshErrorMessage().isEmpty());
+
+                    // Fresh negative cache hit + failed network provider must report nomatches, not no_response
+                    controller->close();
+                    controller->clearCache();
+                    mockLrclib->autoRespondCandidates = false;
+                    mockAmll->autoRespondCandidates = false;
+                    TrackMetadata negMeta;
+                    negMeta.title = QStringLiteral("Negative Cache Song");
+                    negMeta.artist = QStringLiteral("Artist");
+                    controller->startSearch(negMeta, {"lrclib"}, {"lrclib"});
+                    controller->onCandidatesFound(controller->m_searchId, {}, QStringLiteral("lrclib"));
+                    check("negative-cache-hit: initial empty search sets nomatches", controller->status() == QStringLiteral("nomatches"));
+                    controller->startSearch(negMeta, {"lrclib", "amll"}, {"lrclib", "amll"});
+                    Q_EMIT mockAmll->candidateSearchFailed(controller->m_searchId, MissingReason::Unreachable, QStringLiteral("amll"), 0);
+                    check("negative-cache-hit: cached empty response + network failure yields nomatches",
+                          controller->status() == QStringLiteral("nomatches"));
+
+                    // Pause hidden state must not report isIntro or isBreak
+                    widget.m_pauseHidden = true;
+                    check("pause-hidden: isIntro is false while pauseHidden", !widget.isIntro());
+                    check("pause-hidden: isBreak is false while pauseHidden", !widget.isBreak());
+                    widget.m_pauseHidden = false;
+
+                    // Negative userOffsetMs in diagnosticReport must format with + instead of --
+                    widget.m_lyricOffset = -200;
+                    const QString negOffsetReport = widget.diagnosticReport();
+                    check("diagnostic-report: negative userOffsetMs formatted as +200 ms without double minus",
+                          negOffsetReport.contains(QStringLiteral("User Lyric Offset (userOffset):     +200 ms"))
+                          && !negOffsetReport.contains(QStringLiteral("--200 ms")));
+                    widget.m_lyricOffset = 0;
+
+                    // Manual Spicy candidate without validUntilMs must be rejected, and valid one arms m_expiryGeneration
+                    widget.openChooseMatchWindow();
+                    Lyrics invalidSpicyCand;
+                    invalidSpicyCand.type = LyricsType::Syllable;
+                    LyricLine spicyLine;
+                    spicyLine.startMs = 1000;
+                    spicyLine.endMs = 2000;
+                    spicyLine.text = QStringLiteral("line");
+                    invalidSpicyCand.lines.append(spicyLine);
+                    invalidSpicyCand.validUntilMs = 0;
+                    widget.m_manualCandidateSelected = false;
+                    widget.onCandidateLyricsLoaded(invalidSpicyCand, QStringLiteral("spicy"));
+                    check("manual-spicy: candidate without validUntilMs rejected", !widget.isManualCandidateSelected());
+
+                    Lyrics validSpicyCand = invalidSpicyCand;
+                    validSpicyCand.validUntilMs = QDateTime::currentMSecsSinceEpoch() + 60000;
+                    widget.onCandidateLyricsLoaded(validSpicyCand, QStringLiteral("spicy"));
+                    check("manual-spicy: valid candidate accepted and arms expiryGeneration",
+                          widget.isManualCandidateSelected() && widget.m_expiryGeneration == widget.m_lookupGeneration);
+
                     controller->close();
                     controller->setProviderTimeoutMs(4000);
                     delete matchObj;

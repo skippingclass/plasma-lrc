@@ -31,12 +31,18 @@ static QString formatSeconds(qint64 ms)
 
 using namespace TokenPunctuationHelper;
 
-QString toTtml(const QString &yrcText)
+QString toTtml(const QString &yrcText, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     if (yrcText.isEmpty()) {
         return QString();
     }
-    if (!LyricsLimits::checkDecodedSize(yrcText.size() * sizeof(QChar))) {
+    if (!LyricsLimits::checkDecodedSize(static_cast<qint64>(yrcText.size()) * sizeof(QChar))) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return QString();
     }
 
@@ -46,11 +52,17 @@ QString toTtml(const QString &yrcText)
     QStringList paragraphs;
     const QStringList lines = yrcText.split(QLatin1Char('\n'));
     if (lines.size() > LyricsLimits::kMaxLines) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return QString();
     }
 
     for (const QString &rawLine : lines) {
         if (!LyricsLimits::checkLineLength(rawLine.size())) {
+            if (outLimitExceeded) {
+                *outLimitExceeded = true;
+            }
             return QString();
         }
         const QString line = rawLine.trimmed();
@@ -171,7 +183,14 @@ bool parse(const QString &yrcText, Lyrics *outLyrics, qint64 trackDurationMs, bo
     if (outLimitExceeded) {
         *outLimitExceeded = false;
     }
-    const QString ttml = toTtml(yrcText);
+    bool limitExceeded = false;
+    const QString ttml = toTtml(yrcText, &limitExceeded);
+    if (limitExceeded) {
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
+        return false;
+    }
     if (ttml.isEmpty()) {
         return false;
     }

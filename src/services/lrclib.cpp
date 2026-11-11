@@ -30,7 +30,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.2 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.9.3 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -42,6 +42,8 @@ LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
 LrclibClient::~LrclibClient()
 {
     cancel();
+    cancelCandidateSearch(0);
+    cancelCandidateFetch(0);
 }
 
 QByteArray LrclibClient::userAgent()
@@ -186,8 +188,11 @@ int LrclibClient::scoreSearchMatch(const QJsonObject &cand, qint64 targetDuratio
     return score;
 }
 
-bool LrclibClient::parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs, const QString &expectedTitle, const QString &expectedArtist)
+bool LrclibClient::parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint64 trackDurationMs, const QString &expectedTitle, const QString &expectedArtist, bool *outLimitExceeded)
 {
+    if (outLimitExceeded) {
+        *outLimitExceeded = false;
+    }
     if (!lyrics) {
         return false;
     }
@@ -206,7 +211,7 @@ bool LrclibClient::parseCandidate(const QJsonObject &cand, Lyrics *lyrics, qint6
     }
     const QString synced = cand.value(QStringLiteral("syncedLyrics")).toString();
     if (!synced.isEmpty()) {
-        if (LrcParser::parseLrc(synced, lyrics, trackDurationMs) && lyrics->isUsable()) {
+        if (LrcParser::parseLrc(synced, lyrics, trackDurationMs, outLimitExceeded) && lyrics->isUsable()) {
             lyrics->attributionData.provider = QStringLiteral("lrclib");
             lyrics->attributionData.providerUrl = QStringLiteral("https://lrclib.net");
             lyrics->attributionData.contributors.clear();
@@ -241,8 +246,6 @@ void LrclibClient::cancel()
     ++m_generation;
     cleanupAttemptState();
     m_currentKey.clear();
-    cancelCandidateSearch(0);
-    cancelCandidateFetch(0);
 }
 
 void LrclibClient::invalidate(const QString &title, const QString &artist, qint64 durationMs, bool fromWebPage)
@@ -591,8 +594,15 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
             // Defensively validate candidate identity even for /get
             if (validateCandidateIdentity(cand, m_expectedTitle, m_expectedArtist)) {
                 Lyrics lyrics;
-                if (parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
+                bool limitExceeded = false;
+                if (parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist, &limitExceeded)) {
                     finishWithCandidate(cand);
+                    return;
+                }
+                if (limitExceeded) {
+                    m_hadRateLimitOrNetworkError = true;
+                    m_lastRejectionReason = QStringLiteral("Response size limit exceeded");
+                    finishWithMissing(/*writeNegativeCache=*/false, MissingReason::SizeLimitExceeded);
                     return;
                 }
             }
@@ -611,7 +621,12 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
                 }
 
                 Lyrics lyrics;
-                if (!parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist)) {
+                bool limitExceeded = false;
+                if (!parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist, &limitExceeded)) {
+                    if (limitExceeded) {
+                        m_hadRateLimitOrNetworkError = true;
+                        m_lastRejectionReason = QStringLiteral("Response size limit exceeded");
+                    }
                     continue;
                 }
 
@@ -817,10 +832,11 @@ void LrclibClient::fetchCandidate(const QString &candidateId, quint64 fetchId)
         }
 
         Lyrics lyrics;
-        if (parseCandidate(doc.object(), &lyrics)) {
+        bool limitExceeded = false;
+        if (parseCandidate(doc.object(), &lyrics, 0, QString(), QString(), &limitExceeded)) {
             Q_EMIT candidateLyricsLoaded(fetchId, lyrics);
         } else {
-            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound);
+            Q_EMIT candidateLyricsFailed(fetchId, limitExceeded ? MissingReason::SizeLimitExceeded : MissingReason::NotFound);
         }
     });
 }

@@ -15,7 +15,7 @@ namespace YrcParser {
 /**
  * Convert NetEase YRC lyric text into standard Apple-compatible TTML.
  */
-QString toTtml(const QString &yrcText);
+QString toTtml(const QString &yrcText, bool *outLimitExceeded = nullptr);
 
 /**
  * Parse NetEase YRC lyric text into Lyrics structure (LyricsType::Syllable).

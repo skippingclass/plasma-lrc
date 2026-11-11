@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.9.3 — 2026-11-11
+
+- Fix provider lifecycle: pipeline cancellation and lookup requests no longer abort in-flight manual candidate searches and candidate fetches across all providers (LRCLIB, lrc.red, AMLL, NetEase, KuGou, QQ Music, Unison).
+- Candidate Search Controller:
+  - Fresh negative cache hits correctly mark positive response status (`nomatches` instead of false `no_response`).
+  - Explicit refresh ("Search again") preserves previously loaded candidates on rate-limit cooldown (HTTP 429) and displays a non-blocking warning message.
+- Provider enhancements:
+  - QQ Music: implement two-step candidate lyrics fetch, trying word-synced QRC first (`PlayLyricInfo`) before falling back to line-synced LRC (`fcg_query_lyric_new.fcg`).
+  - Unison: fix candidate search query parameter (`q`), candidate JSON parsing, duration milliseconds conversion, and dynamic `apiBase` support.
+  - lrc.red: assign candidate `syncType` (Word for TTML, Line for LRC) and support fallback from `.ttml` to `.lrc` for ISRC candidates.
+  - NetEase & KuGou: enforce configured `apiBase` throughout all lookup and download steps.
+- Security & Limit boundaries:
+  - Strictly propagate `outLimitExceeded` flag across all parsers (LrcParser, KrcParser, YrcParser, QrcDecoder, SpicyLyrics, LrclibClient, ZlibCodec) on line count (> 10 000), line length (> 16 384 chars), and decompression bomb (> 16 MiB) violations.
+  - Return `MissingReason::SizeLimitExceeded` to prevent cache pollution and ensure transparent diagnostic reporting.
+- Applet & Synchronization:
+  - Suppress `isIntro` and `isBreak` while playback is paused (`pauseHidden`) or lyrics are discarded.
+  - Candidate selection cancels in-flight pipeline lookups, arms expiry generation for Spicy, and clears line projection caches.
+  - Fix negative user lyric offset formatting in Diagnostics report (no double minus).
+  - Synchronize provider default ordering and Spicy API key toggle reactivity in QML settings.
+- Documentation: update English and Russian README with 10-provider architecture, provider matrix, and clean technical formatting.
+
 ## 1.9.2 — 2026-11-02
 
 - Faster automatic and manual search: each source gets a four-second total attempt budget, freeing one of the two lookup slots for the next source instead of waiting for multiple network timeouts. The overall search deadline remains 20 seconds.
