@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <QUrl>
 
 LocalProvider::LocalProvider(QObject *parent)
@@ -29,55 +30,79 @@ bool LocalProvider::canHandle(const TrackMetadata &meta) const
 
 void LocalProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
 {
-    m_currentGeneration = generation;
+    MissingReason failure = MissingReason::NotFound;
+    for (const QString &path : localFilePaths(meta)) {
+        MissingReason reason;
+        Lyrics lyrics;
+        if (readLyricsFile(path, meta.durationMs, lyrics, reason)) {
+            Q_EMIT lyricsLoaded(generation, lyrics, id());
+            return;
+        }
+        if (failure == MissingReason::NotFound || reason == MissingReason::SizeLimitExceeded) {
+            failure = reason;
+        }
+    }
+    Q_EMIT lyricsFailed(generation, failure, id());
+}
 
-    const QString filePath = findLocalFile(meta);
-    if (filePath.isEmpty()) {
-        Q_EMIT lyricsFailed(generation, MissingReason::NotFound, id());
-        return;
+bool LocalProvider::readLyricsFile(const QString &path, qint64 durationMs, Lyrics &lyrics,
+                                   MissingReason &reason, QByteArray *source)
+{
+    const QFileInfo info(path);
+    QFile file(path);
+    if (!info.isFile() || !file.open(QIODevice::ReadOnly)) {
+        reason = MissingReason::NotFound;
+        return false;
+    }
+    if (!LyricsLimits::checkInputSize(file.size())) {
+        reason = MissingReason::SizeLimitExceeded;
+        return false;
+    }
+    const QByteArray data = file.read(LyricsLimits::kMaxInputSizeBytes + 1);
+    if (!LyricsLimits::checkInputSize(data.size())) {
+        reason = MissingReason::SizeLimitExceeded;
+        return false;
+    }
+    if (file.error() != QFile::NoError) {
+        reason = MissingReason::NotFound;
+        return false;
     }
 
-    QFile file(filePath);
-    if (file.size() > LyricsLimits::kMaxInputSizeBytes) {
-        m_rejectionReason = QStringLiteral("Local file exceeds 8 MiB limit");
-        Q_EMIT lyricsFailed(generation, MissingReason::SizeLimitExceeded, id());
-        return;
-    }
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        Q_EMIT lyricsFailed(generation, MissingReason::NotFound, id());
-        return;
-    }
-
-    const QString content = QString::fromUtf8(file.readAll());
-    file.close();
-
-    Lyrics lyrics;
-    bool ok = false;
-
-    if (filePath.endsWith(QLatin1String(".ttml"), Qt::CaseInsensitive)
-        || content.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
-        ok = TtmlParser::parseTtml(content, &lyrics, meta.durationMs);
-    } else {
-        ok = LrcParser::parseLrc(content, &lyrics, meta.durationMs);
-    }
-
+    const QString content = QString::fromUtf8(data);
+    bool limitExceeded = false;
+    const bool ok = info.suffix().compare(QLatin1String("ttml"), Qt::CaseInsensitive) == 0
+        ? TtmlParser::parseTtml(content, &lyrics, durationMs, &limitExceeded)
+        : LrcParser::parseLrc(content, &lyrics, durationMs, &limitExceeded);
     if (!ok || !lyrics.isUsable()) {
-        Q_EMIT lyricsFailed(generation, MissingReason::Unsynced, id());
-        return;
+        reason = limitExceeded ? MissingReason::SizeLimitExceeded : MissingReason::Unsynced;
+        return false;
     }
 
-    lyrics.attribution = QStringLiteral("Local File (%1)").arg(QFileInfo(filePath).fileName());
-    lyrics.attributionData.provider = QStringLiteral("Local File");
-
-    Q_EMIT lyricsLoaded(generation, lyrics, id());
+    lyrics.attribution = QStringLiteral("Local File (%1)").arg(info.fileName());
+    lyrics.attributionUrl.clear();
+    lyrics.attributionData = {QStringLiteral("Local File"), {}, {}};
+    if (source) {
+        *source = data;
+    }
+    return true;
 }
 
 void LocalProvider::cancel()
 {
 }
 
-QString LocalProvider::findLocalFile(const TrackMetadata &meta) const
+QString LocalProvider::importedFilePath(const QString &trackKey)
 {
+    const QString dataDirectory = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    if (dataDirectory.isEmpty() || trackKey.isEmpty()) {
+        return {};
+    }
+    return dataDirectory + QStringLiteral("/plasma-lrc/imports/") + trackKey + QStringLiteral(".lrc");
+}
+
+QStringList LocalProvider::localFilePaths(const TrackMetadata &meta) const
+{
+    QStringList paths;
     // 1. Next to track audio file if url is a local file
     if (!meta.url.isEmpty()) {
         const QUrl parsedUrl(meta.url);
@@ -93,21 +118,19 @@ QString LocalProvider::findLocalFile(const TrackMetadata &meta) const
             const QString baseWithoutExt = audioInfo.path() + QLatin1Char('/') + audioInfo.completeBaseName();
 
             // Check .ttml and .lrc beside audio
-            const QString besideTtml = baseWithoutExt + QStringLiteral(".ttml");
-            if (QFileInfo::exists(besideTtml)) {
-                return besideTtml;
-            }
-            const QString besideLrc = baseWithoutExt + QStringLiteral(".lrc");
-            if (QFileInfo::exists(besideLrc)) {
-                return besideLrc;
-            }
+            paths.append(baseWithoutExt + QStringLiteral(".ttml"));
+            paths.append(baseWithoutExt + QStringLiteral(".lrc"));
         }
     }
 
     // 2. Directories to search
     QStringList searchDirs;
-    if (!m_customDirectory.trimmed().isEmpty()) {
-        searchDirs.append(m_customDirectory.trimmed());
+    QString customDirectory = m_customDirectory.trimmed();
+    if (customDirectory.startsWith(QLatin1String("~/"))) {
+        customDirectory.replace(0, 1, QDir::homePath());
+    }
+    if (!customDirectory.isEmpty()) {
+        searchDirs.append(customDirectory);
     }
     searchDirs.append(QDir::homePath() + QStringLiteral("/.lyrics"));
     searchDirs.append(QDir::homePath() + QStringLiteral("/Music/lyrics"));
@@ -129,16 +152,11 @@ QString LocalProvider::findLocalFile(const TrackMetadata &meta) const
 
     for (const QString &dirPath : searchDirs) {
         const QDir dir(dirPath);
-        if (!dir.exists()) {
-            continue;
-        }
         for (const QString &candidate : candidates) {
-            const QString full = dir.filePath(candidate);
-            if (QFileInfo::exists(full)) {
-                return full;
-            }
+            paths.append(dir.filePath(candidate));
         }
     }
 
-    return QString();
+    paths.removeDuplicates();
+    return paths;
 }

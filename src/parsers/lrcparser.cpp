@@ -9,8 +9,9 @@
 #include "lyriclimits.h"
 
 #include <QRegularExpression>
-#include <QStringList>
+#include <QStringTokenizer>
 #include <algorithm>
+#include <limits>
 
 namespace
 {
@@ -19,6 +20,7 @@ const QRegularExpression s_timestampRegex(QStringLiteral(R"(\[(\d{1,2}):(\d{2})(
 
 // Matches metadata tags like [ar: Artist], [ti: Title], [offset: 500]
 const QRegularExpression s_metaRegex(QStringLiteral(R"(^\[([a-zA-Z]+)\s*:\s*(.*)\]$)"));
+constexpr qint64 kFinalLineSpanMs = 6000;
 
 struct RawLine
 {
@@ -60,27 +62,21 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs, bo
     qint64 globalOffsetMs = 0;
     QVector<RawLine> rawLines;
 
-    const QStringList inputLines = lrcText.split(QLatin1Char('\n'));
-    if (inputLines.size() > LyricsLimits::kMaxLines) {
-        if (outLimitExceeded) {
-            *outLimitExceeded = true;
-        }
-        return false;
-    }
-    for (const QString &rawInput : inputLines) {
-        if (!LyricsLimits::checkLineLength(rawInput.size())) {
+    int inputLineCount = 0;
+    for (QStringView rawInput : QStringView(lrcText).tokenize(QLatin1Char('\n'))) {
+        if (++inputLineCount > LyricsLimits::kMaxLines || !LyricsLimits::checkLineLength(rawInput.size())) {
             if (outLimitExceeded) {
                 *outLimitExceeded = true;
             }
             return false;
         }
-        const QString line = rawInput.trimmed();
+        const QStringView line = rawInput.trimmed();
         if (line.isEmpty()) {
             continue;
         }
 
         // Check for metadata tags
-        const QRegularExpressionMatch metaMatch = s_metaRegex.match(line);
+        const QRegularExpressionMatch metaMatch = s_metaRegex.matchView(line);
         if (metaMatch.hasMatch()) {
             const QString tag = metaMatch.captured(1).toLower();
             if (tag == QLatin1String("offset")) {
@@ -97,8 +93,14 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs, bo
         QList<qint64> timestamps;
         int lastTagEnd = 0;
 
-        auto it = s_timestampRegex.globalMatch(line);
+        auto it = s_timestampRegex.globalMatchView(line);
         while (it.hasNext()) {
+            if (rawLines.size() + timestamps.size() >= LyricsLimits::kMaxLines) {
+                if (outLimitExceeded) {
+                    *outLimitExceeded = true;
+                }
+                return false;
+            }
             const QRegularExpressionMatch match = it.next();
             const qint64 minutes = match.captured(1).toLongLong();
             const qint64 seconds = match.captured(2).toLongLong();
@@ -124,7 +126,7 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs, bo
             continue;
         }
 
-        const QString lyricText = line.mid(lastTagEnd).trimmed();
+        const QString lyricText = line.mid(lastTagEnd).trimmed().toString();
         if (TtmlParser::isCreditOrNotice(lyricText)) {
             for (qint64 timeMs : timestamps) {
                 rawLines.append({timeMs, QString()});
@@ -160,48 +162,39 @@ bool parseLrc(const QString &lrcText, Lyrics *lyrics, qint64 trackDurationMs, bo
         return lhs.startMs < rhs.startMs;
     });
 
-    // Apply offset and build final LyricLine entries with startMs and endMs
-    for (int i = 0; i < rawLines.size(); ++i) {
-        const RawLine &cur = rawLines.at(i);
-        // LRC offsets advance lyrics when positive (unlike the widget's delay setting).
-        const qint64 startMs = qMax(0LL, cur.startMs - globalOffsetMs);
+    // Positive LRC offsets advance lyrics. Leave room to estimate the final end.
+    constexpr qint64 maxStartMs = std::numeric_limits<qint64>::max() - kFinalLineSpanMs;
+    for (RawLine &line : rawLines) {
+        const qint64 offset = qMax(globalOffsetMs, line.startMs - maxStartMs);
+        line.startMs = qMax(0LL, line.startMs - offset);
+    }
 
-        // An empty line marks an intentional gap or end of verse/track
-        if (cur.text.isEmpty()) {
-            continue;
+    // Lines sharing a timestamp end together. Empty lines still bound the
+    // previous group, so explicit gaps and filtered credits keep their timing.
+    for (qsizetype first = 0; first < rawLines.size();) {
+        const qint64 startMs = rawLines.at(first).startMs;
+        qsizetype next = first + 1;
+        while (next < rawLines.size() && rawLines.at(next).startMs == startMs) {
+            ++next;
         }
 
-        // Find next line with a strictly later timestamp to determine endMs
-        qint64 endMs = 0;
-        int nextDiffIdx = -1;
-        for (int j = i + 1; j < rawLines.size(); ++j) {
-            const qint64 candidateMs = qMax(0LL, rawLines.at(j).startMs - globalOffsetMs);
-            if (candidateMs > startMs) {
-                nextDiffIdx = j;
-                endMs = candidateMs;
-                break;
+        qint64 endMs = startMs + kFinalLineSpanMs;
+        if (next < rawLines.size()) {
+            endMs = rawLines.at(next).startMs;
+        } else if (trackDurationMs > startMs) {
+            endMs = qMin(endMs, trackDurationMs);
+        }
+
+        for (; first < next; ++first) {
+            const QString &text = rawLines.at(first).text;
+            if (!text.isEmpty()) {
+                LyricLine line;
+                line.text = text;
+                line.startMs = startMs;
+                line.endMs = endMs;
+                lyrics->lines.append(line);
             }
         }
-
-        if (nextDiffIdx < 0) {
-            // Last line: estimate end
-            if (trackDurationMs > startMs) {
-                endMs = qMin(trackDurationMs, startMs + 6000);
-            } else {
-                endMs = startMs + 6000;
-            }
-        }
-
-        // Ensure endMs is strictly after startMs
-        if (endMs <= startMs) {
-            endMs = startMs + 3000;
-        }
-
-        LyricLine lyricLine;
-        lyricLine.text = cur.text;
-        lyricLine.startMs = startMs;
-        lyricLine.endMs = endMs;
-        lyrics->lines.append(lyricLine);
     }
 
     if (lyrics->lines.isEmpty()) {

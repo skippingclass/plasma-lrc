@@ -26,15 +26,15 @@ public:
     bool canHandle(const TrackMetadata &meta) const override;
     void requestLyrics(const TrackMetadata &meta, quint64 generation) override;
     void cancel() override;
-    QString confirmedRejectionReason(quint64 generation) const override { Q_UNUSED(generation); return m_rejectionReason; }
 
     QString customDirectory() const { return m_customDirectory; }
     void setCustomDirectory(const QString &dir) { m_customDirectory = dir; }
+    static QString importedFilePath(const QString &trackKey);
+    static bool readLyricsFile(const QString &path, qint64 durationMs, Lyrics &lyrics,
+                               MissingReason &reason, QByteArray *source = nullptr);
 
 private:
-    QString findLocalFile(const TrackMetadata &meta) const;
+    QStringList localFilePaths(const TrackMetadata &meta) const;
 
     QString m_customDirectory;
-    QString m_rejectionReason;
-    quint64 m_currentGeneration = 0;
 };

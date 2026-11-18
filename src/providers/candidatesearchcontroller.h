@@ -31,6 +31,7 @@ class CandidateSearchController : public QObject
     Q_PROPERTY(bool hasUsableResults READ hasUsableResults NOTIFY hasUsableResultsChanged)
     Q_PROPERTY(bool isUsingCachedResults READ isUsingCachedResults NOTIFY isUsingCachedResultsChanged)
     Q_PROPERTY(QString refreshErrorMessage READ refreshErrorMessage NOTIFY refreshErrorMessageChanged)
+    Q_PROPERTY(qint64 retryAvailableAtMs READ retryAvailableAtMs NOTIFY statusChanged)
 
 public:
     explicit CandidateSearchController(QObject *parent = nullptr);
@@ -44,9 +45,11 @@ public:
 
     bool isSearching() const { return m_status == QLatin1String("searching"); }
     bool isLoading() const { return m_status == QLatin1String("loading"); }
+    bool isRestoringMatch() const { return m_status == QLatin1String("restoring"); }
     bool hasUsableResults() const { return !m_candidates.isEmpty(); }
     bool isUsingCachedResults() const { return m_isUsingCachedResults; }
     QString refreshErrorMessage() const { return m_refreshErrorMessage; }
+    qint64 retryAvailableAtMs() const { return m_retryAvailableAtMs; }
 
     Q_INVOKABLE void startSearch(const TrackMetadata &meta,
                                  const QStringList &providerOrder,
@@ -60,6 +63,7 @@ public:
 
     void registerProvider(LyricsProvider *provider);
     LyricsProvider *provider(const QString &id) const;
+    bool restoreMatch(const QString &providerId, const QString &candidateId);
 
     QList<LyricCandidate> rawCandidates() const { return m_candidates; }
 
@@ -80,8 +84,9 @@ Q_SIGNALS:
     void hasUsableResultsChanged();
     void isUsingCachedResultsChanged();
     void refreshErrorMessageChanged();
-    void candidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId);
+    void candidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId, const QString &candidateId);
     void candidateLyricsFailed(const QString &errorMessage);
+    void rememberedMatchFinished(const Lyrics &lyrics, const QString &providerId, const QString &candidateId);
 
 private Q_SLOTS:
     void onCandidatesFound(quint64 searchId, const QList<LyricCandidate> &candidates, const QString &providerId);
@@ -123,7 +128,11 @@ private:
     void pumpQueue();
     void onProviderTimeout(quint64 searchId, quint64 token, const QString &providerId);
     void finishSearch();
+    QString emptySearchStatus();
     void rebuildCandidatesList();
+    void startFetch(LyricsProvider *provider, const QString &candidateId, bool restoring);
+    void finishFetch(const Lyrics &lyrics, const QString &errorMessage);
+    void cancelFetch();
     QString formatDuration(qint64 ms) const;
     QString formatSyncType(CandidateSyncType type) const;
 
@@ -145,6 +154,7 @@ private:
     QString m_refreshErrorMessage;
     bool m_isExplicitRefresh = false;
     bool m_hadSuccessfulResponseInSearch = false;
+    qint64 m_retryAvailableAtMs = 0;
 
     TrackMetadata m_currentMeta;
     QStringList m_providerOrder;
@@ -153,6 +163,7 @@ private:
     quint64 m_searchId = 0;
     quint64 m_fetchId = 0;
     QString m_loadingProviderId;
+    QString m_loadingCandidateId;
     QString m_status = QStringLiteral("idle");
     QString m_errorMessage;
     int m_selectedIndex = -1;
@@ -164,6 +175,7 @@ private:
     quint64 m_nextAttemptToken = 0;
     static constexpr int kDeadlineMs = 20000;
     static constexpr int kFetchDeadlineMs = 15000;
+    static constexpr int kRestoreDeadlineMs = 4000;
 
     friend class LrcAppletSyncTest;
 };

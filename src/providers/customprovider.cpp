@@ -155,22 +155,24 @@ void CustomProvider::onReplyFinished()
 
     Lyrics lyrics;
     bool ok = false;
+    bool limitExceeded = false;
 
     if (text.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
-        ok = TtmlParser::parseTtml(text, &lyrics, m_meta.durationMs);
+        ok = TtmlParser::parseTtml(text, &lyrics, m_meta.durationMs, &limitExceeded);
     } else {
-        ok = LrcParser::parseLrc(text, &lyrics, m_meta.durationMs);
+        ok = LrcParser::parseLrc(text, &lyrics, m_meta.durationMs, &limitExceeded);
     }
 
     if (!ok || !lyrics.isUsable()) {
         const quint64 gen = m_currentGeneration;
         cancel();
-        Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
+        Q_EMIT lyricsFailed(gen, limitExceeded ? MissingReason::SizeLimitExceeded : MissingReason::Unsynced, id());
         return;
     }
 
     lyrics.attribution = QStringLiteral("Custom URL");
-    lyrics.attributionData.provider = QStringLiteral("Custom URL");
+    lyrics.attributionUrl.clear();
+    lyrics.attributionData = {QStringLiteral("Custom URL"), {}, {}};
 
     const quint64 gen = m_currentGeneration;
     cancel();

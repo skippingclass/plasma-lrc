@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.0 — 2026-11-18
+
+- Remember a selected lyrics match and timing offset for each song across playback sessions.
+- Follow the song in a live karaoke window with word highlighting, auto-scroll, and seeking on supported players. The full text view is available from the same window.
+- Import a local LRC with a timed preview and a per-song offset. Imported files take precedence in automatic lookup when Local Files is enabled.
+- Continue local search past unreadable or unsynchronized files and show the correct attribution for local and custom sources.
+- Apply the LRC line limit to expanded timestamps and process adjacent equal timestamps in one pass.
+- Show a retry countdown when all candidate sources are rate limited.
+- Stage source and release installations and restore the previous package if replacement fails. Run CTest for pull requests and pushes to `main`.
+
 ## 1.9.3 — 2026-11-11
 
 - Fix provider lifecycle: pipeline cancellation and lookup requests no longer abort in-flight manual candidate searches and candidate fetches across all providers (LRCLIB, lrc.red, AMLL, NetEase, KuGou, QQ Music, Unison).

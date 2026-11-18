@@ -102,7 +102,7 @@ Plasma LRC integrates 10 modular provider adapters with customizable priority or
 | **KDE Frameworks** | 6.0+ (`KCoreAddons`, `KConfig`, `KI18n`) | System integration & localization |
 | **Qt** | 6.5+ (`QtCore`, `QtGui`, `QtQml`, `QtNetwork`, `QtDBus`) | Application logic & QML rendering |
 | **Compiler** | C++17 compliant (GCC 11+, Clang 14+) | Core engine compilation |
-| **Build System** | CMake 3.16+ & Ninja | Project build and test automation |
+| **Build System** | CMake 3.20+ & Ninja | Project build and test automation |
 
 ---
 
@@ -140,6 +140,8 @@ systemctl --user restart plasma-plasmashell.service
 ### Run Unit Tests (CTest)
 
 ```bash
+cmake -S . -B build -G Ninja -DPLASMA_LRC_TESTS=ON
+cmake --build build
 ctest --test-dir build --output-on-failure
 # 10/10 tests pass (codecs, ttml, lrclib, pipeline, applet sync, limits, etc.)
 ```
@@ -156,15 +158,20 @@ Right-click the panel widget to access actions:
 
 | Action | Description |
 |:---|:---|
-| **Choose another match…** | Opens the interactive candidate browser to pick alternative lyrics from any provider. |
-| **Use automatic selection** | Reverts any manual match override back to the automated provider pipeline. |
-| **Open song lyrics…** | Opens a distraction-free full lyrics reader window without timestamps or karaoke tags. |
+| **Choose another match…** | Picks alternative lyrics. Check **Remember for this song** to reuse the match on later plays. |
+| **Use automatic selection** | Clears the manual match and returns to the automatic provider pipeline. |
+| **Open song lyrics…** | Opens live karaoke with word highlighting, optional auto-scroll, and click-to-seek on supported players. **Read text** opens the full text view. |
+| **Import lyrics for this song…** | Previews a local `.lrc` file, saves a copy for the current track, and applies a song-specific timing offset. |
+| **Remove imported lyrics** | Removes the widget's copy of the imported file. |
+| **Forget saved lyrics settings for this song** | Resets the remembered match and song-specific timing offset. |
 | **Copy current lyric line** | Copies the active sung lyric line to the clipboard (native LRCLIB / local sources). |
 | **Discard lyrics for this track** | Temporarily dismisses lyrics for the current song without editing the blacklist. |
 | **Restore lyrics for this track** | Restores temporarily dismissed lyrics from cache. |
 | **Blacklist current track lyrics** | Permanently blacklists the current song or artist from lyrics retrieval. |
 | **Diagnostics…** | Opens the comprehensive Search & Synchronization telemetry window. |
 | **Configure Plasma LRC…** | Opens the configuration dialog and provider pipeline manager. |
+
+Set **Song offset** in the live lyrics window and choose **Save for this song** to keep the correction across restarts. Positive values delay the lyrics. Imported copies are stored in `$XDG_DATA_HOME/plasma-lrc/imports` (normally `~/.local/share/plasma-lrc/imports`) and used when Local Files is enabled. If a remembered online match is unavailable, the widget falls back to the imported file or automatic search.
 
 ---
 

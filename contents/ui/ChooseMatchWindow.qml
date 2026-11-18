@@ -19,11 +19,21 @@ Window {
     title: i18n("Choose lyrics match — Plasma LRC")
 
     property var plasmoidApplet: null
+    property string songKey: ""
     readonly property var controller: plasmoidApplet ? plasmoidApplet.candidateController : null
+    property double cooldownClock: Date.now()
+    readonly property int retryAfterSeconds: controller && controller.status === "rate_limited"
+        ? Math.max(0, Math.ceil((controller.retryAvailableAtMs - cooldownClock) / 1000))
+        : 0
 
     function openWindow(appletObj) {
         if (appletObj) {
             root.plasmoidApplet = appletObj;
+        }
+        const currentSong = root.plasmoidApplet ? root.plasmoidApplet.songKey : "";
+        if (!root.visible || root.songKey !== currentSong) {
+            rememberChoice.checked = false;
+            root.songKey = currentSong;
         }
         if (root.plasmoidApplet && root.plasmoidApplet.openChooseMatchWindow) {
             root.plasmoidApplet.openChooseMatchWindow();
@@ -40,9 +50,22 @@ Window {
 
     Connections {
         target: root.controller
+        function onStatusChanged() {
+            root.cooldownClock = Date.now();
+        }
         function onCandidateLyricsLoaded() {
+            if (rememberChoice.checked && root.plasmoidApplet && root.plasmoidApplet.isManualCandidateSelected) {
+                root.plasmoidApplet.rememberSongLyrics(root.songKey, root.plasmoidApplet.songLyricOffset);
+            }
             root.close();
         }
+    }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.visible && root.retryAfterSeconds > 0
+        onTriggered: root.cooldownClock = Date.now()
     }
 
     ColumnLayout {
@@ -136,6 +159,20 @@ Window {
             font.italic: true
             color: Kirigami.Theme.disabledTextColor
             visible: root.controller ? (root.controller.status === "no_response") : false
+        }
+
+        Controls.Label {
+            objectName: "rateLimitedMessage"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            wrapMode: Text.Wrap
+            visible: root.controller !== null && root.controller.status === "rate_limited"
+            text: root.retryAfterSeconds > 0
+                ? i18np("Providers are rate limited. Try again in %1 second.",
+                        "Providers are rate limited. Try again in %1 seconds.", root.retryAfterSeconds)
+                : i18n("You can search again now.")
         }
 
         // All providers disabled indicator
@@ -270,6 +307,13 @@ Window {
         }
 
         // Bottom Actions
+        Controls.CheckBox {
+            id: rememberChoice
+            text: i18n("Remember for this song")
+            visible: root.songKey.length > 0 && root.controller !== null && root.controller.hasUsableResults
+            enabled: !root.controller || !root.controller.loading
+        }
+
         RowLayout {
             Layout.fillWidth: true
             spacing: Kirigami.Units.smallSpacing
@@ -277,7 +321,7 @@ Window {
             Controls.Button {
                 text: i18n("Search again")
                 icon.name: "view-refresh"
-                enabled: root.controller ? (!root.controller.searching && !root.controller.loading) : false
+                enabled: root.controller !== null && !root.controller.searching && !root.controller.loading && root.retryAfterSeconds === 0
                 onClicked: {
                     if (root.controller) {
                         root.controller.searchAgain();

@@ -27,6 +27,7 @@ jobs:
             kcoreaddons \
             kconfig \
             ki18n \
+            kirigami \
             tar \
             gzip
 

@@ -1413,7 +1413,7 @@ public:
                     widget.m_positionClock.invalidate();
 
                     int backingChangedSignalCount = 0;
-                    QObject::connect(&widget, &LrcApplet::backingChanged, [&]() {
+                    QObject::connect(&widget, &LrcApplet::backingChanged, qmlRoot.data(), [&]() {
                         backingChangedSignalCount++;
                     });
 
@@ -1456,7 +1456,7 @@ public:
                     widget.m_wordSynced = true;
 
                     int wordChangedSignalCount = 0;
-                    QObject::connect(&widget, &LrcApplet::wordChanged, [&]() {
+                    QObject::connect(&widget, &LrcApplet::wordChanged, qmlRoot.data(), [&]() {
                         wordChangedSignalCount++;
                     });
 
@@ -2871,6 +2871,9 @@ public:
 
                     widget.m_candidateController->startSearch(cdMeta2, {QStringLiteral("lrclib")}, {QStringLiteral("lrclib")});
                     check("regression 21 cooldown: lrclib skipped during cooldown (searchCalls still 1)", mockLrclib->searchCalls == 1);
+                    check("cooldown: empty search reports rate limit and retry time",
+                          widget.m_candidateController->status() == QStringLiteral("rate_limited")
+                          && widget.m_candidateController->retryAvailableAtMs() > QDateTime::currentMSecsSinceEpoch());
                 }
 
                 // 10) Candidate cache LRU eviction (max 20 contexts)
@@ -2903,7 +2906,7 @@ public:
                     check("regression 21 settings: manual selection true before disabling", widget.isManualCandidateSelected());
 
                     bool signalEmitted = false;
-                    QObject::connect(&widget, &LrcApplet::manualCandidateSelectedChanged, [&]() {
+                    const auto connection = QObject::connect(&widget, &LrcApplet::manualCandidateSelectedChanged, [&]() {
                         signalEmitted = true;
                     });
 
@@ -2911,6 +2914,7 @@ public:
                     widget.readSettings();
                     check("regression 21 settings: manual selection reset to false when provider disabled", !widget.isManualCandidateSelected());
                     check("regression 21 settings: manualCandidateSelectedChanged emitted", signalEmitted);
+                    QObject::disconnect(connection);
 
                     // Restore configuration
                     widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("disabledProviders"), QString());
@@ -3104,6 +3108,106 @@ public:
                     controller->setProviderTimeoutMs(4000);
                     delete matchObj;
                 }
+
+                // Exercise the public applet entry points with isolated providers and storage.
+                LrcApplet songWidget(nullptr, KPluginMetaData(), {});
+                for (auto *source : songWidget.m_pipeline->allProviders()) {
+                    source->setEnabled(source->id() == QStringLiteral("local"));
+                }
+                auto *automatic = new FakeSettingsProvider;
+                automatic->setParent(songWidget.m_pipeline);
+                songWidget.m_pipeline->registerProvider(automatic);
+                auto *remembered = new MockCandProvider(automatic->id(), QStringLiteral("Stored match"), songWidget.m_candidateController);
+                remembered->autoRespondCandidates = true;
+                remembered->autoRespondFetch = true;
+                songWidget.m_candidateController->registerProvider(remembered);
+                songWidget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.songtest");
+
+                const QVariantMap firstSong{{QStringLiteral("xesam:title"), QStringLiteral("Stored song")},
+                    {QStringLiteral("mpris:trackid"), QStringLiteral("/tracks/first")},
+                    {QStringLiteral("mpris:length"), 180000000}};
+                QVariantMap otherSong = firstSong;
+                otherSong[QStringLiteral("xesam:album")] = QStringLiteral("Other release");
+                otherSong[QStringLiteral("mpris:trackid")] = QStringLiteral("/tracks/other");
+                songWidget.applyMetadata(firstSong);
+                const QString firstKey = songWidget.songKey();
+                songWidget.openChooseMatchWindow();
+                check("remembered match: manual search completes", waitFor([&] { return songWidget.m_candidateController->hasUsableResults(); }));
+                songWidget.m_candidateController->useSelected();
+                check("remembered match: manual candidate selected", waitFor([&] { return songWidget.isManualCandidateSelected(); }));
+                songWidget.rememberSongLyrics(firstKey, 350);
+                check("remembered match: ID and song timing stored", songWidget.m_savedCandidateId == automatic->id() + QStringLiteral("_cand_1")
+                      && songWidget.songLyricOffset() == 350);
+
+                songWidget.applyMetadata(otherSong);
+                check("remembered match: a different album has its own preferences", songWidget.songKey() != firstKey
+                      && !songWidget.hasSongPreferences() && songWidget.songLyricOffset() == 0);
+                const int autoCallsBeforeRestore = automatic->requestCalls;
+                songWidget.applyMetadata(firstSong);
+                check("remembered match: stored choice and offset restored", waitFor([&] { return songWidget.isManualCandidateSelected(); })
+                      && songWidget.songLyricOffset() == 350 && automatic->requestCalls == autoCallsBeforeRestore);
+
+                remembered->autoRespondFetch = false;
+                songWidget.applyMetadata(otherSong);
+                songWidget.applyMetadata(firstSong);
+                check("remembered match: restoration starts for the saved song", songWidget.m_candidateController->isRestoringMatch());
+                const int autoCallsBeforeFailure = automatic->requestCalls;
+                Q_EMIT remembered->candidateLyricsFailed(remembered->m_activeFetchId, MissingReason::NotFound, automatic->id());
+                check("remembered match: failed fetch falls back to automatic search", automatic->requestCalls == autoCallsBeforeFailure + 1
+                      && !songWidget.isManualCandidateSelected() && songWidget.songLyricOffset() == 350);
+
+                QTemporaryDir importFiles;
+                const QByteArray sourceLrc = "[00:01.00]First <line>\n[00:03.00]Second line\n";
+                QFile sourceFile(importFiles.filePath(QStringLiteral("song.lrc")));
+                check("import: create a local LRC", sourceFile.open(QIODevice::WriteOnly));
+                sourceFile.write(sourceLrc);
+                sourceFile.close();
+                const QUrl sourceUrl = QUrl::fromLocalFile(sourceFile.fileName());
+                const auto preview = songWidget.previewLrcImport(sourceUrl, firstKey);
+                check("import: valid LRC previews two timed lines", preview.value(QStringLiteral("lineCount")).toInt() == 2);
+                songWidget.applyMetadata(otherSong);
+                check("import: switching tracks invalidates the preview", !songWidget.saveLrcImport(firstKey, 200).isEmpty());
+                songWidget.applyMetadata(firstSong);
+                songWidget.previewLrcImport(sourceUrl, firstKey);
+                check("import: saves a copy and shows it immediately", songWidget.saveLrcImport(firstKey, 200).isEmpty()
+                      && songWidget.hasImportedLyrics() && songWidget.songLyricOffset() == 200
+                      && songWidget.fullLyrics() == QStringLiteral("First <line>\nSecond line"));
+                songWidget.applyMetadata(otherSong);
+                songWidget.applyMetadata(firstSong);
+                check("import: local copy and offset reload for the same track", songWidget.hasLyrics() && songWidget.lyricLines().size() == 2
+                      && songWidget.songLyricOffset() == 200 && songWidget.m_savedCandidateId.isEmpty());
+
+                QQmlComponent karaokeComponent(&matchEngine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/SongLyricsWindow.qml")));
+                QScopedPointer<QObject> karaokeWindow(karaokeComponent.create());
+                check("karaoke: lyrics window loads", !karaokeWindow.isNull(), karaokeComponent.errorString());
+                if (karaokeWindow) {
+                    QQmlEngine::setObjectOwnership(&songWidget, QQmlEngine::CppOwnership);
+                    karaokeWindow->setProperty("plasmoidApplet", QVariant::fromValue(static_cast<QObject *>(&songWidget)));
+                    QMetaObject::invokeMethod(karaokeWindow.data(), "openLiveSong");
+                    songWidget.onPlayerSeeked(4000000);
+                    const auto *list = karaokeWindow->findChild<QObject *>(QStringLiteral("liveLyricsList"));
+                    check("karaoke: two rows and active row follow the player", list && list->property("count").toInt() == 2
+                          && karaokeWindow->property("activeLyricIndex").toInt() == 1);
+                    songWidget.applyPlayerProperties({{QStringLiteral("CanSeek"), true}}, {});
+                    check("karaoke: valid seek-capable track permits seeking", songWidget.canSeekLyrics());
+                    songWidget.applyPlayerProperties({}, {QStringLiteral("CanSeek")});
+                    check("karaoke: seeking disabled when player invalidates capability", !songWidget.canSeekLyrics());
+                    QMetaObject::invokeMethod(karaokeWindow.data(), "openCurrentSnapshot");
+                    check("karaoke: full text remains available", !karaokeWindow->property("liveMode").toBool()
+                          && karaokeWindow->findChild<QObject *>(QStringLiteral("lyricsText"))->property("text").toString() == songWidget.fullLyrics());
+                }
+
+                QQmlComponent importComponent(&matchEngine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/ImportLyricsWindow.qml")));
+                QScopedPointer<QObject> importWindow(importComponent.create());
+                check("import: file dialog and preview window load", !importWindow.isNull(), importComponent.errorString());
+                if (importWindow) {
+                    importWindow->setProperty("previewResult", preview);
+                    const auto *previewText = importWindow->findChild<QObject *>(QStringLiteral("importPreviewText"));
+                    check("import: preview displays local text with a timestamp", previewText
+                          && previewText->property("text").toString().startsWith(QStringLiteral("0:01.000  First <line>")));
+                }
+                songWidget.removeImportedLyrics();
+                check("import: removing the copy preserves the original", !songWidget.hasImportedLyrics() && sourceFile.exists());
             }
         }
 
@@ -3118,6 +3222,7 @@ int main(int argc, char **argv)
     qputenv("XDG_RUNTIME_DIR", runtime.path().toUtf8());
     qputenv("XDG_CONFIG_HOME", runtime.path().toUtf8());
     qputenv("XDG_CACHE_HOME", runtime.path().toUtf8());
+    qputenv("XDG_DATA_HOME", runtime.path().toUtf8());
     qputenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent-plasma-lrc-test-bus");
     qunsetenv("SPICY_LYRICS_SECRET_KEY");
     QApplication app(argc, argv);

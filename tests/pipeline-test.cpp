@@ -317,6 +317,23 @@ int main(int argc, char *argv[])
             check("local: line 1 text", loadedLyrics.lines[1].text == QStringLiteral("Line two"));
             check("local: line 1 startMs", loadedLyrics.lines[1].startMs == 4000);
         }
+
+        QFile badSidecar(tempDir.filePath(QStringLiteral("song.ttml")));
+        check("local: create invalid TTML sidecar", badSidecar.open(QIODevice::WriteOnly));
+        badSidecar.write("<tt><body>");
+        badSidecar.close();
+        QFile goodSidecar(tempDir.filePath(QStringLiteral("song.lrc")));
+        check("local: create LRC sidecar", goodSidecar.open(QIODevice::WriteOnly));
+        goodSidecar.write("[00:01.00]Sidecar lyrics\n");
+        goodSidecar.close();
+        meta.url = QUrl::fromLocalFile(tempDir.filePath(QStringLiteral("song.flac"))).toString();
+        loadedLyrics = {};
+        local.requestLyrics(meta, 5);
+        check("local: invalid TTML falls back to valid LRC beside the audio",
+              loadedLyrics.isUsable() && loadedLyrics.lines.first().text == QStringLiteral("Sidecar lyrics"));
+        check("local: attribution has no online URL", loadedLyrics.attributionUrl.isEmpty()
+              && loadedLyrics.attributionData.provider == QStringLiteral("Local File")
+              && loadedLyrics.attributionData.providerUrl.isEmpty());
     }
 
     // Test 5: Provisional Line -> WordSync upgrade

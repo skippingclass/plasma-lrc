@@ -15,6 +15,7 @@
 #include "trackname.h"
 
 #include <QDateTime>
+#include <utility>
 
 CandidateSearchController::CandidateSearchController(QObject *parent)
     : QObject(parent)
@@ -396,10 +397,6 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                 }
             } else if (isRateLimitedGlobal) {
                 entry.completed = true;
-                entry.isCached = true;
-                entry.isStale = true;
-                entry.foundCandidates.clear();
-                anyCached = true;
                 continue;
             }
 
@@ -408,10 +405,8 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
 
         if (allCompleted) {
             m_isUsingCachedResults = anyCached;
-            rebuildCandidatesList();
-            m_status = m_candidates.isEmpty() ? QStringLiteral("nomatches") : QStringLiteral("ready");
             Q_EMIT isUsingCachedResultsChanged();
-            Q_EMIT statusChanged();
+            finishSearch();
             return;
         }
 
@@ -637,7 +632,7 @@ void CandidateSearchController::onCandidateSearchFailed(quint64 searchId, Missin
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
 
     if (reason == MissingReason::Unreachable && retryAfterSec > 0) {
-        const int cooldownMs = (retryAfterSec > 0 ? retryAfterSec * 1000 : kDefaultRateLimitCooldownMs);
+        const qint64 cooldownMs = qint64(retryAfterSec) * 1000;
         TrackCandidateCache &cacheEntry = m_trackCache[m_currentContextKey];
         cacheEntry.trackContextKey = m_currentContextKey;
         cacheEntry.lastAccessedMs = now;
@@ -718,6 +713,7 @@ void CandidateSearchController::rebuildCandidatesList()
 void CandidateSearchController::finishSearch()
 {
     m_deadlineTimer->stop();
+    m_retryAvailableAtMs = 0;
 
     if (m_isExplicitRefresh) {
         bool anyProviderSucceeded = false;
@@ -736,7 +732,7 @@ void CandidateSearchController::finishSearch()
                 Q_EMIT refreshErrorMessageChanged();
                 Q_EMIT isUsingCachedResultsChanged();
             } else {
-                m_status = QStringLiteral("no_response");
+                m_status = emptySearchStatus();
             }
         } else {
             rebuildCandidatesList();
@@ -746,7 +742,7 @@ void CandidateSearchController::finishSearch()
     } else {
         rebuildCandidatesList();
         if (m_candidates.isEmpty()) {
-            m_status = m_hadSuccessfulResponseInSearch ? QStringLiteral("nomatches") : QStringLiteral("no_response");
+            m_status = emptySearchStatus();
         } else {
             m_status = QStringLiteral("ready");
         }
@@ -754,6 +750,28 @@ void CandidateSearchController::finishSearch()
 
     Q_EMIT statusChanged();
     Q_EMIT hasUsableResultsChanged();
+}
+
+QString CandidateSearchController::emptySearchStatus()
+{
+    if (m_hadSuccessfulResponseInSearch) {
+        return QStringLiteral("nomatches");
+    }
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 earliestRetry = 0;
+    for (const auto &entry : m_activeProviders) {
+        const qint64 retry = m_providerRateLimitUntilMs.value(entry.provider->id());
+        if (retry <= now) {
+            return QStringLiteral("no_response");
+        }
+        earliestRetry = earliestRetry == 0 ? retry : qMin(earliestRetry, retry);
+    }
+    if (earliestRetry > 0) {
+        m_retryAvailableAtMs = earliestRetry;
+        return QStringLiteral("rate_limited");
+    }
+    return QStringLiteral("no_response");
 }
 
 void CandidateSearchController::onDeadlineTimeout()
@@ -778,13 +796,7 @@ void CandidateSearchController::useSelected()
     }
 
     const LyricCandidate cand = m_candidates.at(m_selectedIndex);
-    LyricsProvider *targetProvider = nullptr;
-    for (LyricsProvider *p : m_allProviders) {
-        if (p->id() == cand.providerId) {
-            targetProvider = p;
-            break;
-        }
-    }
+    LyricsProvider *targetProvider = provider(cand.providerId);
 
     if (!targetProvider) {
         m_status = QStringLiteral("error");
@@ -808,81 +820,104 @@ void CandidateSearchController::useSelected()
         }
     }
 
-    // Cancel any previous in-flight candidate fetch
-    if (m_status == QLatin1String("loading") && !m_loadingProviderId.isEmpty()) {
-        LyricsProvider *prev = provider(m_loadingProviderId);
-        if (prev) {
-            prev->cancelCandidateFetch(m_fetchId);
-        }
+    startFetch(targetProvider, cand.id, false);
+}
+
+bool CandidateSearchController::restoreMatch(const QString &providerId, const QString &candidateId)
+{
+    LyricsProvider *source = provider(providerId);
+    if (m_status != QLatin1String("idle") || !source || !source->supportsCandidateSearch() || candidateId.isEmpty()) {
+        return false;
     }
+    startFetch(source, candidateId, true);
+    return true;
+}
 
-    ++m_fetchId;
-    m_loadingProviderId = cand.providerId;
-    m_status = QStringLiteral("loading");
+void CandidateSearchController::startFetch(LyricsProvider *source, const QString &candidateId, bool restoring)
+{
+    cancelFetch();
+    const quint64 fetchId = m_fetchId;
+    m_loadingProviderId = source->id();
+    m_loadingCandidateId = candidateId;
+    m_status = restoring ? QStringLiteral("restoring") : QStringLiteral("loading");
     m_errorMessage.clear();
+    m_fetchDeadlineTimer->start(restoring ? kRestoreDeadlineMs : kFetchDeadlineMs);
     Q_EMIT statusChanged();
-
-    m_fetchDeadlineTimer->start(kFetchDeadlineMs);
-    targetProvider->fetchCandidateLyrics(cand.id, m_fetchId);
+    if (m_fetchId == fetchId) {
+        source->fetchCandidateLyrics(candidateId, fetchId);
+    }
 }
 
 void CandidateSearchController::onCandidateLyricsLoaded(quint64 fetchId, const Lyrics &lyrics, const QString &providerId)
 {
-    if (fetchId != m_fetchId || m_status != QLatin1String("loading")) {
+    if (fetchId != m_fetchId || providerId != m_loadingProviderId) {
         return;
     }
-
-    m_fetchDeadlineTimer->stop();
-    m_loadingProviderId.clear();
-    m_status = QStringLiteral("ready");
-    Q_EMIT statusChanged();
-    Q_EMIT candidateLyricsLoaded(lyrics, providerId);
+    finishFetch(lyrics, {});
 }
 
 void CandidateSearchController::onCandidateLyricsFailed(quint64 fetchId, MissingReason reason, const QString &providerId)
 {
-    Q_UNUSED(providerId);
-    if (fetchId != m_fetchId || m_status != QLatin1String("loading")) {
+    if (fetchId != m_fetchId || providerId != m_loadingProviderId) {
         return;
     }
 
-    m_fetchDeadlineTimer->stop();
-    m_loadingProviderId.clear();
-    m_status = QStringLiteral("error");
+    QString message;
     if (reason == MissingReason::SizeLimitExceeded) {
-        m_errorMessage = QStringLiteral("Candidate response size limit exceeded (max 8 MiB)");
+        message = tr("Selected lyrics exceed the size limit.");
     } else if (reason == MissingReason::Unsynced) {
-        m_errorMessage = QStringLiteral("Selected candidate has unsynced lyrics");
+        message = tr("Selected lyrics have no synchronization.");
     } else {
-        m_errorMessage = QStringLiteral("Failed to download selected lyrics");
+        message = tr("Failed to download selected lyrics.");
     }
+    finishFetch({}, message);
+}
 
+void CandidateSearchController::finishFetch(const Lyrics &lyrics, const QString &errorMessage)
+{
+    const bool restoring = isRestoringMatch();
+    const QString sourceId = std::exchange(m_loadingProviderId, {});
+    const QString candidateId = std::exchange(m_loadingCandidateId, {});
+    m_fetchDeadlineTimer->stop();
+    m_errorMessage = errorMessage;
+    m_status = restoring ? QStringLiteral("idle") : (errorMessage.isEmpty() ? QStringLiteral("ready") : QStringLiteral("error"));
     Q_EMIT statusChanged();
-    Q_EMIT candidateLyricsFailed(m_errorMessage);
+    if (restoring) {
+        Q_EMIT rememberedMatchFinished(lyrics, sourceId, candidateId);
+    } else if (errorMessage.isEmpty()) {
+        Q_EMIT candidateLyricsLoaded(lyrics, sourceId, candidateId);
+    } else {
+        Q_EMIT candidateLyricsFailed(errorMessage);
+    }
 }
 
 void CandidateSearchController::onFetchDeadlineTimeout()
 {
-    if (m_status == QLatin1String("loading")) {
-        if (!m_loadingProviderId.isEmpty()) {
-            LyricsProvider *p = provider(m_loadingProviderId);
-            if (p) {
-                p->cancelCandidateFetch(m_fetchId);
-            }
+    if (!m_loadingProviderId.isEmpty()) {
+        const quint64 requestId = m_fetchId++;
+        if (LyricsProvider *source = provider(m_loadingProviderId)) {
+            source->cancelCandidateFetch(requestId);
         }
-        ++m_fetchId;
+        finishFetch({}, tr("Timed out fetching selected lyrics."));
+    }
+}
+
+void CandidateSearchController::cancelFetch()
+{
+    const quint64 requestId = m_fetchId++;
+    m_fetchDeadlineTimer->stop();
+    if (!m_loadingProviderId.isEmpty()) {
+        if (LyricsProvider *source = provider(m_loadingProviderId)) {
+            source->cancelCandidateFetch(requestId);
+        }
         m_loadingProviderId.clear();
-        m_status = QStringLiteral("error");
-        m_errorMessage = QStringLiteral("Timed out fetching selected lyrics");
-        Q_EMIT statusChanged();
-        Q_EMIT candidateLyricsFailed(m_errorMessage);
+        m_loadingCandidateId.clear();
     }
 }
 
 void CandidateSearchController::cancel()
 {
     m_deadlineTimer->stop();
-    m_fetchDeadlineTimer->stop();
     for (auto &entry : m_activeProviders) {
         if (entry.inFlight && entry.provider) {
             entry.provider->cancelCandidateSearch(m_searchId);
@@ -890,16 +925,9 @@ void CandidateSearchController::cancel()
         }
     }
 
-    if (m_status == QLatin1String("loading") && !m_loadingProviderId.isEmpty()) {
-        LyricsProvider *loadingP = provider(m_loadingProviderId);
-        if (loadingP) {
-            loadingP->cancelCandidateFetch(m_fetchId);
-        }
-    }
-
+    cancelFetch();
     ++m_searchId;
-    ++m_fetchId;
-    m_loadingProviderId.clear();
+    m_retryAvailableAtMs = 0;
     m_status = QStringLiteral("idle");
     Q_EMIT statusChanged();
 }

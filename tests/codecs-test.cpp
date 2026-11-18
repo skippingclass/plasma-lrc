@@ -437,6 +437,23 @@ int main()
             check("limits: LrcParser sets outLimitExceeded on >10000 lines", limitExceeded);
         }
 
+        {
+            const QString repeated = QStringLiteral("[00:01.00][00:03.00] line\n").repeated(5000);
+            Lyrics lyrics;
+            bool limitExceeded = false;
+            check("expanded LRC: 10000 timed entries fit the limit",
+                  LrcParser::parseLrc(repeated, &lyrics, 0, &limitExceeded) && lyrics.lines.size() == 10000);
+            check("expanded LRC: another tag exceeds the limit",
+                  !LrcParser::parseLrc(repeated + QStringLiteral("[00:05.00] end"), &lyrics, 0, &limitExceeded)
+                  && limitExceeded);
+            const QString collapsed = QStringLiteral("[offset:1000]\n[00:00.20] First\n[00:00.30] Second\n[00:02.00]\n[00:04.00] Last");
+            check("expanded LRC: collapsed timestamps keep order and shared end at gap",
+                  LrcParser::parseLrc(collapsed, &lyrics) && lyrics.lines.size() == 3
+                  && lyrics.lines[0].text == QStringLiteral("First") && lyrics.lines[1].text == QStringLiteral("Second")
+                  && lyrics.lines[0].startMs == 0 && lyrics.lines[1].startMs == 0
+                  && lyrics.lines[0].endMs == 1000 && lyrics.lines[1].endMs == 1000);
+        }
+
         // 3. Line length limit (> 16 384 chars)
         {
             QString longLineLrc = QStringLiteral("[00:01.00] ");

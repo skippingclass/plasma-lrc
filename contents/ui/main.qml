@@ -552,10 +552,20 @@ PlasmoidItem {
         PlasmaCore.Action {
             text: i18n("Open song lyrics…")
             icon.name: "text-x-generic"
-            enabled: Plasmoid.fullLyrics.length > 0
-            onTriggered: lyricsWindow.openSong(Plasmoid.trackInfo, Plasmoid.fullLyrics,
-                Plasmoid.currentLyricOffset(), Plasmoid.attribution, Plasmoid.attributionUrl, Plasmoid.attributionHtml,
-                Plasmoid.lyricsValidUntilMs, Plasmoid.fromSpicyLyrics)
+            enabled: Plasmoid.hasLyrics
+            onTriggered: lyricsWindow.openLiveSong()
+        },
+        PlasmaCore.Action {
+            text: i18n("Import lyrics for this song…")
+            icon.name: "document-import"
+            enabled: Plasmoid.songKey.length > 0 && !Plasmoid.isCurrentTrackBlacklisted
+            onTriggered: importLyricsWindow.openForTrack()
+        },
+        PlasmaCore.Action {
+            text: i18n("Remove imported lyrics")
+            icon.name: "edit-delete"
+            visible: Plasmoid.hasImportedLyrics
+            onTriggered: Plasmoid.removeImportedLyrics()
         },
         PlasmaCore.Action {
             text: Plasmoid.isLyricsDiscarded
@@ -590,6 +600,12 @@ PlasmoidItem {
             visible: Plasmoid.isManualCandidateSelected
             enabled: Plasmoid.isManualCandidateSelected
             onTriggered: Plasmoid.useAutomaticSelection()
+        },
+        PlasmaCore.Action {
+            text: i18n("Forget saved lyrics settings for this song")
+            icon.name: "edit-clear"
+            visible: Plasmoid.hasSongPreferences
+            onTriggered: Plasmoid.forgetSongLyrics()
         }
     ]
 
@@ -605,6 +621,12 @@ PlasmoidItem {
 
     SongLyricsWindow {
         id: lyricsWindow
+        plasmoidApplet: Plasmoid
+    }
+
+    ImportLyricsWindow {
+        id: importLyricsWindow
+        plasmoidApplet: Plasmoid
     }
 
     // Which source the line actually came from.

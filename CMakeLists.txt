@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.9.3 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.10.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +56,7 @@ include_directories(${LRC_INCLUDE_DIRS})
 add_library(${PLUGIN_ID} SHARED
     src/applet/lrcapplet.cpp
     src/applet/lrcapplet.h
+    src/applet/songlyrics.cpp
     src/core/lyrictypes.h
     src/core/candidatesearcherror.h
     src/core/providerdefaults.h
@@ -144,9 +145,7 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/contents/"
     DESTINATION "${KDE_INSTALL_DATADIR}/plasma/plasmoids/${PLUGIN_ID}/contents"
 )
 
-# Off by default: the parser tests need no Plasma, only Qt, and they are the
-# only way to catch a response shape that quietly turns into "no lyrics".
-option(PLASMA_LRC_TESTS "Build the lyrics parser tests" OFF)
+option(PLASMA_LRC_TESTS "Build the parser, provider, and applet tests" OFF)
 if(PLASMA_LRC_TESTS)
     add_executable(spicy-parser-test
         tests/spicy-parser-test.cpp

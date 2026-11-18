@@ -13,7 +13,10 @@
 #include <QProcess>
 #include <QStringList>
 #include <QTimer>
+#include <QUrl>
 #include <QVariantMap>
+
+#include <optional>
 
 #include "spicylyrics.h"
 #include "lrcparser.h"
@@ -57,6 +60,7 @@ public:
     // State coming from lrc_tty
     Q_PROPERTY(QString text READ text NOTIFY textChanged)
     Q_PROPERTY(QString fullLyrics READ fullLyrics NOTIFY lyricsChanged)
+    Q_PROPERTY(QStringList lyricLines READ lyricLines NOTIFY lyricsChanged)
     Q_PROPERTY(bool active READ isActive NOTIFY activeChanged)
     Q_PROPERTY(bool available READ isAvailable NOTIFY availableChanged)
     Q_PROPERTY(QString error READ error NOTIFY availableChanged)
@@ -144,6 +148,11 @@ public:
     Q_PROPERTY(bool isLyricsDiscarded READ isLyricsDiscarded NOTIFY lyricsDiscardedChanged)
     Q_PROPERTY(bool isManualCandidateSelected READ isManualCandidateSelected NOTIFY manualCandidateSelectedChanged)
     Q_PROPERTY(QObject *candidateController READ candidateControllerObj CONSTANT)
+    Q_PROPERTY(QString songKey READ songKey NOTIFY songPreferencesChanged)
+    Q_PROPERTY(int songLyricOffset READ songLyricOffset NOTIFY songPreferencesChanged)
+    Q_PROPERTY(bool hasSongPreferences READ hasSongPreferences NOTIFY songPreferencesChanged)
+    Q_PROPERTY(bool hasImportedLyrics READ hasImportedLyrics NOTIFY songPreferencesChanged)
+    Q_PROPERTY(bool canSeekLyrics READ canSeekLyrics NOTIFY seekCapabilityChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -287,6 +296,7 @@ public:
         return !m_pauseHidden && !m_lyricsDiscarded && hasLyrics() && !m_lyrics.lines.isEmpty() && m_lineIndex < 0 && !isIntro() && m_positionMs <= m_lyrics.lines.last().endMs;
     }
     QString fullLyrics() const;
+    QStringList lyricLines() const;
     QString attribution() const;
     QString attributionUrl() const;
     QString provider() const;
@@ -435,8 +445,20 @@ public:
     Q_INVOKABLE void retryLyricsSearch();
     Q_INVOKABLE void openChooseMatchWindow();
     Q_INVOKABLE void useAutomaticSelection();
+    Q_INVOKABLE void rememberSongLyrics(const QString &songKey, int offsetMs);
+    Q_INVOKABLE void forgetSongLyrics();
+    Q_INVOKABLE QVariantMap previewLrcImport(const QUrl &file, const QString &songKey);
+    Q_INVOKABLE QString saveLrcImport(const QString &songKey, int offsetMs);
+    Q_INVOKABLE void cancelLrcImport();
+    Q_INVOKABLE void removeImportedLyrics();
+    Q_INVOKABLE void seekToLyricLine(int index);
     bool isManualCandidateSelected() const { return m_manualCandidateSelected; }
     QObject *candidateControllerObj() const;
+    QString songKey() const { return m_songKey; }
+    int songLyricOffset() const { return m_songOffsetMs.value_or(m_lyricOffset); }
+    bool hasSongPreferences() const { return m_songOffsetMs.has_value() || !m_savedCandidateId.isEmpty(); }
+    bool hasImportedLyrics() const;
+    bool canSeekLyrics() const;
 
 Q_SIGNALS:
     void textChanged();
@@ -455,6 +477,8 @@ Q_SIGNALS:
     void lyricsDiscardedChanged();
     void pauseHiddenChanged();
     void providerOrderChanged();
+    void songPreferencesChanged();
+    void seekCapabilityChanged();
 
 public Q_SLOTS:
     /// Forget everything we know and ask lrc_tty right away.
@@ -474,7 +498,8 @@ private Q_SLOTS:
     void onSpicyMissing(const QString &trackId, MissingReason reason);
     void onLrclibLoaded(const QString &requestKey, const Lyrics &lyrics);
     void onLrclibMissing(const QString &requestKey);
-    void onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId);
+    void onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId, const QString &candidateId = {});
+    void onRememberedMatchFinished(const Lyrics &lyrics, const QString &providerId, const QString &candidateId);
     void onCandidateLyricsFailed(const QString &errorMessage);
     void onPositionFetched();
     void onPauseTimeout();
@@ -509,7 +534,14 @@ private:
     void applyMetadata(const QVariantMap &metadata);
     /// Asks MPRIS for Position, and interpolates from there.
     void requestPosition();
-    void requestLyrics();
+    TrackMetadata currentTrackMetadata() const;
+    void requestLyrics(bool restoreRememberedMatch = true);
+    void startAutomaticLyrics(const TrackMetadata &meta);
+    void resetManualMatch();
+    bool applyCandidateLyrics(const Lyrics &lyrics, const QString &providerId, const QString &candidateId);
+    bool updateSongContext();
+    void readSongPreferences();
+    void forgetSavedMatch();
     void requestSpicyLyrics();
     void fetchLrcLyrics(bool rawFallback = false);
     void clearLyrics();
@@ -752,4 +784,12 @@ private:
     CandidateSearchController *m_candidateController = nullptr;
     bool m_manualCandidateSelected = false;
     quint64 m_candidateLookupGeneration = 0;
+    QString m_currentCandidateId;
+    QString m_songKey;
+    QString m_savedProviderId;
+    QString m_savedCandidateId;
+    std::optional<int> m_songOffsetMs;
+    QString m_importSongKey;
+    QByteArray m_importSource;
+    bool m_playerCanSeek = false;
 };

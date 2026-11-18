@@ -1,0 +1,30 @@
+name: Build and test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git cmake ninja qt6-base qt6-declarative libplasma \
+            kcoreaddons kconfig ki18n kirigami
+
+      - uses: actions/checkout@v4
+
+      - name: Build and test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPLASMA_LRC_TESTS=ON
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure

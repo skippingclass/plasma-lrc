@@ -25,6 +25,7 @@
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
 #include <QDBusMessage>
+#include <QDBusObjectPath>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QDir>
@@ -34,10 +35,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcessEnvironment>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
 
 #include <algorithm>
+#include <limits>
 
 namespace
 {
@@ -255,6 +258,8 @@ LrcApplet::LrcApplet(QObject *parent, const KPluginMetaData &data, const QVarian
             this, &LrcApplet::onCandidateLyricsLoaded);
     connect(m_candidateController, &CandidateSearchController::candidateLyricsFailed,
             this, &LrcApplet::onCandidateLyricsFailed);
+    connect(m_candidateController, &CandidateSearchController::rememberedMatchFinished,
+            this, &LrcApplet::onRememberedMatchFinished);
 
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &LrcApplet::poll);
@@ -352,18 +357,8 @@ void LrcApplet::startPolling()
 
 void LrcApplet::refresh()
 {
-    TrackMetadata meta;
-    meta.title = m_trackTitle;
-    meta.artist = m_trackArtist;
-    meta.album = m_trackAlbum;
-    meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
-    meta.spotifyTrackId = m_spotifyTrackId;
-    meta.mprisTrackId = m_mprisTrackId;
-    meta.url = m_trackUrl;
-    meta.isWebSession = m_webPageSession;
-
     if (m_pipeline) {
-        m_pipeline->invalidateCaches(meta);
+        m_pipeline->invalidateCaches(currentTrackMetadata());
     }
     // The API lyrics have to go as well: poll() returns early while they are
     // usable, so the button would do nothing at all on a track that has them.
@@ -383,7 +378,9 @@ void LrcApplet::refresh()
 void LrcApplet::clearCache()
 {
     if (m_candidateController) {
-        m_candidateController->close();
+        if (!m_candidateController->isRestoringMatch()) {
+            m_candidateController->close();
+        }
         m_candidateController->clearCache();
     }
     if (m_pipeline) {
@@ -396,23 +393,10 @@ void LrcApplet::retryLyricsSearch()
     if (m_candidateController) {
         m_candidateController->close();
     }
-    if (m_manualCandidateSelected) {
-        m_manualCandidateSelected = false;
-        Q_EMIT manualCandidateSelectedChanged();
-    }
-
-    TrackMetadata meta;
-    meta.title = m_trackTitle;
-    meta.artist = m_trackArtist;
-    meta.album = m_trackAlbum;
-    meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
-    meta.spotifyTrackId = m_spotifyTrackId;
-    meta.mprisTrackId = m_mprisTrackId;
-    meta.url = m_trackUrl;
-    meta.isWebSession = m_webPageSession;
+    resetManualMatch();
 
     if (m_pipeline) {
-        m_pipeline->invalidateCaches(meta);
+        m_pipeline->invalidateCaches(currentTrackMetadata());
     }
 
     if (m_lyricsDiscarded) {
@@ -429,7 +413,7 @@ void LrcApplet::retryLyricsSearch()
     m_activeProviderId.clear();
 
     if (!m_watchedService.isEmpty() && !m_trackTitle.isEmpty()) {
-        requestLyrics();
+        requestLyrics(false);
     } else {
         refresh();
     }
@@ -517,6 +501,7 @@ void LrcApplet::readSettings()
 
     const bool blacklistChanged = (blacklistedTracks != m_blacklistedTracks);
     const bool wasTrackBlacklisted = isCurrentTrackBlacklisted();
+    const bool offsetChanged = (lyricOffset != m_lyricOffset);
 
     m_configuredPlayer = player;
     m_preferredPlayer = preferredPlayer;
@@ -611,8 +596,7 @@ void LrcApplet::readSettings()
         const bool activeDisabled = disabledList.contains(m_activeProviderId)
             || (m_activeProviderId == QLatin1String("spicy") && !m_useSpicy);
         if (activeDisabled) {
-            m_manualCandidateSelected = false;
-            Q_EMIT manualCandidateSelectedChanged();
+            resetManualMatch();
         }
     }
 
@@ -647,6 +631,10 @@ void LrcApplet::readSettings()
     if (changed) {
         Q_EMIT settingsChanged();
         invalidatePlayerCandidates();
+    }
+    if (offsetChanged) {
+        Q_EMIT songPreferencesChanged();
+        updateWord();
     }
 
     if (providerSettingsChanged && !m_watchedService.isEmpty() && !m_trackTitle.isEmpty()) {
@@ -696,15 +684,7 @@ int LrcApplet::lyricOffset() const
 
 QString LrcApplet::fullLyrics() const
 {
-    if (isSpicyExpired() || !m_lyrics.isUsable()) {
-        return QString();
-    }
-    QStringList lines;
-    lines.reserve(m_lyrics.lines.size());
-    for (const auto &line : m_lyrics.lines) {
-        lines.append(line.text);
-    }
-    return lines.join(QLatin1Char('\n')).trimmed();
+    return lyricLines().join(QLatin1Char('\n')).trimmed();
 }
 
 void LrcApplet::copyCurrentLine()
@@ -1320,6 +1300,8 @@ void LrcApplet::cancelProcess()
  */
 void LrcApplet::clearDisplay()
 {
+    m_candidateController->close();
+    resetManualMatch();
     cancelProcess();
     m_pipeline->cancel();
     m_activeProviderId.clear();
@@ -1349,7 +1331,11 @@ void LrcApplet::clearDisplay()
     setTrackInfo(QString());
     m_trackArtist.clear();
     m_trackTitle.clear();
+    m_trackAlbum.clear();
+    m_trackUrl.clear();
     m_trackLengthUs = 0;
+    updateSongContext();
+    Q_EMIT seekCapabilityChanged();
     m_webPageSession = false;
     m_useCleanedLookup = true;
     m_lastLookupWasCleaned = false;
@@ -1423,10 +1409,7 @@ void LrcApplet::handleLyricsExpired()
 
     m_expiryTimer.stop();
 
-    if (m_manualCandidateSelected) {
-        m_manualCandidateSelected = false;
-        Q_EMIT manualCandidateSelectedChanged();
-    }
+    resetManualMatch();
 
     // Discard active lyrics and cached full/current lyric strings
     m_lyrics = Lyrics();
@@ -1479,6 +1462,27 @@ void LrcApplet::togglePlayPause()
     }
     QDBusMessage msg = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("PlayPause"));
     QDBusConnection::sessionBus().send(msg);
+}
+
+bool LrcApplet::canSeekLyrics() const
+{
+    static const QRegularExpression objectPath(QStringLiteral(R"(\A/(?:[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*)?\z)"));
+    return m_playerCanSeek && !m_watchedService.isEmpty()
+        && m_mprisTrackId != QLatin1String("/org/mpris/MediaPlayer2/TrackList/NoTrack")
+        && objectPath.match(m_mprisTrackId).hasMatch();
+}
+
+void LrcApplet::seekToLyricLine(int index)
+{
+    if (!canSeekLyrics() || !hasLyrics() || index < 0 || index >= m_lyrics.lines.size()) {
+        return;
+    }
+    const qint64 maxMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : std::numeric_limits<qint64>::max() / 1000;
+    const qint64 startMs = qBound(0LL, m_lyrics.lines.at(index).startMs, maxMs);
+    const qint64 targetMs = qBound(0LL, startMs + songLyricOffset() + kAudioLeadCompensationMs, maxMs);
+    QDBusMessage message = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("SetPosition"));
+    message << QVariant::fromValue(QDBusObjectPath(m_mprisTrackId)) << targetMs * 1000;
+    QDBusConnection::sessionBus().asyncCall(message, kDBusCallTimeoutMs);
 }
 
 void LrcApplet::nextTrack()
@@ -1619,10 +1623,7 @@ void LrcApplet::handleCurrentTrackBlacklisted()
     if (m_candidateController) {
         m_candidateController->close();
     }
-    if (m_manualCandidateSelected) {
-        m_manualCandidateSelected = false;
-        Q_EMIT manualCandidateSelectedChanged();
-    }
+    resetManualMatch();
     m_expiryTimer.stop();
 
     m_candidateLookupGeneration = ++m_lookupGeneration;
@@ -1735,6 +1736,7 @@ void LrcApplet::discardCurrentLyrics()
     m_discardedFromSpicy = m_fromSpicy;
     m_discardedActiveProviderId = m_activeProviderId;
 
+    m_candidateController->close();
     cancelProcess();
     m_pipeline->cancel();
     m_activeProviderId.clear();
@@ -1810,6 +1812,7 @@ void LrcApplet::restoreCurrentLyrics()
         Q_EMIT lyricsChanged();
         updateWord();
     } else {
+        resetManualMatch();
         m_lyricsLookupDone = false;
         requestLyrics();
     }
@@ -1856,10 +1859,7 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         if (m_candidateController) {
             m_candidateController->close();
         }
-        if (m_manualCandidateSelected) {
-            m_manualCandidateSelected = false;
-            Q_EMIT manualCandidateSelectedChanged();
-        }
+        resetManualMatch();
         m_candidateLookupGeneration = ++m_lookupGeneration;
         if (m_lyricsDiscarded) {
             m_lyricsDiscarded = false;
@@ -1908,7 +1908,6 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         clearLyrics();
         m_gaplessLeadMs = gaplessLead;
 
-        setTrackInfo(trackInfo);
         m_webPageSession = isWebSession;
         m_trackArtist = artist;
         m_trackTitle = title;
@@ -1917,6 +1916,9 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         m_trackLengthUs = lengthUs;
         m_spotifyTrackId = trackId;
         m_mprisTrackId = rawTrackId;
+        updateSongContext();
+        setTrackInfo(trackInfo);
+        Q_EMIT seekCapabilityChanged();
 
         if (m_playingKnown && !m_playing && m_pauseHideDelay > 0) {
             m_pauseHidden = true;
@@ -1933,13 +1935,22 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         m_trackAlbum = metadata.value(QStringLiteral("xesam:album")).toString();
         m_trackUrl = metadata.value(QStringLiteral("xesam:url")).toString();
         m_trackLengthUs = lengthUs;
+        if (updateSongContext()) {
+            if (!m_manualCandidateSelected
+                && (m_candidateController->isRestoringMatch() || !m_savedCandidateId.isEmpty() || hasImportedLyrics())) {
+                m_lyricsLookupDone = false;
+                requestLyrics();
+            } else {
+                updateWord();
+            }
+        }
         if (!m_lyrics.isUsable() && !m_lyricsLookupDone && !m_fetchingFromSpicy && !m_fetchingLrc) {
             requestLyrics();
         }
     }
 }
 
-void LrcApplet::requestLyrics()
+void LrcApplet::requestLyrics(bool restoreRememberedMatch)
 {
     if (m_watchedService.isEmpty() || m_trackTitle.isEmpty() || m_lyricsLookupDone || m_lyricsDiscarded) {
         return;
@@ -1950,20 +1961,19 @@ void LrcApplet::requestLyrics()
         clearLyrics();
         return;
     }
+    if (m_manualCandidateSelected && hasLyrics()) {
+        m_lyricsLookupDone = true;
+        return;
+    }
+    if (m_candidateController->isRestoringMatch()) {
+        m_candidateController->close();
+    }
 
     cancelProcess();
     m_pipeline->cancel();
     m_expiryTimer.stop();
 
-    TrackMetadata meta;
-    meta.title = m_trackTitle;
-    meta.artist = m_trackArtist;
-    meta.album = m_trackAlbum;
-    meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
-    meta.spotifyTrackId = m_spotifyTrackId;
-    meta.mprisTrackId = m_mprisTrackId;
-    meta.url = m_trackUrl;
-    meta.isWebSession = m_webPageSession;
+    const TrackMetadata meta = currentTrackMetadata();
 
     m_lastSearchRawMeta = meta;
     m_lastSearchNormalizedMeta = meta;
@@ -1973,6 +1983,25 @@ void LrcApplet::requestLyrics()
     m_fetchingLrc = true;
 
     m_candidateLookupGeneration = ++m_lookupGeneration;
+    if (restoreRememberedMatch && m_pipeline->isProviderEnabled(m_savedProviderId)
+        && m_candidateController->restoreMatch(m_savedProviderId, m_savedCandidateId)) {
+        return;
+    }
+    startAutomaticLyrics(meta);
+}
+
+void LrcApplet::startAutomaticLyrics(const TrackMetadata &meta)
+{
+    if (m_localProvider->isEnabled() && !m_songKey.isEmpty()) {
+        Lyrics imported;
+        MissingReason failure;
+        if (LocalProvider::readLyricsFile(LocalProvider::importedFilePath(m_songKey), meta.durationMs, imported, failure)) {
+            const quint64 generation = m_lookupGeneration;
+            onPipelineResolved(generation, imported, m_localProvider->id());
+            onPipelineLookupFinished(generation);
+            return;
+        }
+    }
     m_pipeline->requestLyrics(meta, m_lookupGeneration);
 }
 
@@ -2139,6 +2168,9 @@ void LrcApplet::setProviderEnabled(const QString &id, bool enabled)
         return;
     }
     m_pipeline->setProviderEnabled(id, enabled);
+    if (!enabled && id == m_activeProviderId) {
+        resetManualMatch();
+    }
     if (id == QLatin1String("spicy")) {
         m_useSpicy = enabled;
         config().group(s_configGroup).writeEntry(QStringLiteral("useSpicyLyrics"), enabled);
@@ -2990,7 +3022,7 @@ void LrcApplet::updateWord()
         }
     } notifyGuard{this, wasIntro, wasBreak, prevLineIdx};
 
-    m_positionMs = m_positionBaseMs + currentClockElapsedMs() - m_gaplessLeadMs - kAudioLeadCompensationMs - m_lyricOffset;
+    m_positionMs = m_positionBaseMs + currentClockElapsedMs() - m_gaplessLeadMs - kAudioLeadCompensationMs - songLyricOffset();
 
     // Before the first line of the track (intro), clear any stale or phantom text.
     if (!m_lyrics.lines.isEmpty() && m_positionMs < m_lyrics.lines.first().startMs) {
@@ -3793,9 +3825,10 @@ void LrcApplet::unwatchPlayer()
     if (m_candidateController) {
         m_candidateController->close();
     }
-    if (m_manualCandidateSelected) {
-        m_manualCandidateSelected = false;
-        Q_EMIT manualCandidateSelectedChanged();
+    resetManualMatch();
+    if (m_playerCanSeek) {
+        m_playerCanSeek = false;
+        Q_EMIT seekCapabilityChanged();
     }
     m_repeatTrack = false;
     m_playbackRate = 1.0;
@@ -3977,6 +4010,15 @@ void LrcApplet::onPlayerPropertiesFetched()
 void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStringList &invalidated)
 {
     m_awaitingState = false;
+
+    const auto seekIt = properties.constFind(QStringLiteral("CanSeek"));
+    if (seekIt != properties.constEnd() || invalidated.contains(QStringLiteral("CanSeek"))) {
+        const bool canSeek = seekIt != properties.constEnd() && seekIt.value().toBool();
+        if (m_playerCanSeek != canSeek) {
+            m_playerCanSeek = canSeek;
+            Q_EMIT seekCapabilityChanged();
+        }
+    }
 
     if (invalidated.contains(QStringLiteral("LoopStatus"))) {
         m_repeatTrack = false;
@@ -4167,7 +4209,7 @@ QVariantMap LrcApplet::diagnosticData() const
     const qint64 extrapolatedMs = baseMs + elapsedMs;
     const qint64 gaplessLead = m_gaplessLeadMs;
     const qint64 audioLeadComp = kAudioLeadCompensationMs;
-    const qint64 userOffset = m_lyricOffset;
+    const qint64 userOffset = songLyricOffset();
     const qint64 finalMs = m_positionMs;
     const qint64 measurementAgeMs = m_mprisMeasurementTimer.isValid() ? m_mprisMeasurementTimer.elapsed() : 0;
 
@@ -4350,16 +4392,11 @@ void LrcApplet::openChooseMatchWindow()
     }
 
     m_candidateLookupGeneration = m_lookupGeneration;
-
-    TrackMetadata meta;
-    meta.title = m_trackTitle;
-    meta.artist = m_trackArtist;
-    meta.album = m_trackAlbum;
-    meta.durationMs = m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
-    meta.spotifyTrackId = m_spotifyTrackId;
-    meta.mprisTrackId = m_mprisTrackId;
-    meta.url = m_trackUrl;
-    meta.isWebSession = m_webPageSession;
+    const TrackMetadata meta = currentTrackMetadata();
+    if (m_candidateController->isRestoringMatch()) {
+        m_candidateController->close();
+        startAutomaticLyrics(meta);
+    }
 
     QStringList enabledList;
     for (const auto &p : providers()) {
@@ -4374,38 +4411,48 @@ void LrcApplet::openChooseMatchWindow()
 
 void LrcApplet::useAutomaticSelection()
 {
-    if (!m_manualCandidateSelected) {
+    if (!m_manualCandidateSelected && m_savedCandidateId.isEmpty()) {
         return;
     }
-    m_manualCandidateSelected = false;
-    Q_EMIT manualCandidateSelectedChanged();
+    forgetSavedMatch();
     retryLyricsSearch();
 }
 
-void LrcApplet::onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId)
+void LrcApplet::resetManualMatch()
 {
-    if (m_candidateLookupGeneration != m_lookupGeneration || m_lyricsDiscarded || isCurrentTrackBlacklisted()) {
-        return;
+    m_currentCandidateId.clear();
+    if (m_manualCandidateSelected) {
+        m_manualCandidateSelected = false;
+        Q_EMIT manualCandidateSelectedChanged();
     }
+}
 
-    bool providerEnabled = false;
-    for (const auto &p : providers()) {
-        const QVariantMap map = p.toMap();
-        if (map.value(QStringLiteral("id")).toString() == providerId && map.value(QStringLiteral("enabled")).toBool()) {
-            providerEnabled = true;
-            break;
-        }
+void LrcApplet::onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &providerId, const QString &candidateId)
+{
+    applyCandidateLyrics(lyrics, providerId, candidateId);
+}
+
+void LrcApplet::onRememberedMatchFinished(const Lyrics &lyrics, const QString &providerId, const QString &candidateId)
+{
+    if (m_candidateLookupGeneration == m_lookupGeneration && !m_lyricsDiscarded && !isCurrentTrackBlacklisted()
+        && !applyCandidateLyrics(lyrics, providerId, candidateId)) {
+        startAutomaticLyrics(currentTrackMetadata());
     }
-    if (!providerEnabled) {
-        return;
+}
+
+bool LrcApplet::applyCandidateLyrics(const Lyrics &lyrics, const QString &providerId, const QString &candidateId)
+{
+    if (m_candidateLookupGeneration != m_lookupGeneration || m_lyricsDiscarded || isCurrentTrackBlacklisted()
+        || !lyrics.isUsable() || !m_pipeline->isProviderEnabled(providerId)) {
+        return false;
     }
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (providerId == QLatin1String("spicy") && lyrics.validUntilMs <= 0) {
-        return;
+        return false;
     }
     if (lyrics.validUntilMs > 0 && now >= lyrics.validUntilMs) {
-        return;
+        return false;
     }
 
     if (m_pipeline) {
@@ -4418,10 +4465,11 @@ void LrcApplet::onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &pro
     m_fetchingLrc = false;
     m_lyricsLookupDone = true;
 
+    m_currentCandidateId = candidateId;
+    m_activeProviderId = providerId;
     m_manualCandidateSelected = true;
     Q_EMIT manualCandidateSelectedChanged();
 
-    m_activeProviderId = providerId;
     m_fromSpicy = (providerId == QLatin1String("spicy"));
 
     if (!m_available) {
@@ -4467,6 +4515,7 @@ void LrcApplet::onCandidateLyricsLoaded(const Lyrics &lyrics, const QString &pro
         updateWord();
     }
     Q_EMIT lyricsChanged();
+    return true;
 }
 
 void LrcApplet::onCandidateLyricsFailed(const QString &errorMessage)
