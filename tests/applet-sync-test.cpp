@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <cstdio>
+#include <utility>
 #include "http-test-server.h"
 #include "candidatesearchcontroller.h"
 #include "lrclibprovider.h"
@@ -30,10 +31,13 @@
 class FakeSettingsProvider : public LyricsProvider
 {
 public:
-    FakeSettingsProvider() = default;
+    explicit FakeSettingsProvider(QString id = QStringLiteral("settings-test"))
+        : m_id(std::move(id))
+    {
+    }
     ~FakeSettingsProvider() override = default;
 
-    QString id() const override { return QStringLiteral("settings-test"); }
+    QString id() const override { return m_id; }
     QString displayName() const override { return QStringLiteral("Settings Test Provider"); }
     Capabilities capabilities() const override { return Capability::LineSync; }
 
@@ -61,6 +65,9 @@ public:
     int cancelCalls = 0;
     quint64 lastGeneration = 0;
     TrackMetadata lastMeta;
+
+private:
+    QString m_id;
 };
 
 class LrcAppletSyncTest
@@ -2245,6 +2252,17 @@ public:
 
             // Regression 21: Stage 3 candidate search across all 7 adapters, integration, and ChooseMatchWindow.qml
             {
+                // Test the real adapters on loopback below. Widget calls to automatic
+                // selection use fakes with the same IDs so settings never open a live request.
+                widget.m_pipeline->cancel();
+                auto *testPipeline = new LyricsPipelineManager(&widget);
+                for (const auto *source : widget.m_pipeline->allProviders()) {
+                    auto *fakeSource = new FakeSettingsProvider(source->id());
+                    fakeSource->setParent(testPipeline);
+                    testPipeline->registerProvider(fakeSource);
+                }
+                widget.m_pipeline = testPipeline;
+
                 widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("disabledProviders"), QString());
                 widget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("providerOrder"), QStringLiteral("lrcred,amll,spicy,lrclib,netease,kugou,qqmusic,unison"));
                 widget.m_lyricsDiscarded = false;
