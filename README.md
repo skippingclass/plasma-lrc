@@ -17,7 +17,7 @@
 [![Qt 6 / QML](https://img.shields.io/badge/Qt-6.5+-green?style=flat-square&logo=qt)](https://www.qt.io/)
 [![C++17](https://img.shields.io/badge/C++-17-00599C?style=flat-square&logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
 [![CMake & Ninja](https://img.shields.io/badge/Build-CMake_%7C_Ninja-064F8C?style=flat-square&logo=cmake)](https://cmake.org/)
-[![Tests Passing](https://img.shields.io/badge/CTest-10%2F10_Passing-brightgreen?style=flat-square&logo=checkmarx)](tests/)
+[![Build and test](https://github.com/skippingclass/plasma-lrc/actions/workflows/ci.yml/badge.svg)](https://github.com/skippingclass/plasma-lrc/actions/workflows/ci.yml)
 [![AUR](https://img.shields.io/aur/v/plasma6-applet-lrc-git?label=AUR&logo=archlinux&style=flat-square)](https://aur.archlinux.org/packages/plasma6-applet-lrc-git)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
@@ -139,11 +139,12 @@ systemctl --user restart plasma-plasmashell.service
 
 ### Run Unit Tests (CTest)
 
+Install Python 3 for the packaging integration test.
+
 ```bash
 cmake -S . -B build -G Ninja -DPLASMA_LRC_TESTS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
-# 10/10 tests pass (codecs, ttml, lrclib, pipeline, applet sync, limits, etc.)
 ```
 
 ### Adding Widget to Panel
@@ -160,7 +161,7 @@ Right-click the panel widget to access actions:
 |:---|:---|
 | **Choose another match…** | Picks alternative lyrics. Check **Remember for this song** to reuse the match on later plays. |
 | **Use automatic selection** | Clears the manual match and returns to the automatic provider pipeline. |
-| **Open song lyrics…** | Opens live karaoke with word highlighting, optional auto-scroll, and click-to-seek on supported players. **Read text** opens the full text view. |
+| **Open song lyrics…** | Opens the full lyrics from the beginning in a scrollable reader. |
 | **Import lyrics for this song…** | Previews a local `.lrc` file, saves a copy for the current track, and applies a song-specific timing offset. |
 | **Remove imported lyrics** | Removes the widget's copy of the imported file. |
 | **Forget saved lyrics settings for this song** | Resets the remembered match and song-specific timing offset. |
@@ -171,7 +172,7 @@ Right-click the panel widget to access actions:
 | **Diagnostics…** | Opens the comprehensive Search & Synchronization telemetry window. |
 | **Configure Plasma LRC…** | Opens the configuration dialog and provider pipeline manager. |
 
-Set **Song offset** in the live lyrics window and choose **Save for this song** to keep the correction across restarts. Positive values delay the lyrics. Imported copies are stored in `$XDG_DATA_HOME/plasma-lrc/imports` (normally `~/.local/share/plasma-lrc/imports`) and used when Local Files is enabled. If a remembered online match is unavailable, the widget falls back to the imported file or automatic search.
+Set **Song offset** in the song lyrics window while the displayed song is current and choose **Save for this song** to keep the correction across restarts. Positive values delay the lyrics. Imported copies are stored in `$XDG_DATA_HOME/plasma-lrc/imports` (normally `~/.local/share/plasma-lrc/imports`) and used when Local Files is enabled. If a remembered online match is unavailable, the widget falls back to the imported file or automatic search.
 
 ---
 

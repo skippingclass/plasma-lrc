@@ -74,7 +74,7 @@ private:
     void startSearchByTitleArtist();
     void startGetById(qint64 idVal, const QString &filename);
     void handlePayload(const QByteArray &data, quint64 gen);
-    void failCurrent(MissingReason reason, const QString &diagReason, bool is404 = false);
+    void failCurrent(MissingReason reason, const QString &diagReason, bool cacheMissing = false);
 
     bool checkDiskCache(const QString &cacheKey, const TrackMetadata &meta, Lyrics *outLyrics);
     void writeDiskCache(const QString &cacheKey, const QByteArray &data,
@@ -91,7 +91,11 @@ private:
     QString m_selectedCandTitle;
     QStringList m_selectedCandArtists;
     qint64 m_selectedCandDurationMs = 0;
-    QHash<QString, qint64> m_negativeCache; // cacheKey -> timestamp
+    struct CachedMiss {
+        qint64 timestampMs;
+        MissingReason reason;
+    };
+    QHash<QString, CachedMiss> m_negativeCache;
     quint64 m_diagGeneration = 0;
     QString m_diagReason;
     QString m_diagCache;

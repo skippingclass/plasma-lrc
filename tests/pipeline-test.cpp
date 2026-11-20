@@ -162,6 +162,50 @@ private:
     QPointer<QTimer> m_timer;
 };
 
+class VariantProvider : public LyricsProvider
+{
+public:
+    VariantProvider(bool resolveFirst, QObject *parent)
+        : LyricsProvider(parent)
+        , m_resolveFirst(resolveFirst)
+    {
+    }
+
+    QString id() const override { return QStringLiteral("variants"); }
+    QString displayName() const override { return id(); }
+    Capabilities capabilities() const override { return Capability::SearchByTitleArtist | Capability::WordSync; }
+    bool canHandle(const TrackMetadata &) const override { return true; }
+
+    void requestLyrics(const TrackMetadata &, quint64 generation) override
+    {
+        ++calls;
+        if (calls == 1 && !m_resolveFirst) {
+            Q_EMIT lyricsFailed(generation, MissingReason::NotFound, id());
+            return;
+        }
+        if (calls > 1 && m_resolveFirst) {
+            pending = true;
+            return;
+        }
+        Lyrics lyrics;
+        lyrics.type = LyricsType::Line;
+        LyricLine line;
+        line.text = QStringLiteral("lyrics");
+        line.startMs = 1000;
+        line.endMs = 2000;
+        lyrics.lines.append(line);
+        Q_EMIT lyricsLoaded(generation, lyrics, id());
+    }
+
+    void cancel() override { pending = false; }
+
+    int calls = 0;
+    bool pending = false;
+
+private:
+    bool m_resolveFirst;
+};
+
 void runEventLoopWithTimeout(int timeoutMs)
 {
     QEventLoop loop;
@@ -980,6 +1024,32 @@ int main(int argc, char *argv[])
               pipeline.providerOrder() == ProviderDefaults::order());
         check("default-order: lrc.red and LRCLIB lead the network order",
               pipeline.providerOrder().mid(1, 5) == QStringList({"lrcred", "lrclib", "netease", "kugou", "unison"}));
+    }
+
+    {
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Artist - Song");
+        meta.artist = QStringLiteral("Uploader");
+        meta.isWebSession = true;
+
+        LyricsPipelineManager fallback;
+        auto *provider = new VariantProvider(false, &fallback);
+        fallback.registerProvider(provider);
+        fallback.requestLyrics(meta, 703);
+        const auto diagnostics = fallback.providerDiagnostics();
+        check("variant fallback: selected result has no rejection from a previous query",
+              provider->calls > 1 && diagnostics.size() == 1 && diagnostics.first().status == QStringLiteral("selected")
+                  && diagnostics.first().rejectionReason.isEmpty());
+
+        LyricsPipelineManager deadline;
+        auto *upgrade = new VariantProvider(true, &deadline);
+        deadline.registerProvider(upgrade);
+        deadline.requestLyrics(meta, 704);
+        check("variant deadline: provisional provider starts a quality upgrade", upgrade->pending);
+        QMetaObject::invokeMethod(&deadline, "onLookupDeadline", Qt::DirectConnection);
+        check("variant deadline: provisional provider's pending upgrade is cancelled", !upgrade->pending);
+        check("variant deadline: provisional provider remains selected",
+              deadline.bestProviderId() == upgrade->id() && !deadline.isLookupActive());
     }
 
     if (s_failed == 0) {

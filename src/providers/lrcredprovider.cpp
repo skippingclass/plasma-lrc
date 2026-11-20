@@ -33,7 +33,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.0 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.1 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)
@@ -110,13 +110,16 @@ void LrcRedProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
 
     // Check negative cache
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (m_negativeCache.contains(m_currentCacheKey)) {
-        if (now - m_negativeCache.value(m_currentCacheKey) < kNegativeCacheTtlMs) {
+    const auto cachedMiss = m_negativeCache.constFind(m_currentCacheKey);
+    if (cachedMiss != m_negativeCache.constEnd()) {
+        if (now - cachedMiss->timestampMs < kNegativeCacheTtlMs) {
+            const MissingReason reason = cachedMiss->reason;
             const quint64 gen = m_currentGeneration;
             m_currentCacheKey.clear();
             m_diagCache = QStringLiteral("Hit (negative cache)");
-            m_diagReason = QStringLiteral("Track not found in database (cached)");
-            Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+            m_diagReason = reason == MissingReason::Unsynced ? QStringLiteral("Lyrics are unsynchronized (cached)")
+                                                            : QStringLiteral("Track not found in database (cached)");
+            Q_EMIT lyricsFailed(gen, reason, id());
             return;
         }
         m_negativeCache.remove(m_currentCacheKey);
@@ -366,7 +369,7 @@ void LrcRedProvider::tryNextCandidateOrFormat()
             ? QStringLiteral("Checked candidates are unsynchronized (remaining candidates not evaluated)")
             : QStringLiteral("Lyrics are unsynchronized (static text)");
         if (canNegativeCache) {
-            m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+            m_negativeCache.insert(cacheKey, {QDateTime::currentMSecsSinceEpoch(), MissingReason::Unsynced});
         }
         Q_EMIT lyricsFailed(gen, MissingReason::Unsynced, id());
     } else if (m_hadTransientError) {
@@ -377,7 +380,7 @@ void LrcRedProvider::tryNextCandidateOrFormat()
             ? QStringLiteral("Candidate limit reached without usable lyrics (remaining candidates not evaluated)")
             : QStringLiteral("Track not found in database");
         if (canNegativeCache) {
-            m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+            m_negativeCache.insert(cacheKey, {QDateTime::currentMSecsSinceEpoch(), MissingReason::NotFound});
         }
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
     }
@@ -401,9 +404,7 @@ void LrcRedProvider::onReplyFinished()
     }
 
     if (LyricsLimits::isSizeLimitExceeded(reply)) {
-        m_diagReason = QStringLiteral("Response size limit exceeded (max 8 MiB)");
-        m_currentCacheKey.clear();
-        Q_EMIT lyricsFailed(gen, MissingReason::SizeLimitExceeded, id());
+        failSizeLimit();
         return;
     }
 
@@ -415,7 +416,7 @@ void LrcRedProvider::onReplyFinished()
             m_currentCacheKey.clear();
             if (statusCode == 404) {
                 m_diagReason = QStringLiteral("Track not found in database (HTTP 404)");
-                m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+                m_negativeCache.insert(cacheKey, {QDateTime::currentMSecsSinceEpoch(), MissingReason::NotFound});
                 Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
             } else if (statusCode == 429) {
                 m_diagReason = QStringLiteral("Rate limit reached (HTTP 429)");
@@ -476,12 +477,19 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
         return;
     }
 
-    const QJsonObject root = doc.object();
-    const QJsonArray hits = root.value(QStringLiteral("hits")).toArray();
+    const QJsonValue hitsValue = doc.object().value(QStringLiteral("hits"));
+    if (!hitsValue.isArray()) {
+        m_diagReason = QStringLiteral("Malformed search response: expected a hits array");
+        m_currentCacheKey.clear();
+        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        return;
+    }
+
+    const QJsonArray hits = hitsValue.toArray();
 
     if (hits.isEmpty()) {
         m_diagReason = QStringLiteral("Track not found in database (empty search hits)");
-        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+        m_negativeCache.insert(cacheKey, {QDateTime::currentMSecsSinceEpoch(), MissingReason::NotFound});
         m_currentCacheKey.clear();
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
         return;
@@ -614,7 +622,7 @@ void LrcRedProvider::handleSearchReply(const QByteArray &data)
         } else {
             m_diagReason = QStringLiteral("Candidate metadata mismatch (title, artist, or duration)");
         }
-        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+        m_negativeCache.insert(cacheKey, {QDateTime::currentMSecsSinceEpoch(), MissingReason::NotFound});
         m_currentCacheKey.clear();
         Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
         return;
@@ -688,12 +696,12 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
     }
 
     Lyrics lyrics;
-    bool ok = false;
-
-    if (isTtml) {
-        ok = TtmlParser::parseTtml(trimmed, &lyrics, m_targetDurationMs);
-    } else {
-        ok = LrcParser::parseLrc(trimmed, &lyrics, m_targetDurationMs);
+    bool limitExceeded = false;
+    const bool ok = isTtml ? TtmlParser::parseTtml(trimmed, &lyrics, m_targetDurationMs, &limitExceeded)
+                           : LrcParser::parseLrc(trimmed, &lyrics, m_targetDurationMs, &limitExceeded);
+    if (limitExceeded) {
+        failSizeLimit();
+        return;
     }
 
     if (!ok && lyrics.type != LyricsType::Static) {
@@ -724,6 +732,14 @@ void LrcRedProvider::handleFileReply(const QByteArray &data, bool isTtml)
     }
     writeDiskCache(cacheKey, data, isTtml, candTitle, candArtist, candDurMs);
     Q_EMIT lyricsLoaded(gen, lyrics, id());
+}
+
+void LrcRedProvider::failSizeLimit()
+{
+    const quint64 generation = m_currentGeneration;
+    cancel();
+    m_diagReason = QStringLiteral("Response or lyrics size limit exceeded");
+    Q_EMIT lyricsFailed(generation, MissingReason::SizeLimitExceeded, id());
 }
 
 void LrcRedProvider::onTimeout()
@@ -898,25 +914,19 @@ void LrcRedProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
 
         const QByteArray data = reply->readAll();
         const QJsonDocument doc = QJsonDocument::fromJson(data);
-        if (doc.isNull()) {
+        const QJsonObject root = doc.object();
+        QJsonValue hits = doc.isArray() ? QJsonValue(doc.array()) : root.value(QStringLiteral("hits"));
+        if (!hits.isArray()) {
+            hits = root.value(QStringLiteral("results"));
+        }
+        if (!hits.isArray()) {
             Q_EMIT candidateSearchFailed(searchId, MissingReason::Unreachable, id(), 0);
             return;
         }
         QList<LyricCandidate> result;
 
-        QJsonArray hits;
-        if (doc.isArray()) {
-            hits = doc.array();
-        } else if (doc.isObject()) {
-            const QJsonObject obj = doc.object();
-            if (obj.value(QStringLiteral("hits")).isArray()) {
-                hits = obj.value(QStringLiteral("hits")).toArray();
-            } else if (obj.value(QStringLiteral("results")).isArray()) {
-                hits = obj.value(QStringLiteral("results")).toArray();
-            }
-        }
-
-        for (const QJsonValue &val : hits) {
+        const QJsonArray candidates = hits.toArray();
+        for (const QJsonValue &val : candidates) {
             if (result.size() >= 10) {
                 break;
             }

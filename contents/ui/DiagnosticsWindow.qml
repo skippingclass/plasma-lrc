@@ -25,12 +25,12 @@ Window {
     property var providerList: []
 
     function refreshData() {
-        var app = root.plasmoidApplet;
+        let app = root.plasmoidApplet;
         if (!app && typeof Plasmoid !== "undefined") {
             app = Plasmoid;
         }
         if (app && app.diagnosticData) {
-            var data = app.diagnosticData();
+            const data = app.diagnosticData();
             root.diagData = data || {};
             root.searchData = (data && data.search) ? data.search : {};
             root.syncData = (data && data.sync) ? data.sync : {};
@@ -102,7 +102,7 @@ Window {
                 text: copyFeedbackTimer.running ? i18n("Copied!") : i18n("Copy diagnostic report")
                 icon.name: copyFeedbackTimer.running ? "checkmark" : "edit-copy"
                 onClicked: {
-                    var app = root.plasmoidApplet;
+                    let app = root.plasmoidApplet;
                     if (!app && typeof Plasmoid !== "undefined") {
                         app = Plasmoid;
                     }
@@ -295,7 +295,7 @@ Window {
                                         text: (card.modelData.status || "").toUpperCase()
                                         font.bold: true
                                         color: {
-                                            var st = card.modelData.status || "";
+                                            const st = card.modelData.status || "";
                                             if (st === "selected") return Kirigami.Theme.positiveTextColor;
                                             if (st === "provisional") return Kirigami.Theme.neutralTextColor;
                                             if (st === "searching") return Kirigami.Theme.focusColor;

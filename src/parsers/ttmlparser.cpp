@@ -7,9 +7,10 @@
 #include "ttmlparser.h"
 #include "lyriclimits.h"
 
-#include <QRegularExpression>
-#include <QStringList>
 #include <QXmlStreamReader>
+#include <QtCore/qnumeric.h>
+#include <algorithm>
+#include <limits>
 
 namespace TtmlParser
 {
@@ -105,74 +106,97 @@ QString getRoleAttribute(const QXmlStreamAttributes &attrs)
     }
     return attrs.value(QLatin1String("role")).toString();
 }
-} // namespace
 
-bool parseTimestamp(const QString &timeStr, qint64 *outMs)
+bool parseTimeUnit(QStringView value, qint64 millisecondsPerUnit, qint64 *outMs)
+{
+    value = value.trimmed();
+    const QStringView decimal = value.startsWith(QLatin1Char('+')) ? value.sliced(1) : value;
+    const qsizetype dot = decimal.indexOf(QLatin1Char('.'));
+    const QStringView whole = dot < 0 ? decimal : decimal.first(dot);
+    const QStringView fraction = dot < 0 ? QStringView() : decimal.sliced(dot + 1);
+    const auto isDigit = [](QChar c) {
+        return c >= QLatin1Char('0') && c <= QLatin1Char('9');
+    };
+    if ((!whole.isEmpty() || !fraction.isEmpty())
+        && std::all_of(whole.begin(), whole.end(), isDigit)
+        && std::all_of(fraction.begin(), fraction.end(), isDigit)) {
+        bool ok = true;
+        const qint64 units = whole.isEmpty() ? 0 : whole.toLongLong(&ok);
+        qint64 ms = 0;
+        if (!ok || qMulOverflow(units, millisecondsPerUnit, &ms)) {
+            return false;
+        }
+        // Convert ordinary decimal fractions exactly and truncate below a millisecond.
+        if (millisecondsPerUnit == 1000) {
+            qint64 place = 100;
+            for (QChar digit : fraction.left(qMin<qsizetype>(fraction.size(), 3))) {
+                if (qAddOverflow(ms, digit.digitValue() * place, &ms)) {
+                    return false;
+                }
+                place /= 10;
+            }
+        }
+        *outMs = ms;
+        return true;
+    }
+
+    // Preserve accepted numeric forms such as scientific notation.
+    bool ok = false;
+    const double ms = value.toDouble(&ok) * millisecondsPerUnit;
+    if (ok && ms >= 0.0 && ms < 0x1p63) {
+        *outMs = static_cast<qint64>(ms);
+        return true;
+    }
+    return false;
+}
+
+qint64 endWithFallbackSpan(qint64 startMs, qint64 spanMs)
+{
+    return startMs + qMin(spanMs, std::numeric_limits<qint64>::max() - startMs);
+}
+
+bool parseTimestampView(QStringView time, qint64 *outMs)
 {
     if (!outMs) {
         return false;
     }
-    const QString s = timeStr.trimmed();
-    if (s.isEmpty()) {
-        return false;
-    }
-
-    // Format 1: seconds with "s" or "ms" suffix, e.g. "12.34s" or "1234ms"
+    const QStringView s = time.trimmed();
     if (s.endsWith(QLatin1String("ms"), Qt::CaseInsensitive)) {
-        bool ok = false;
-        const double val = s.left(s.length() - 2).trimmed().toDouble(&ok);
-        if (ok && val >= 0.0) {
-            *outMs = static_cast<qint64>(val);
-            return true;
-        }
-        return false;
+        return parseTimeUnit(s.chopped(2), 1, outMs);
     }
     if (s.endsWith(QLatin1Char('s'), Qt::CaseInsensitive)) {
+        return parseTimeUnit(s.chopped(1), 1000, outMs);
+    }
+    if (!s.contains(QLatin1Char(':'))) {
+        return parseTimeUnit(s, 1000, outMs);
+    }
+
+    const auto parts = s.split(QLatin1Char(':'));
+    if (parts.size() > 3) {
+        return false;
+    }
+    qint64 clockMs = 0;
+    for (qsizetype i = 0; i + 1 < parts.size(); ++i) {
         bool ok = false;
-        const double val = s.left(s.length() - 1).trimmed().toDouble(&ok);
-        if (ok && val >= 0.0) {
-            *outMs = static_cast<qint64>(val * 1000.0);
-            return true;
+        const qint64 units = parts.at(i).trimmed().toLongLong(&ok);
+        const qint64 scale = i + 2 == parts.size() ? 60000 : 3600000;
+        qint64 unitMs = 0;
+        if (!ok || units < 0 || qMulOverflow(units, scale, &unitMs) || qAddOverflow(clockMs, unitMs, &clockMs)) {
+            return false;
         }
+    }
+    qint64 secondMs = 0;
+    if (!parseTimeUnit(parts.last(), 1000, &secondMs) || qAddOverflow(clockMs, secondMs, &clockMs)) {
         return false;
     }
+    *outMs = clockMs;
+    return true;
+}
+} // namespace
 
-    // Format 2: colon separated, e.g. "mm:ss.xxx" or "hh:mm:ss.xxx"
-    if (s.contains(QLatin1Char(':'))) {
-        const QStringList parts = s.split(QLatin1Char(':'));
-        if (parts.size() == 2) {
-            bool okMin = false;
-            bool okSec = false;
-            const qint64 mins = parts.at(0).trimmed().toLongLong(&okMin);
-            const double secs = parts.at(1).trimmed().toDouble(&okSec);
-            if (okMin && okSec && mins >= 0 && secs >= 0.0) {
-                *outMs = mins * 60000 + static_cast<qint64>(secs * 1000.0);
-                return true;
-            }
-        } else if (parts.size() == 3) {
-            bool okHour = false;
-            bool okMin = false;
-            bool okSec = false;
-            const qint64 hours = parts.at(0).trimmed().toLongLong(&okHour);
-            const qint64 mins = parts.at(1).trimmed().toLongLong(&okMin);
-            const double secs = parts.at(2).trimmed().toDouble(&okSec);
-            if (okHour && okMin && okSec && hours >= 0 && mins >= 0 && secs >= 0.0) {
-                *outMs = hours * 3600000 + mins * 60000 + static_cast<qint64>(secs * 1000.0);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Format 3: pure numeric seconds "12.34"
-    bool ok = false;
-    const double val = s.toDouble(&ok);
-    if (ok && val >= 0.0) {
-        *outMs = static_cast<qint64>(val * 1000.0);
-        return true;
-    }
-
-    return false;
+bool parseTimestamp(const QString &timeStr, qint64 *outMs)
+{
+    return parseTimestampView(timeStr, outMs);
 }
 
 bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationMs, bool *outLimitExceeded)
@@ -229,14 +253,13 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                 const QXmlStreamAttributes pAttrs = xml.attributes();
                 qint64 pBegin = -1;
                 qint64 pEnd = -1;
-                bool lineHasExplicitTimestamp = false;
-                if (pAttrs.hasAttribute(QLatin1String("begin"))) {
-                    if (parseTimestamp(pAttrs.value(QLatin1String("begin")).toString(), &pBegin) && pBegin >= 0) {
-                        lineHasExplicitTimestamp = true;
-                    }
+                const bool hasParagraphBegin = pAttrs.hasAttribute(QLatin1String("begin"));
+                if (hasParagraphBegin) {
+                    parseTimestampView(pAttrs.value(QLatin1String("begin")), &pBegin);
                 }
+                bool hasInvalidBegin = hasParagraphBegin && pBegin < 0;
                 if (pAttrs.hasAttribute(QLatin1String("end"))) {
-                    parseTimestamp(pAttrs.value(QLatin1String("end")).toString(), &pEnd);
+                    parseTimestampView(pAttrs.value(QLatin1String("end")), &pEnd);
                 }
 
                 const bool pIsBg = (getRoleAttribute(pAttrs) == QLatin1String("x-bg"));
@@ -286,15 +309,12 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
 
                             qint64 spanBegin = -1;
                             qint64 spanEnd = -1;
-                            const bool hasBegin = spanAttrs.hasAttribute(QLatin1String("begin"))
-                                && parseTimestamp(spanAttrs.value(QLatin1String("begin")).toString(), &spanBegin);
+                            const bool hasBeginAttribute = spanAttrs.hasAttribute(QLatin1String("begin"));
+                            const bool hasBegin = hasBeginAttribute
+                                && parseTimestampView(spanAttrs.value(QLatin1String("begin")), &spanBegin);
+                            hasInvalidBegin |= hasBeginAttribute && !hasBegin;
                             const bool hasEnd = spanAttrs.hasAttribute(QLatin1String("end"))
-                                && parseTimestamp(spanAttrs.value(QLatin1String("end")).toString(), &spanEnd);
-
-                            if (hasBegin) {
-                                hasAnyWordTimings = true;
-                                lineHasExplicitTimestamp = true;
-                            }
+                                && parseTimestampView(spanAttrs.value(QLatin1String("end")), &spanEnd);
 
                             if (isBgRole) {
                                 contextStack.append({isBg, bgGroup, hasBegin ? spanBegin : -1, hasEnd ? spanEnd : -1, false});
@@ -316,6 +336,7 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                             TtmlChunk ws;
                             ws.isWhitespace = true;
                             chunks.append(ws);
+                            directText.append(QLatin1Char(' '));
                             xml.skipCurrentElement();
                         } else {
                             xml.skipCurrentElement();
@@ -327,13 +348,12 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                                 TtmlChunk ws;
                                 ws.isWhitespace = true;
                                 chunks.append(ws);
+                                directText.append(wsText);
                             }
                         } else {
                             const QString text = xml.text().toString();
                             const ContainerContext &ctx = contextStack.last();
                             if (ctx.begin >= 0 && !ctx.hasChildSpans) {
-                                hasAnyWordTimings = true;
-                                lineHasExplicitTimestamp = true;
                                 TtmlChunk c;
                                 c.isTimed = true;
                                 c.text = text;
@@ -362,6 +382,10 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                         chunks.append(ws);
                     }
                 }
+                if (!contextStack.isEmpty()) {
+                    // A damaged final paragraph can still follow a usable prefix.
+                    break;
+                }
 
                 LyricLine line;
                 line.isBackground = pIsBg;
@@ -369,7 +393,6 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                 line.endMs = pEnd > line.startMs ? pEnd : line.startMs;
 
                 QString built;
-                QVector<bool> wordBoundaryAfter;
                 bool pendingSpace = false;
 
                 for (int i = 0; i < chunks.size(); ++i) {
@@ -399,11 +422,6 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                             if (!built.isEmpty() && !built.endsWith(QLatin1Char(' '))) {
                                 built.append(QLatin1Char(' '));
                             }
-                            if (!line.words.isEmpty()) {
-                                wordBoundaryAfter.append(true);
-                            }
-                        } else if (!line.words.isEmpty()) {
-                            wordBoundaryAfter.append(false);
                         }
 
                         LyricWord w;
@@ -426,27 +444,31 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                             if (!built.isEmpty() && !built.endsWith(QLatin1Char(' '))) {
                                 built.append(QLatin1Char(' '));
                             }
-                            if (!line.words.isEmpty()) {
-                                wordBoundaryAfter.append(true);
-                            }
                         }
                         built.append(trimmed);
                         pendingSpace = c.text.endsWith(QLatin1Char(' '));
                     }
                 }
-                if (!line.words.isEmpty()) {
-                    wordBoundaryAfter.append(true);
-                }
-
                 if (line.words.isEmpty()) {
+                    if (pBegin < 0 && hasInvalidBegin) {
+                        continue;
+                    }
                     line.text = directText.trimmed();
                 } else {
                     line.text = built;
-                    if (line.startMs <= 0 && !line.words.isEmpty()) {
+                    if (pBegin < 0) {
                         line.startMs = line.words.first().startMs;
+                        for (const auto &word : line.words) {
+                            line.startMs = qMin(line.startMs, word.startMs);
+                        }
                     }
-                    if (line.endMs <= line.startMs && !line.words.isEmpty()) {
-                        line.endMs = line.words.last().endMs;
+                    if (pEnd > line.startMs) {
+                        line.endMs = pEnd;
+                    } else {
+                        line.endMs = line.startMs;
+                        for (const auto &word : line.words) {
+                            line.endMs = qMax(line.endMs, word.endMs);
+                        }
                     }
 
                     // Compute groupStart / groupEnd
@@ -454,14 +476,10 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                     for (int i = 0; i < line.words.size(); ++i) {
                         if (i == groupStart) {
                             int groupEndIdx = i;
-                            while (groupEndIdx < line.words.size() && !wordBoundaryAfter.at(groupEndIdx)) {
-                                if (containsWideScript(line.words.at(groupEndIdx).text)) {
-                                    break;
-                                }
+                            while (groupEndIdx + 1 < line.words.size()
+                                   && line.words.at(groupEndIdx).textEnd == line.words.at(groupEndIdx + 1).textStart
+                                   && !containsWideScript(line.words.at(groupEndIdx).text)) {
                                 ++groupEndIdx;
-                            }
-                            if (groupEndIdx >= line.words.size()) {
-                                groupEndIdx = line.words.size() - 1;
                             }
 
                             const int startOffset = line.words.at(i).textStart;
@@ -476,7 +494,8 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                 }
 
                 if (!line.text.isEmpty() && !isCreditOrNotice(line.text)) {
-                    if (lineHasExplicitTimestamp) {
+                    hasAnyWordTimings |= !line.words.isEmpty();
+                    if (pBegin >= 0 || !line.words.isEmpty()) {
                         ++timedLinesCount;
                     }
                     parsedLines.append(line);
@@ -488,6 +507,15 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
     if (parsedLines.isEmpty()) {
         lyrics->lines.clear();
         lyrics->type = LyricsType::None;
+        return false;
+    }
+
+    if (!LyricsLimits::validateLyricLines(parsedLines)) {
+        lyrics->lines.clear();
+        lyrics->type = LyricsType::None;
+        if (outLimitExceeded) {
+            *outLimitExceeded = true;
+        }
         return false;
     }
 
@@ -514,8 +542,11 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
         return a.startMs < b.startMs;
     });
 
-    if (trackDurationMs > 0 && parsedLines.last().startMs > (trackDurationMs * 115) / 100) {
-        return false;
+    if (trackDurationMs > 0 && parsedLines.last().startMs > trackDurationMs) {
+        const qint64 allowedOverrun = (trackDurationMs / 100) * 15 + (trackDurationMs % 100) * 15 / 100;
+        if (parsedLines.last().startMs - trackDurationMs > allowedOverrun) {
+            return false;
+        }
     }
 
     // Ensure each line has a valid endMs
@@ -525,9 +556,9 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
             if (i + 1 < parsedLines.size() && parsedLines.at(i + 1).startMs > line.startMs) {
                 line.endMs = parsedLines.at(i + 1).startMs;
             } else if (trackDurationMs > line.startMs) {
-                line.endMs = qMin(trackDurationMs, line.startMs + 5000);
+                line.endMs = qMin(trackDurationMs, endWithFallbackSpan(line.startMs, 5000));
             } else {
-                line.endMs = line.startMs + 3500;
+                line.endMs = endWithFallbackSpan(line.startMs, 3500);
             }
         }
         // If line has words but words have missing endMs, fix them up
@@ -537,7 +568,7 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
                 if (w + 1 < line.words.size() && line.words.at(w + 1).startMs > word.startMs) {
                     word.endMs = line.words.at(w + 1).startMs;
                 } else {
-                    word.endMs = line.endMs;
+                    word.endMs = qMax(word.startMs, line.endMs);
                 }
             }
         }
@@ -549,15 +580,6 @@ bool parseTtml(const QString &ttmlContent, Lyrics *lyrics, qint64 trackDurationM
     lyrics->attributionData.providerUrl = QStringLiteral("https://www.apple.com/apple-music/");
     lyrics->attribution = QStringLiteral("Apple Music (TTML)");
     lyrics->attributionUrl = lyrics->attributionData.providerUrl;
-
-    if (!LyricsLimits::validateLyricsLimits(*lyrics)) {
-        lyrics->lines.clear();
-        lyrics->type = LyricsType::None;
-        if (outLimitExceeded) {
-            *outLimitExceeded = true;
-        }
-        return false;
-    }
 
     return lyrics->isUsable();
 }

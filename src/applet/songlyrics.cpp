@@ -134,18 +134,6 @@ void LrcApplet::forgetSongLyrics()
     }
 }
 
-QStringList LrcApplet::lyricLines() const
-{
-    QStringList lines;
-    if (hasLyrics()) {
-        lines.reserve(m_lyrics.lines.size());
-        for (const auto &line : m_lyrics.lines) {
-            lines.append(line.text);
-        }
-    }
-    return lines;
-}
-
 bool LrcApplet::hasImportedLyrics() const
 {
     return QFileInfo(LocalProvider::importedFilePath(m_songKey)).isFile();

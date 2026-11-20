@@ -57,7 +57,9 @@ QString mprisTrackId(const QVariant &value)
 QStringList trackArtists(const QVariant &value)
 {
     QStringList artists = stringList(value);
-    artists.removeAll(QString());
+    artists.removeIf([](const QString &artist) {
+        return artist.trimmed().isEmpty();
+    });
     return artists;
 }
 

@@ -5,6 +5,7 @@
  */
 
 #include "krcparser.h"
+#include "timedlyric.h"
 #include "tokenpunctuationhelper.h"
 #include "ttmlparser.h"
 #include "zlibcodec.h"
@@ -20,21 +21,7 @@ static const unsigned char kKrcXorKey[16] = {
     0x51, 0x36, 0x31, 0x2d, 0xce, 0xd2, 0x6e, 0x69
 };
 
-static QString escapeXml(const QString &s)
-{
-    QString res = s;
-    res.replace(QLatin1Char('&'), QLatin1String("&amp;"));
-    res.replace(QLatin1Char('<'), QLatin1String("&lt;"));
-    res.replace(QLatin1Char('>'), QLatin1String("&gt;"));
-    res.replace(QLatin1Char('"'), QLatin1String("&quot;"));
-    return res;
-}
-
-static QString formatSeconds(qint64 ms)
-{
-    return QString::asprintf("%.3fs", ms / 1000.0);
-}
-
+using TimedLyric::formatSeconds;
 using namespace TokenPunctuationHelper;
 
 QString decode(const QByteArray &rawOrBase64Data, bool *outLimitExceeded)
@@ -132,14 +119,15 @@ QString toTtml(const QString &krcText, bool *outLimitExceeded)
             continue;
         }
 
-        const qint64 lineStart = m.captured(1).toLongLong();
-        const qint64 lineDur = m.captured(2).toLongLong();
+        const auto lineTiming = TimedLyric::parseRange(m.capturedView(1), m.capturedView(2));
+        if (!lineTiming) {
+            continue;
+        }
         const QString rest = m.captured(3);
 
         QString fullText;
         struct WordTok {
-            qint64 off;
-            qint64 len;
+            TimedLyric::Range timing;
             QString text;
         };
         QVector<WordTok> tokens;
@@ -147,11 +135,10 @@ QString toTtml(const QString &krcText, bool *outLimitExceeded)
         QRegularExpressionMatchIterator it = wordRe.globalMatch(rest);
         while (it.hasNext()) {
             const QRegularExpressionMatch wm = it.next();
-            const qint64 off = wm.captured(1).toLongLong();
-            const qint64 len = wm.captured(2).toLongLong();
+            const auto timing = TimedLyric::parseRange(wm.capturedView(1), wm.capturedView(2), lineTiming->startMs);
             const QString wordText = wm.captured(3);
-            if (!wordText.trimmed().isEmpty()) {
-                tokens.append({off, len, wordText});
+            if (timing && !wordText.trimmed().isEmpty()) {
+                tokens.append({*timing, wordText});
                 fullText.append(wordText);
             }
         }
@@ -181,8 +168,6 @@ QString toTtml(const QString &krcText, bool *outLimitExceeded)
         QStringList spans;
         bool inBgSpan = false;
         for (const auto &tok : tokens) {
-            const qint64 wordStart = lineStart + tok.off;
-            const qint64 wordEnd = wordStart + tok.len;
             const QString tokTrimmed = tok.text.trimmed();
 
             const bool openBg = !wholeLineBg && !inBgSpan
@@ -194,7 +179,7 @@ QString toTtml(const QString &krcText, bool *outLimitExceeded)
             }
 
             spans.append(QStringLiteral("<span begin=\"%1\" end=\"%2\">%3</span>")
-                             .arg(formatSeconds(wordStart), formatSeconds(wordEnd), escapeXml(tok.text)));
+                             .arg(formatSeconds(tok.timing.startMs), formatSeconds(tok.timing.endMs), tok.text.toHtmlEscaped()));
 
             const bool closeBg = inBgSpan
                 && (tokTrimmed.endsWith(QLatin1Char(')')) || tokTrimmed.endsWith(QChar(0xFF09)));
@@ -210,10 +195,10 @@ QString toTtml(const QString &krcText, bool *outLimitExceeded)
         if (!spans.isEmpty()) {
             if (wholeLineBg) {
                 paragraphs.append(QStringLiteral("<p ttm:role=\"x-bg\" begin=\"%1\" end=\"%2\">%3</p>")
-                                      .arg(formatSeconds(lineStart), formatSeconds(lineStart + lineDur), spans.join(QString())));
+                                      .arg(formatSeconds(lineTiming->startMs), formatSeconds(lineTiming->endMs), spans.join(QString())));
             } else {
                 paragraphs.append(QStringLiteral("<p begin=\"%1\" end=\"%2\">%3</p>")
-                                      .arg(formatSeconds(lineStart), formatSeconds(lineStart + lineDur), spans.join(QString())));
+                                      .arg(formatSeconds(lineTiming->startMs), formatSeconds(lineTiming->endMs), spans.join(QString())));
             }
         }
     }

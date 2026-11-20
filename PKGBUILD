@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MIT
+# makepkg reads these globals and supplies pkgdir when invoking package().
+# shellcheck disable=SC2034,SC2154
 #
 # Maintainer: skippingclass
 pkgname=plasma-lrc
@@ -9,7 +11,8 @@ license=('MIT')
 # qt6-declarative carries Qt6::Qml, which the widget links against, and the QML
 # engine modules the panel views import.
 depends=('plasma-workspace>=6.0' 'kconfig' 'kcoreaddons' 'ki18n' 'qt6-base' 'qt6-declarative')
-makedepends=('cmake' 'ninja' 'qt6-declarative')
+makedepends=('git' 'cmake' 'ninja' 'qt6-declarative')
+checkdepends=('python')
 source=("git+$url.git")
 sha256sums=('SKIP')
 
@@ -19,19 +22,21 @@ install=plasma-lrc.install
 
 # Placeholders: makepkg 7 refuses an empty one, and pkgver() below replaces this
 # with the real thing on every build.
-pkgver=1.10.0.r0
+pkgver=1.10.1.r0
 pkgrel=1
 
 pkgver() {
-    cd "$pkgname"
+    cd "$pkgname" || return
     # The version lives in metadata.json, because that is the one the panel shows
     # and the one Discover reads. Duplicating it here is how they drift apart.
     # The commits and the hash go after it, so a new commit is always a newer
     # package even when nobody remembered to bump the number.
-    printf '%s.r%s.g%s\n' \
-        "$(sed -n 's/.*"Version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' metadata.json)" \
-        "$(git rev-list --count HEAD)" \
-        "$(git rev-parse --short=7 HEAD)"
+    local version commits revision
+    version=$(sed -n 's/.*"Version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' metadata.json) || return
+    [[ -n "$version" ]] || return 1
+    commits=$(git rev-list --count HEAD) || return
+    revision=$(git rev-parse --short=7 HEAD) || return
+    printf '%s.r%s.g%s\n' "$version" "$commits" "$revision"
 }
 
 build() {

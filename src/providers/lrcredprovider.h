@@ -82,6 +82,7 @@ private:
     QUrl resolveCandidateUrl(const QString &rawUrl) const;
     void handleSearchReply(const QByteArray &data);
     void handleFileReply(const QByteArray &data, bool isTtml);
+    void failSizeLimit();
     bool checkDiskCache(const QString &cacheKey, const TrackMetadata &meta, Lyrics *outLyrics);
     void writeDiskCache(const QString &cacheKey, const QByteArray &data, bool isTtml,
                         const QString &candTitle = QString(), const QString &candArtist = QString(), qint64 candDurationMs = 0);
@@ -102,7 +103,11 @@ private:
     bool m_hadTransientError = false;
     bool m_hadUnsyncedCandidate = false;
     bool m_hadTruncatedCandidates = false;
-    QHash<QString, qint64> m_negativeCache;
+    struct CachedMiss {
+        qint64 timestampMs;
+        MissingReason reason;
+    };
+    QHash<QString, CachedMiss> m_negativeCache;
     quint64 m_diagGeneration = 0;
     QString m_diagReason;
     QString m_diagCache;

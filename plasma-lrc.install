@@ -22,9 +22,14 @@ _plasma_systemctl() {
 
 _restart_plasmashell() {
     local user="${SUDO_USER:-}"
-    local runtime="/run/user/$(id -u "${user:-root}")"
+    local uid runtime
 
-    if [[ -z "$user" || "$user" == "root" || ! -d "$runtime" ]]; then
+    if [[ -z "$user" || "$user" == "root" ]] || ! uid=$(id -u "$user"); then
+        runtime=""
+    else
+        runtime="/run/user/$uid"
+    fi
+    if [[ ! -d "$runtime" ]]; then
         echo "No desktop session of your own was found, so plasmashell was not restarted."
         echo "Log out and back in, or run: systemctl --user restart plasma-plasmashell.service"
         return 0

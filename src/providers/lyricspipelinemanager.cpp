@@ -336,15 +336,8 @@ void LyricsPipelineManager::finishLookup()
 
     m_isLookupActive = false;
 
-    if (!m_bestProviderId.isEmpty() && m_providerDiagnostics.contains(m_bestProviderId)) {
-        m_providerDiagnostics[m_bestProviderId].status = QStringLiteral("selected");
-    }
-
     for (CandidateEntry &cand : m_candidates) {
         if (!cand.provider) continue;
-        if (cand.provider->id() == m_bestProviderId) {
-            continue;
-        }
         auto &diag = m_providerDiagnostics[cand.provider->id()];
         if (cand.inFlight) {
             cand.provider->cancel();
@@ -356,6 +349,13 @@ void LyricsPipelineManager::finishLookup()
         }
         cand.inFlight = false;
         cand.completed = true;
+    }
+
+    if (!m_bestProviderId.isEmpty()) {
+        auto &selected = m_providerDiagnostics[m_bestProviderId];
+        selected.status = QStringLiteral("selected");
+        selected.syncQuality = m_bestQuality == LyricsType::Syllable ? QStringLiteral("Syllable") : QStringLiteral("Line");
+        selected.rejectionReason.clear();
     }
 
     if (!hadResult) {
@@ -436,6 +436,7 @@ void LyricsPipelineManager::pumpQueue()
                 auto &diag = m_providerDiagnostics[p->id()];
                 diag.status = QStringLiteral("searching");
                 diag.attemptedQuery = effectiveMeta.artist.isEmpty() ? effectiveMeta.title : QStringLiteral("%1 — %2").arg(effectiveMeta.artist, effectiveMeta.title);
+                diag.rejectionReason.clear();
             }
 
             if (m_providerTimeoutMs > 0) {

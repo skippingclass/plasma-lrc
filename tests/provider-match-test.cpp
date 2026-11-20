@@ -51,6 +51,8 @@ int main(int argc, char *argv[])
         // Punctuation and quotes
         check("title: apostrophe normalization", TrackMatch::matchTitles(QStringLiteral("Don't Stop Believin'"), QStringLiteral("Dont Stop Believin")));
         check("title: unicode curly apostrophe", TrackMatch::matchTitles(QStringLiteral("Don’t Stop"), QStringLiteral("Don't Stop")));
+        check("title: canonically equivalent Unicode matches",
+              TrackMatch::matchTitles(QStringLiteral("Montréal"), QStringLiteral("Montre\u0301al")));
         check("title: quotes removed", TrackMatch::matchTitles(QStringLiteral("\"Bohemian Rhapsody\""), QStringLiteral("Bohemian Rhapsody")));
         check("title: hyphens to space", TrackMatch::matchTitles(QStringLiteral("Can't-Stop-Now"), QStringLiteral("Can't Stop Now")));
 
@@ -90,6 +92,8 @@ int main(int argc, char *argv[])
         check("title: reject substring Hello World vs Hello", !TrackMatch::matchTitles(QStringLiteral("Hello World"), QStringLiteral("Hello")));
         check("title: reject substring Love Story vs Love", !TrackMatch::matchTitles(QStringLiteral("Love Story"), QStringLiteral("Love")));
         check("title: reject Song 2 vs Song", !TrackMatch::matchTitles(QStringLiteral("Song 2"), QStringLiteral("Song")));
+        check("title: preserve dash subtitle containing a version keyword as a substring",
+              !TrackMatch::matchTitles(QStringLiteral("Song - Alive"), QStringLiteral("Song")));
 
         // Distinguishing versions: Live
         check("version: reject Live candidate for studio target", !TrackMatch::matchTitles(QStringLiteral("Hotel California (Live)"), QStringLiteral("Hotel California")));
@@ -128,6 +132,8 @@ int main(int argc, char *argv[])
         // Exact and case
         check("artist: exact match", TrackMatch::matchArtists(QStringLiteral("Taylor Swift"), QStringLiteral("Taylor Swift")));
         check("artist: case insensitive", TrackMatch::matchArtists(QStringLiteral("taylor swift"), QStringLiteral("TAYLOR SWIFT")));
+        check("artist: canonically equivalent Unicode matches",
+              TrackMatch::matchArtists(QStringLiteral("Beyoncé"), QStringLiteral("Beyonce\u0301")));
         check("artist: punctuation AC/DC", TrackMatch::matchArtists(QStringLiteral("AC/DC"), QStringLiteral("AC/DC")));
         check("artist: punctuation Guns N' Roses", TrackMatch::matchArtists(QStringLiteral("Guns N' Roses"), QStringLiteral("Guns N Roses")));
         check("artist: punctuation A$AP Rocky", TrackMatch::matchArtists(QStringLiteral("A$AP Rocky"), QStringLiteral("ASAP Rocky")));

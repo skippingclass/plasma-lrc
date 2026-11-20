@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.1 — 2026-11-20
+
+- Open the full lyrics from the beginning and remove the window's live karaoke mode, playback checkbox, and auto-scroll.
+- Keep the song offset available while the displayed track is current.
+- Keep lyrics synchronized through player switches, pause settings changes, expired results, and failed refreshes.
+- Preserve timing and spacing in TTML and reject out-of-range timestamps in synchronized formats.
+- Keep cancelled search replies out of the candidate cache and preserve the configured limit on simultaneous requests.
+- Report provider errors accurately, avoid caching transient failures, and keep authenticated redirects on the original origin.
+- Preserve unrelated Plasma settings during uninstall and reject duplicate release tags before modifying the checkout.
+- Add regression tests for manual search, provider replies, playback transitions, and installation rollback.
+
 ## 1.10.0 — 2026-11-18
 
 - Remember a selected lyrics match and timing offset for each song across playback sessions.

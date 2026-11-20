@@ -243,7 +243,8 @@ KCM.SimpleKCM {
                 radius: Kirigami.Units.smallSpacing
                 color: Kirigami.Theme.alternateBackgroundColor
                 border.width: 1
-                border.color: Kirigami.Theme.separatorColor
+                border.color: Kirigami.ColorUtils.linearInterpolation(
+                    Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, Kirigami.Theme.frameContrast)
 
                 RowLayout {
                     id: rowLayout

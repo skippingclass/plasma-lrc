@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDateTime>
+#include <KConfigGroup>
 #include <QGuiApplication>
 #include <KPluginMetaData>
 #include <KLocalizedContext>
@@ -16,6 +17,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <algorithm>
 #include <cstdio>
 #include <utility>
 #include "http-test-server.h"
@@ -113,6 +115,215 @@ public:
         check("pause resets gapless lead", widget.m_gaplessLeadMs == 0);
         widget.applyPlayerProperties({}, {"LoopStatus"});
         check("invalidated loop mode cannot imply repeat", !widget.m_repeatTrack);
+
+        {
+            const QString player = QStringLiteral("auditplayer");
+            const QString service = QStringLiteral("org.mpris.MediaPlayer2.") + player;
+            const QString track = QStringLiteral("Previous player's track");
+            LrcApplet playerWidget(nullptr, KPluginMetaData(), {});
+            playerWidget.m_player = player;
+            playerWidget.m_watchedService = service;
+            playerWidget.m_playing = true;
+            playerWidget.m_playingKnown = true;
+            playerWidget.m_trackTitle = track;
+            playerWidget.setTrackInfo(track);
+            playerWidget.onServiceOwnerChanged(service, QStringLiteral(":1.10"), QStringLiteral(":1.11"));
+            const QVariantMap sync = playerWidget.diagnosticData().value(QStringLiteral("sync")).toMap();
+            check("player replacement clears the previous owner's track and requests fresh state",
+                  playerWidget.trackInfo().isEmpty() && sync.value(QStringLiteral("playbackStatus")).toString() == QStringLiteral("Unknown")
+                      && playerWidget.m_watchedService == service && playerWidget.m_propertyWatcher);
+
+            playerWidget.onServiceOwnerChanged(service, QStringLiteral(":1.11"), {});
+            playerWidget.m_candidates = {player};
+            playerWidget.m_busPlayers = {player};
+            playerWidget.sortCandidatesByScore();
+            check("player can attach again after disappearing and returning under the same name",
+                  playerWidget.m_watchedService == service && playerWidget.m_propertyWatcher);
+
+            playerWidget.m_watchedService = service;
+            playerWidget.m_configuredPlayer = QStringLiteral("offlineplayer");
+            playerWidget.m_candidates = {playerWidget.m_configuredPlayer};
+            playerWidget.m_trackTitle = track;
+            playerWidget.setTrackInfo(track);
+            playerWidget.probeCandidates();
+            check("lock to an unavailable player clears the formerly selected player's state",
+                  playerWidget.m_watchedService.isEmpty() && playerWidget.trackInfo().isEmpty());
+        }
+
+        {
+            LrcApplet pauseWidget(nullptr, KPluginMetaData(), {});
+            pauseWidget.setPlaying(true, true);
+            pauseWidget.setPlaying(false, true);
+            check("pause starts the hide grace period", pauseWidget.m_pauseTimer.isActive());
+            auto settings = pauseWidget.config().group(QStringLiteral("General"));
+            settings.writeEntry("pauseHideDelay", 0);
+            pauseWidget.readSettings();
+            check("never hide cancels a pending pause hide", !pauseWidget.m_pauseTimer.isActive());
+            settings.deleteEntry("pauseHideDelay");
+        }
+
+        {
+            LrcApplet settingsWidget(nullptr, KPluginMetaData(), {});
+            settingsWidget.m_player = QStringLiteral("previousplayer");
+            settingsWidget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.previousplayer");
+            settingsWidget.m_playingKnown = true;
+            settingsWidget.m_trackTitle = QStringLiteral("Paused track");
+            settingsWidget.setTrackInfo(settingsWidget.m_trackTitle);
+            auto settings = settingsWidget.config().group(QStringLiteral("General"));
+            settings.writeEntry("pauseWhenIdle", true);
+            settings.writeEntry("player", QStringLiteral("offlineplayer"));
+            settingsWidget.readSettings();
+            check("player lock stops following a paused player even when idle polling is disabled",
+                  settingsWidget.m_watchedService.isEmpty() && settingsWidget.trackInfo().isEmpty());
+            settings.deleteEntry("pauseWhenIdle");
+            settings.deleteEntry("player");
+        }
+
+        {
+            LrcApplet stateWidget(nullptr, KPluginMetaData(), {});
+            stateWidget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.statewidget");
+            for (auto *source : stateWidget.m_pipeline->allProviders()) {
+                source->setEnabled(false);
+            }
+            const QString playerInterface = QStringLiteral("org.mpris.MediaPlayer2.Player");
+            const QVariantMap metadata{{QStringLiteral("xesam:title"), QStringLiteral("New track")}};
+            stateWidget.onPlayerPropertiesChanged(playerInterface, {{QStringLiteral("Metadata"), metadata}},
+                                                  {QStringLiteral("PlaybackStatus")});
+            check("invalidated status preserves Metadata in the same signal and requests fresh status",
+                  stateWidget.trackInfo() == QStringLiteral("New track") && stateWidget.m_propertyWatcher);
+            stateWidget.onPlayerPropertiesChanged(playerInterface, {}, {QStringLiteral("Metadata")});
+            check("invalidated Metadata retires the previous track until fresh state arrives",
+                  stateWidget.trackInfo().isEmpty() && stateWidget.songKey().isEmpty() && stateWidget.m_propertyWatcher);
+        }
+
+        {
+            int expiryNotifications = 0;
+            LrcApplet expiryWidget(nullptr, KPluginMetaData(), {});
+            for (auto *source : expiryWidget.m_pipeline->allProviders()) {
+                source->setEnabled(false);
+            }
+            auto *pending = new FakeSettingsProvider;
+            pending->setParent(expiryWidget.m_pipeline);
+            expiryWidget.m_pipeline->registerProvider(pending);
+            expiryWidget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.expirytest");
+            expiryWidget.m_trackTitle = QStringLiteral("Expiring provisional lyrics");
+            expiryWidget.m_playingKnown = true;
+            expiryWidget.m_pauseHidden = true;
+            Lyrics lyrics;
+            lyrics.type = LyricsType::Line;
+            LyricLine line;
+            line.startMs = 0;
+            line.endMs = 5000;
+            line.text = QStringLiteral("Expiring line");
+            lyrics.lines = {line};
+            lyrics.validUntilMs = QDateTime::currentMSecsSinceEpoch() + 200;
+            expiryWidget.onPipelineResolved(expiryWidget.m_lookupGeneration, lyrics, QStringLiteral("spicy"));
+            expiryWidget.requestLyrics();
+            check("pending lookup keeps the displayed paused lyrics until their deadline",
+                  expiryWidget.fullLyrics() == line.text && pending->requestCalls == 1);
+            QObject::connect(&expiryWidget, &LrcApplet::lyricsChanged, [&] { ++expiryNotifications; });
+            check("pending lookup retains an expiry event for paused lyrics", waitFor([&] { return expiryNotifications > 0; }, 800)
+                      && expiryWidget.fullLyrics().isEmpty() && pending->requestCalls == 1);
+        }
+
+        {
+            int clearedBacking = 0;
+            int clearedLine = 0;
+            bool reportedFailure = false;
+            LrcApplet failureWidget(nullptr, KPluginMetaData(), {});
+            failureWidget.m_showBackingVocals = true;
+            failureWidget.m_positionValid = true;
+            failureWidget.m_positionBaseMs = 2000;
+
+            Lyrics previous;
+            previous.type = LyricsType::Line;
+            LyricLine mainLine;
+            mainLine.text = QStringLiteral("Lead vocals");
+            mainLine.startMs = 1000;
+            mainLine.endMs = 5000;
+            auto backingLine = mainLine;
+            backingLine.text = QStringLiteral("Backing vocals");
+            backingLine.isBackground = true;
+            previous.lines = {mainLine, backingLine};
+            const quint64 generation = failureWidget.m_lookupGeneration;
+            QObject::connect(&failureWidget, &LrcApplet::backingChanged, [&] {
+                if (failureWidget.backingText().isEmpty()) {
+                    ++clearedBacking;
+                }
+            });
+            QObject::connect(&failureWidget, &LrcApplet::lineIndexChanged, [&] {
+                if (failureWidget.lineIndex() == -1) {
+                    ++clearedLine;
+                }
+            });
+            QObject::connect(&failureWidget, &LrcApplet::lyricsChanged, [&] {
+                reportedFailure = failureWidget.apiUnreachable();
+            });
+
+            failureWidget.onPipelineResolved(generation, previous, QStringLiteral("local"));
+            check("refresh: previous lyrics are rendered with a selected row and backing vocals",
+                  failureWidget.lineIndex() == 0 && failureWidget.backingText() == backingLine.text);
+            failureWidget.onPipelineAllFailed(generation, MissingReason::Unreachable);
+            check("refresh: all providers failing clears and notifies both row and backing vocals",
+                  failureWidget.lineIndex() == -1 && failureWidget.backingText().isEmpty()
+                      && clearedLine == 1 && clearedBacking == 1 && reportedFailure);
+
+            failureWidget.onPipelineResolved(generation, previous, QStringLiteral("local"));
+            Lyrics expired = previous;
+            expired.validUntilMs = QDateTime::currentMSecsSinceEpoch() - 1;
+            failureWidget.onPipelineResolved(generation, expired, QStringLiteral("spicy"));
+            check("refresh: an expired API result clears and notifies both row and backing vocals",
+                  failureWidget.lineIndex() == -1 && failureWidget.backingText().isEmpty()
+                      && clearedLine == 2 && clearedBacking == 2 && failureWidget.activeProviderId().isEmpty());
+
+            failureWidget.onPipelineResolved(generation, previous, QStringLiteral("local"));
+            failureWidget.m_fetchingFromSpicy = true;
+            failureWidget.onSpicyLoaded(failureWidget.m_spotifyTrackId, expired);
+            check("refresh: an expired legacy API result clears and notifies both row and backing vocals",
+                  failureWidget.lineIndex() == -1 && failureWidget.backingText().isEmpty()
+                      && clearedLine == 3 && clearedBacking == 3 && failureWidget.activeProviderId().isEmpty());
+
+            failureWidget.m_positionBaseMs = 0;
+            previous.validUntilMs = QDateTime::currentMSecsSinceEpoch() + 60000;
+            failureWidget.onPipelineResolved(generation, previous, QStringLiteral("spicy"));
+            check("expiry: initial intro is observable before the first line", failureWidget.isIntro() && failureWidget.lineIndex() == -1);
+            const int signalsBeforeExpiry = clearedLine;
+            failureWidget.m_lyrics.validUntilMs = expired.validUntilMs;
+            failureWidget.onLyricsExpired();
+            check("expiry: a displayed intro notifies the UI when its lyrics expire",
+                  !failureWidget.isIntro() && clearedLine == signalsBeforeExpiry + 1);
+        }
+
+        {
+            QStringList themeWarnings;
+            QQmlEngine engine;
+            KLocalizedContext localization(&engine);
+            engine.rootContext()->setContextObject(&localization);
+            const QString literalTitle = QStringLiteral("<b>Live take</b>");
+            QQmlComponent popup(&engine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/LyricPopup.qml")));
+            QScopedPointer<QObject> popupObject(popup.createWithInitialProperties({{QStringLiteral("trackInfo"), literalTitle}}));
+            check("popup: loads the track header", !popupObject.isNull(), popup.errorString());
+            if (popupObject) {
+                const auto labels = popupObject->findChildren<QObject *>();
+                const auto header = std::find_if(labels.begin(), labels.end(), [&](const QObject *label) {
+                    return label->property("text").toString() == literalTitle;
+                });
+                check("popup: track metadata displays literal angle brackets", header != labels.end()
+                      && (*header)->property("textFormat").toInt() == Qt::PlainText);
+            }
+
+            QObject::connect(&engine, &QQmlEngine::warnings, [&](const QList<QQmlError> &warnings) {
+                for (const auto &warning : warnings) {
+                    if (warning.description().contains(QStringLiteral("Unable to assign [undefined] to QColor"))) {
+                        themeWarnings.append(warning.toString());
+                    }
+                }
+            });
+            QQmlComponent appearance(&engine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/configAppearance.qml")));
+            QScopedPointer<QObject> appearanceObject(appearance.createWithInitialProperties({{QStringLiteral("cfg_wordStyle"), 2}}));
+            check("appearance: loads the highlight color controls", !appearanceObject.isNull(), appearance.errorString());
+            check("appearance: highlight swatches use defined theme colors", themeWarnings.isEmpty(), themeWarnings.join(QStringLiteral("\n")));
+        }
 
         // Expiry & Clipboard tests
         {
@@ -3176,6 +3387,7 @@ public:
 
                 QTemporaryDir importFiles;
                 const QByteArray sourceLrc = "[00:01.00]First <line>\n[00:03.00]Second line\n";
+                const QString localLyrics = QStringLiteral("First <line>\nSecond line");
                 QFile sourceFile(importFiles.filePath(QStringLiteral("song.lrc")));
                 check("import: create a local LRC", sourceFile.open(QIODevice::WriteOnly));
                 sourceFile.write(sourceLrc);
@@ -3189,30 +3401,58 @@ public:
                 songWidget.previewLrcImport(sourceUrl, firstKey);
                 check("import: saves a copy and shows it immediately", songWidget.saveLrcImport(firstKey, 200).isEmpty()
                       && songWidget.hasImportedLyrics() && songWidget.songLyricOffset() == 200
-                      && songWidget.fullLyrics() == QStringLiteral("First <line>\nSecond line"));
+                      && songWidget.fullLyrics() == localLyrics);
                 songWidget.applyMetadata(otherSong);
                 songWidget.applyMetadata(firstSong);
-                check("import: local copy and offset reload for the same track", songWidget.hasLyrics() && songWidget.lyricLines().size() == 2
+                check("import: local copy and offset reload for the same track", songWidget.fullLyrics() == localLyrics
                       && songWidget.songLyricOffset() == 200 && songWidget.m_savedCandidateId.isEmpty());
 
-                QQmlComponent karaokeComponent(&matchEngine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/SongLyricsWindow.qml")));
-                QScopedPointer<QObject> karaokeWindow(karaokeComponent.create());
-                check("karaoke: lyrics window loads", !karaokeWindow.isNull(), karaokeComponent.errorString());
-                if (karaokeWindow) {
+                QQmlComponent readerComponent(&matchEngine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/SongLyricsWindow.qml")));
+                QScopedPointer<QObject> readerWindow(readerComponent.create());
+                check("reader: lyrics window loads", !readerWindow.isNull(), readerComponent.errorString());
+                if (readerWindow) {
                     QQmlEngine::setObjectOwnership(&songWidget, QQmlEngine::CppOwnership);
-                    karaokeWindow->setProperty("plasmoidApplet", QVariant::fromValue(static_cast<QObject *>(&songWidget)));
-                    QMetaObject::invokeMethod(karaokeWindow.data(), "openLiveSong");
+                    readerWindow->setProperty("plasmoidApplet", QVariant::fromValue(static_cast<QObject *>(&songWidget)));
                     songWidget.onPlayerSeeked(4000000);
-                    const auto *list = karaokeWindow->findChild<QObject *>(QStringLiteral("liveLyricsList"));
-                    check("karaoke: two rows and active row follow the player", list && list->property("count").toInt() == 2
-                          && karaokeWindow->property("activeLyricIndex").toInt() == 1);
-                    songWidget.applyPlayerProperties({{QStringLiteral("CanSeek"), true}}, {});
-                    check("karaoke: valid seek-capable track permits seeking", songWidget.canSeekLyrics());
-                    songWidget.applyPlayerProperties({}, {QStringLiteral("CanSeek")});
-                    check("karaoke: seeking disabled when player invalidates capability", !songWidget.canSeekLyrics());
-                    QMetaObject::invokeMethod(karaokeWindow.data(), "openCurrentSnapshot");
-                    check("karaoke: full text remains available", !karaokeWindow->property("liveMode").toBool()
-                          && karaokeWindow->findChild<QObject *>(QStringLiteral("lyricsText"))->property("text").toString() == songWidget.fullLyrics());
+                    check("reader fixture: playback is on the second line", songWidget.lineIndex() == 1);
+                    const bool opened = QMetaObject::invokeMethod(readerWindow.data(), "openCurrentSnapshot");
+                    QCoreApplication::processEvents();
+                    auto *snapshotText = readerWindow->findChild<QObject *>(QStringLiteral("lyricsText"));
+                    const auto *copyAll = readerWindow->findChild<QObject *>(QStringLiteral("copyAllButton"));
+                    const auto *songOffset = readerWindow->findChild<QObject *>(QStringLiteral("songOffset"));
+                    check("reader: opens at the beginning with the full text visible and no auto-selection",
+                          opened && snapshotText && snapshotText->property("visible").toBool()
+                              && snapshotText->property("text").toString() == localLyrics
+                              && snapshotText->property("cursorPosition").toInt() == 0
+                              && snapshotText->property("selectedText").toString().isEmpty());
+                    check("reader: the displayed song's timing can be adjusted", songOffset && songOffset->property("visible").toBool()
+                          && songOffset->property("value").toInt() == 200);
+                    songWidget.applyMetadata(otherSong);
+                    check("snapshot: track changes preserve local text and export", snapshotText && copyAll
+                          && snapshotText->property("text").toString() == localLyrics
+                          && copyAll->property("enabled").toBool());
+                    check("reader: changing tracks hides the timing controls for the previous song",
+                          songOffset && !songOffset->property("visible").toBool());
+                    songWidget.applyMetadata(firstSong);
+
+                    Lyrics apiSnapshot;
+                    apiSnapshot.type = LyricsType::Line;
+                    LyricLine apiLine;
+                    apiLine.startMs = 1000;
+                    apiLine.endMs = 8000;
+                    apiLine.text = QStringLiteral("Temporary API lyric");
+                    apiSnapshot.lines = {apiLine};
+                    apiSnapshot.validUntilMs = QDateTime::currentMSecsSinceEpoch() + 250;
+                    songWidget.onPipelineResolved(songWidget.m_lookupGeneration, apiSnapshot, QStringLiteral("spicy"));
+                    QMetaObject::invokeMethod(readerWindow.data(), "openCurrentSnapshot");
+                    songWidget.applyMetadata(otherSong);
+                    check("snapshot: API text survives a track change with export disabled", snapshotText && copyAll
+                          && snapshotText->property("text").toString() == apiLine.text && !copyAll->property("enabled").toBool());
+                    check("snapshot: expired API content clears without replacing the current track",
+                          waitFor([&] { return readerWindow->property("isExpired").toBool(); }, 1000)
+                              && snapshotText && snapshotText->property("text").toString().isEmpty()
+                              && songWidget.songKey() != firstKey);
+                    songWidget.applyMetadata(firstSong);
                 }
 
                 QQmlComponent importComponent(&matchEngine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/ImportLyricsWindow.qml")));

@@ -8,6 +8,7 @@
 #include "lyriclimits.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include <QDateTime>
@@ -47,7 +48,7 @@ QByteArray apiRoot()
     return root;
 }
 
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.0 (Plasma 6 panel widget)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.1 (Plasma 6 panel widget)");
 
 bool isSuspensionCode(const QString &code)
 {
@@ -83,10 +84,22 @@ MissingReason reasonFromMarker(const QByteArray &payload)
 /// How far back to look when the newest line has already ended.
 constexpr int kLineLookBack = 8;
 constexpr int kRequestTimeoutMs = 15000;
+constexpr qint64 kDefaultLineSpanMs = 3000;
 
-qint64 secondsToMs(const QJsonValue &value)
+bool readTimestampMs(const QJsonValue &value, qint64 &milliseconds)
 {
-    return static_cast<qint64>(value.toDouble(-1) * 1000.0);
+    const double seconds = value.toDouble(-1);
+    if (seconds < 0) {
+        milliseconds = -1;
+        return true;
+    }
+    const double scaled = seconds * 1000.0;
+    // The double nearest to qint64's maximum rounds up to 2^63.
+    if (!std::isfinite(scaled) || scaled >= static_cast<double>(std::numeric_limits<qint64>::max())) {
+        return false;
+    }
+    milliseconds = static_cast<qint64>(scaled);
+    return true;
 }
 
 bool isWideScript(QChar c)
@@ -151,6 +164,12 @@ bool needsSpace(const QString &previous, const QString &current, bool previousSt
  */
 bool readPart(const QJsonObject &part, LyricLine *line)
 {
+    qint64 rawStart = 0;
+    qint64 rawEnd = 0;
+    if (!readTimestampMs(part.value(QStringLiteral("StartTime")), rawStart)
+        || !readTimestampMs(part.value(QStringLiteral("EndTime")), rawEnd)) {
+        return false;
+    }
     const QJsonArray syllables = part.value(QStringLiteral("Syllables")).toArray();
 
     QString built;
@@ -170,8 +189,12 @@ bool readPart(const QJsonObject &part, LyricLine *line)
 
         LyricWord word;
         word.text = text;
-        word.startMs = qMax<qint64>(0, secondsToMs(syllable.value(QStringLiteral("StartTime"))));
-        word.endMs = qMax<qint64>(word.startMs, secondsToMs(syllable.value(QStringLiteral("EndTime"))));
+        if (!readTimestampMs(syllable.value(QStringLiteral("StartTime")), word.startMs)
+            || !readTimestampMs(syllable.value(QStringLiteral("EndTime")), word.endMs)) {
+            continue;
+        }
+        word.startMs = qMax<qint64>(0, word.startMs);
+        word.endMs = qMax(word.startMs, word.endMs);
 
         const bool space = needsSpace(previousPiece, text, previousStartsSplit);
         if (space) {
@@ -196,8 +219,8 @@ bool readPart(const QJsonObject &part, LyricLine *line)
         }
         LyricWord word;
         word.text = text;
-        word.startMs = qMax<qint64>(0, secondsToMs(part.value(QStringLiteral("StartTime"))));
-        word.endMs = qMax<qint64>(word.startMs, secondsToMs(part.value(QStringLiteral("EndTime"))));
+        word.startMs = qMax<qint64>(0, rawStart);
+        word.endMs = qMax(word.startMs, rawEnd);
         word.textEnd = static_cast<int>(text.size());
         built = text;
         line->words.append(word);
@@ -257,12 +280,11 @@ bool readPart(const QJsonObject &part, LyricLine *line)
     }
 
     line->text = built;
-    const qint64 rawStart = secondsToMs(part.value(QStringLiteral("StartTime")));
     line->startMs = (rawStart >= 0) ? rawStart : (!line->words.isEmpty() ? line->words.first().startMs : 0);
-    const qint64 rawEnd = secondsToMs(part.value(QStringLiteral("EndTime")));
     line->endMs = (rawEnd > line->startMs) ? rawEnd : (!line->words.isEmpty() ? line->words.last().endMs : line->startMs);
     if (line->endMs <= line->startMs) {
-        line->endMs = line->startMs + 3000;
+        const qint64 remaining = std::numeric_limits<qint64>::max() - line->startMs;
+        line->endMs = line->startMs + qMin(kDefaultLineSpanMs, remaining);
     }
     return true;
 }
@@ -487,7 +509,9 @@ void SpicyLyrics::setKey(const QString &key)
 
 void SpicyLyrics::invalidate(const QString &trackId)
 {
-    cancel();
+    if (trackId == m_currentTrackId) {
+        cancel();
+    }
     m_memoryCache.remove(trackId);
     static const QRegularExpression kTrackIdRe(QStringLiteral("^[A-Za-z0-9]{22}$"));
     if (kTrackIdRe.match(trackId).hasMatch()) {
@@ -816,6 +840,7 @@ void SpicyLyrics::fetch(const QString &trackId)
     request.setRawHeader("Accept", "application/json");
     request.setRawHeader("User-Agent", s_userAgent);
     request.setRawHeader("Authorization", "Bearer " + m_key.toUtf8());
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
     request.setTransferTimeout(kRequestTimeoutMs);
 
     QNetworkReply *reply = m_network.get(request);

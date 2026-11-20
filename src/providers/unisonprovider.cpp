@@ -97,7 +97,7 @@ void UnisonProvider::onReplyFinished()
 
     if (m_step == Step::DirectLookup) {
         if (err == QNetworkReply::NoError && httpCode == 200) {
-            handleDirectReply(data, httpCode);
+            handleDirectReply(data);
             return;
         }
         // Direct lookup failed/404 -> fallback to Search
@@ -140,9 +140,8 @@ void UnisonProvider::startDirectLookup()
     m_watchdog.start(kTimeoutMs);
 }
 
-void UnisonProvider::handleDirectReply(const QByteArray &data, int httpCode)
+void UnisonProvider::handleDirectReply(const QByteArray &data)
 {
-    Q_UNUSED(httpCode);
     const QJsonDocument doc = QJsonDocument::fromJson(data);
     const QJsonObject dataObj = doc.object().value(QStringLiteral("data")).toObject();
 
@@ -166,10 +165,17 @@ void UnisonProvider::handleDirectReply(const QByteArray &data, int httpCode)
     }
 
     Lyrics lyrics;
-    if (parsePayload(dataObj, &lyrics)) {
+    bool limitExceeded = false;
+    if (parsePayload(dataObj, &lyrics, m_meta.durationMs, &limitExceeded)) {
         const quint64 gen = m_currentGeneration;
         cancel();
         Q_EMIT lyricsLoaded(gen, lyrics, id());
+        return;
+    }
+    if (limitExceeded) {
+        const quint64 gen = m_currentGeneration;
+        cancel();
+        Q_EMIT lyricsFailed(gen, MissingReason::SizeLimitExceeded, id());
         return;
     }
 
@@ -288,7 +294,7 @@ void UnisonProvider::handleDetailsReply(const QByteArray &data)
 
     Lyrics lyrics;
     bool limitExceeded = false;
-    if (!parsePayload(dataObj, &lyrics, &limitExceeded)) {
+    if (!parsePayload(dataObj, &lyrics, m_meta.durationMs, &limitExceeded)) {
         const quint64 gen = m_currentGeneration;
         cancel();
         const MissingReason reason = limitExceeded ? MissingReason::SizeLimitExceeded : MissingReason::NotFound;
@@ -301,7 +307,7 @@ void UnisonProvider::handleDetailsReply(const QByteArray &data)
     Q_EMIT lyricsLoaded(gen, lyrics, id());
 }
 
-bool UnisonProvider::parsePayload(const QJsonObject &dataObj, Lyrics *outLyrics, bool *outLimitExceeded)
+bool UnisonProvider::parsePayload(const QJsonObject &dataObj, Lyrics *outLyrics, qint64 durationMs, bool *outLimitExceeded)
 {
     if (outLimitExceeded) {
         *outLimitExceeded = false;
@@ -319,9 +325,9 @@ bool UnisonProvider::parsePayload(const QJsonObject &dataObj, Lyrics *outLyrics,
 
     bool ok = false;
     if (format == QLatin1String("ttml") || text.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
-        ok = TtmlParser::parseTtml(text, outLyrics, m_meta.durationMs, outLimitExceeded);
+        ok = TtmlParser::parseTtml(text, outLyrics, durationMs, outLimitExceeded);
     } else {
-        ok = LrcParser::parseLrc(text, outLyrics, m_meta.durationMs, outLimitExceeded);
+        ok = LrcParser::parseLrc(text, outLyrics, durationMs, outLimitExceeded);
     }
 
     if (!ok || !outLyrics->isUsable()) {
@@ -365,7 +371,7 @@ void UnisonProvider::searchCandidates(const TrackMetadata &meta, quint64 searchI
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.0 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.1 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -445,7 +451,7 @@ void UnisonProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
     while (base.endsWith(QLatin1Char('/'))) base.chop(1);
     QUrl url(QStringLiteral("%1/lyrics/%2").arg(base, candidateId));
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.0 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.1 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);
@@ -477,7 +483,7 @@ void UnisonProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fe
         }
         Lyrics lyrics;
         bool limitExceeded = false;
-        if (parsePayload(dataObj, &lyrics, &limitExceeded) && lyrics.isUsable()) {
+        if (parsePayload(dataObj, &lyrics, 0, &limitExceeded)) {
             Q_EMIT candidateLyricsLoaded(fetchId, lyrics, id());
         } else {
             const MissingReason reason = limitExceeded ? MissingReason::SizeLimitExceeded : MissingReason::NotFound;

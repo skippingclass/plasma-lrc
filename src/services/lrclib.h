@@ -82,6 +82,7 @@ private:
     void handleReply(QNetworkReply *reply, const SearchAttempt &attempt);
     void finishWithCandidate(const QJsonObject &cand);
     void finishWithMissing(bool writeNegativeCache = true, MissingReason reason = MissingReason::NotFound);
+    void recordUnavailable(const QString &diagnosis);
     void cleanupAttemptState();
 
     QNetworkAccessManager m_network;
@@ -101,7 +102,7 @@ private:
     QString m_expectedArtist;
     QVector<SearchAttempt> m_attempts;
     int m_attemptIndex = 0;
-    bool m_hadRateLimitOrNetworkError = false;
+    MissingReason m_responseFailure = MissingReason::NotFound;
     quint64 m_generation = 0;
 
     QJsonObject m_bestCandidate;

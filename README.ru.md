@@ -17,7 +17,7 @@
 [![Qt 6 / QML](https://img.shields.io/badge/Qt-6.5+-green?style=flat-square&logo=qt)](https://www.qt.io/)
 [![C++17](https://img.shields.io/badge/C++-17-00599C?style=flat-square&logo=c%2B%2B)](https://en.cppreference.com/w/cpp/17)
 [![CMake & Ninja](https://img.shields.io/badge/Build-CMake_%7C_Ninja-064F8C?style=flat-square&logo=cmake)](https://cmake.org/)
-[![Tests Passing](https://img.shields.io/badge/CTest-10%2F10_Passing-brightgreen?style=flat-square&logo=checkmarx)](tests/)
+[![Сборка и тесты](https://github.com/skippingclass/plasma-lrc/actions/workflows/ci.yml/badge.svg)](https://github.com/skippingclass/plasma-lrc/actions/workflows/ci.yml)
 [![AUR](https://img.shields.io/aur/v/plasma6-applet-lrc-git?label=AUR&logo=archlinux&style=flat-square)](https://aur.archlinux.org/packages/plasma6-applet-lrc-git)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
@@ -137,11 +137,12 @@ systemctl --user restart plasma-plasmashell.service
 
 ### Запуск модульных тестов (CTest)
 
+Для интеграционного теста установки и удаления нужен Python 3.
+
 ```bash
 cmake -S . -B build -G Ninja -DPLASMA_LRC_TESTS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
-# Все 10 тестов проходят успешно (парсеры, лимиты, конвейер, кеш, синхронизация)
 ```
 
 ### Добавление виджета на панель
@@ -158,7 +159,7 @@ ctest --test-dir build --output-on-failure
 |:---|:---|
 | **Choose another match…** | Позволяет выбрать другой текст. Флажок **Remember for this song** сохраняет выбор для следующих воспроизведений. |
 | **Use automatic selection** | Сбрасывает ручной выбор и возвращает трек в автоматический конвейер провайдеров. |
-| **Open song lyrics…** | Открывает караоке с подсветкой слов, автопрокруткой и переходом по клику в плеерах с перемоткой. Кнопка **Read text** открывает полный текст. |
+| **Open song lyrics…** | Открывает полный текст песни с начала в окне с ручной прокруткой. |
 | **Import lyrics for this song…** | Показывает предпросмотр `.lrc`, сохраняет копию для текущего трека и применяет индивидуальный сдвиг. |
 | **Remove imported lyrics** | Удаляет локальную копию из хранилища виджета. |
 | **Forget saved lyrics settings for this song** | Сбрасывает запомненный вариант текста и индивидуальный сдвиг. |
@@ -169,7 +170,7 @@ ctest --test-dir build --output-on-failure
 | **Diagnostics…** | Открывает окно детальной телеметрии поиска и синхронизации. |
 | **Configure Plasma LRC…** | Открывает настройки виджета и управление конвейером источников. |
 
-В окне караоке задайте **Song offset** и нажмите **Save for this song**, чтобы сохранить поправку между запусками. Положительный сдвиг задерживает текст. Импортированные файлы хранятся в `$XDG_DATA_HOME/plasma-lrc/imports` (обычно `~/.local/share/plasma-lrc/imports`) и используются при включённом источнике Local Files. Если запомненное онлайн-совпадение недоступно, виджет пробует импортированный файл или обычный поиск.
+Пока открытая песня выбрана в плеере, задайте **Song offset** в окне текста и нажмите **Save for this song**, чтобы сохранить поправку между запусками. Положительный сдвиг задерживает текст. Импортированные файлы хранятся в `$XDG_DATA_HOME/plasma-lrc/imports` (обычно `~/.local/share/plasma-lrc/imports`) и используются при включённом источнике Local Files. Если запомненное онлайн-совпадение недоступно, виджет пробует импортированный файл или обычный поиск.
 
 ---
 

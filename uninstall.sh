@@ -31,10 +31,9 @@ for arg in "$@"; do
     esac
 done
 
-if [[ $EUID -eq 0 ]]; then
-    SUDO=""
-else
-    SUDO="sudo"
+SUDO=()
+if [[ $EUID -ne 0 && ! -w "$prefix" ]]; then
+    SUDO=(sudo)
 fi
 
 if [[ $assume_yes -eq 0 ]]; then
@@ -44,10 +43,18 @@ if [[ $assume_yes -eq 0 ]]; then
 fi
 
 echo "==> Пакет"
-$SUDO kpackagetool6 --remove "$plugin_id" --type Plasma/Applet --global || true
+package_dir="$prefix/share/plasma/plasmoids"
+if [[ -d "$package_dir" ]]; then
+    exec {install_lock}<"$package_dir"
+    flock "$install_lock"
+    "${SUDO[@]}" rm -rf -- "$package_dir/$plugin_id"
+fi
 
 echo "==> Плагин"
-$SUDO rm -f "$prefix/lib/qt6/plugins/plasma/applets/$plugin_id.so" "$prefix/lib64/qt6/plugins/plasma/applets/$plugin_id.so"
+"${SUDO[@]}" rm -f -- "$prefix/lib/qt6/plugins/plasma/applets/$plugin_id.so" "$prefix/lib64/qt6/plugins/plasma/applets/$plugin_id.so"
+if [[ -v install_lock ]]; then
+    exec {install_lock}<&-
+fi
 
 echo "==> Настройки"
 # Плагин не переживает переустановку на месте: удалённые .so и пакет остаются в
@@ -65,34 +72,33 @@ plugin = "org.kde.plasma.lrc"
 with open(path, encoding="utf-8") as handle:
     text = handle.read()
 
-blocks = text.split("\n[")
+blocks = re.split(r"(?m)(?=^\[)", text)
 
 # Сначала находим префиксы applet-секций нашего плагина
-applet_prefixes = []
+applet_prefixes = set()
+applet_header = re.compile(r"(\[Containments\]\[\d+\]\[Applets\]\[\d+\])(?:\[.*\])?")
 for block in blocks:
-    if block.startswith("Containments]") and re.search(r"^plugin=" + re.escape(plugin) + r"$", block, re.M):
-        header = block.split("\n", 1)[0].rstrip("]")
-        applet_prefixes.append(header)
+    header, _, body = block.partition("\n")
+    match = applet_header.fullmatch(header)
+    if match and header == match[1] and f"plugin={plugin}" in body.splitlines():
+        applet_prefixes.add(header)
 
 out = []
+# У старых версий часть настроек попадала в [No Group].
+legacy_key = re.compile(
+    r"^(?:binaryPath|pollInterval|player|showTimestamp|showIcon|showTrackInfo|pauseWhenIdle|placeholderText|maxCharacters)="
+)
 for block in blocks:
-    is_target = False
-    for prefix in applet_prefixes:
-        if block.startswith(prefix + "]") or block.startswith(prefix + "/"):
-            is_target = True
-            break
-    if is_target:
+    header, separator, body = block.partition("\n")
+    match = applet_header.fullmatch(header)
+    if match and match[1] in applet_prefixes:
         continue
+    if header == "[No Group]":
+        body = "".join(line for line in body.splitlines(keepends=True) if not legacy_key.match(line))
+        block = header + separator + body
     out.append(block)
 
-result = "\n[".join(out)
-# Мусор от старой версии: kcfg-записи без группы уезжали в корень файла.
-result = re.sub(
-    r"^\[No Group\]\n(?:(?:binaryPath|pollInterval|player|showTimestamp|showIcon|showTrackInfo|pauseWhenIdle|placeholderText|maxCharacters)=.*\n?)+",
-    "",
-    result,
-    flags=re.M,
-)
+result = "".join(out)
 with open(path, "w", encoding="utf-8") as handle:
     handle.write(result)
 print("    секции виджета вырезаны")

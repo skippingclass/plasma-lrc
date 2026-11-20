@@ -49,7 +49,7 @@ inline QString normalizePunctuationAndWhitespace(QString s)
     static const QRegularExpression s_removePunct(QStringLiteral(R"([.,!?@#%^&*()[\]{}（）【】《》])"));
     s.remove(s_removePunct);
 
-    return s.simplified().toLower();
+    return s.simplified().toLower().normalized(QString::NormalizationForm_C);
 }
 
 inline QString normalizeArtistName(const QString &artist)
@@ -172,7 +172,7 @@ inline QString normalizeTitle(const QString &title, TrackVersion *outVersion = n
 
     // 2. Check dash tails: " - Live...", " - Acoustic...", " - ... Remix", " - Instrumental", " - Slowed..."
     static const QRegularExpression s_dashVersionRe(
-        QStringLiteral(R"(\s+[-–—−]\s+(.*(?:live|concert|en\s+vivo|unplugged|现场|現場|acoustic|piano\s+version|strings?\s+version|orchestral|remix|club\s+mix|extended\s+mix|dance\s+mix|vip|dub|instrumental|karaoke|slowed|sped\s+up|speed\s+up|nightcore|伴奏).*)$)"),
+        QStringLiteral(R"(\s+[-–—−]\s+(.*(?:\b(?:live|concert|en\s+vivo|unplugged|acoustic|piano\s+version|strings?\s+version|orchestral|remix|club\s+mix|extended\s+mix|dance\s+mix|vip|dub|instrumental|karaoke|slowed|sped\s+up|speed\s+up|nightcore)\b|现场|現場|伴奏).*)$)"),
         QRegularExpression::CaseInsensitiveOption);
     const auto dashMatch = s_dashVersionRe.match(t);
     if (dashMatch.hasMatch()) {

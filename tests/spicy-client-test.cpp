@@ -374,5 +374,75 @@ int main(int argc, char **argv)
         check("parse succeeds", SpicyLyrics::parse(synced, &lyrics, &error));
         check("parse leaves validUntilMs == 0", lyrics.validUntilMs == 0);
     }
+    {
+        SpicyLyrics client;
+        client.setKey("fixture-key");
+        client.setEnabled(true);
+        const QString requested(22, 'Y');
+        QString loadedId;
+        Lyrics lyrics;
+        QObject::connect(&client, &SpicyLyrics::loaded, [&](const QString &id, const Lyrics &value) {
+            loadedId = id;
+            lyrics = value;
+        });
+        server.responses.append({200, R"({"Body":{"Type":"Line","Content":[
+            {"Text":"Invalid timestamp","StartTime":1e18,"EndTime":1e18},
+            {"Text":"Valid timing","StartTime":1.5}]}})", 0, {}});
+        client.request(requested);
+        check("out-of-range timestamp leaves the adjacent timed line usable", waitFor([&] { return loadedId == requested; })
+              && lyrics.lines.size() == 1 && lyrics.lines.front().text == QStringLiteral("Valid timing")
+              && lyrics.lines.front().startMs == 1500 && lyrics.lines.front().endMs == 4500
+              && QFile::exists(SpicyLyrics::cacheDirectory() + '/' + requested + ".json"));
+    }
+    {
+        SpicyLyrics client;
+        client.setKey("fixture-key");
+        client.setEnabled(true);
+        const QString invalidated(22, 'V');
+        const QString active(22, 'W');
+        const QString invalidatedPath = SpicyLyrics::cacheDirectory() + '/' + invalidated + ".json";
+        const QString activePath = SpicyLyrics::cacheDirectory() + '/' + active + ".json";
+        check("unrelated invalidation: target cache fixture created", writeFixtureFile(invalidatedPath, synced));
+        QList<QString> loadedIds;
+        int missing = 0;
+        QObject::connect(&client, &SpicyLyrics::loaded, [&](const QString &id, const Lyrics &) { loadedIds.append(id); });
+        QObject::connect(&client, &SpicyLyrics::missing, [&](const QString &, MissingReason) { ++missing; });
+        const qsizetype requestCount = server.requests.size();
+        server.responses.append({200, syllableSynced, 60, {}});
+        client.request(active);
+        check("unrelated invalidation: active request reaches the endpoint", waitFor([&] { return server.requests.size() == requestCount + 1; }));
+        client.invalidate(invalidated);
+        check("unrelated invalidation: active result is still delivered and cached", waitFor([&] { return loadedIds.size() == 1; })
+              && loadedIds == QList<QString>{active} && missing == 0 && QFile::exists(activePath));
+        check("unrelated invalidation: selected cache entry is removed", !QFile::exists(invalidatedPath));
+    }
+
+    {
+        SpicyLyrics client;
+        client.setKey("fixture-key");
+        client.setEnabled(true);
+        const QString track(22, 'X');
+        const QString cachePath = SpicyLyrics::cacheDirectory() + '/' + track + ".json";
+        QList<QString> loadedIds;
+        QString missingId;
+        MissingReason reason = MissingReason::NotFound;
+        QObject::connect(&client, &SpicyLyrics::loaded, [&](const QString &id, const Lyrics &) { loadedIds.append(id); });
+        QObject::connect(&client, &SpicyLyrics::missing, [&](const QString &id, MissingReason value) {
+            missingId = id;
+            reason = value;
+        });
+        HttpTestServer redirected;
+        server.responses.append({302, {}, 0, "Location: " + redirected.apiBase().toEncoded() + "lyrics\r\n"});
+        client.request(track);
+        check("authenticated redirect stays on the configured origin", waitFor([&] { return missingId == track; })
+              && reason == MissingReason::Unreachable && redirected.requests.isEmpty() && !QFile::exists(cachePath));
+
+        server.responses.append({302, {}, 0, "Location: /api/same-origin\r\n"});
+        server.responses.append({200, syllableSynced, 0, {}});
+        client.request(track);
+        check("authenticated same-origin redirect still loads and caches", waitFor([&] { return loadedIds.size() == 1; })
+              && loadedIds.back() == track && QFile::exists(cachePath) && server.requests.back() == QStringLiteral("/api/same-origin"));
+    }
+
     return failures ? 1 : 0;
 }

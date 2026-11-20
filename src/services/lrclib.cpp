@@ -30,7 +30,7 @@ constexpr qint64 kCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 30LL * 60 * 1000; // 30 minutes instead of 24 hours
 constexpr int kRequestTimeoutMs = 5000;
 constexpr int kSearchThrottleDelayMs = 250;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.0 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.1 (https://github.com/skippingclass/plasma-lrc)");
 }
 
 LrclibClient::LrclibClient(QObject *parent, const QUrl &apiBase)
@@ -238,7 +238,7 @@ void LrclibClient::cleanupAttemptState()
     m_expectedArtist.clear();
     m_bestCandidate = QJsonObject();
     m_bestScore = -1;
-    m_hadRateLimitOrNetworkError = false;
+    m_responseFailure = MissingReason::NotFound;
 }
 
 void LrclibClient::cancel()
@@ -510,7 +510,7 @@ void LrclibClient::startNextAttempt()
         if (!m_bestCandidate.isEmpty() && m_bestScore > 0) {
             finishWithCandidate(m_bestCandidate);
         } else {
-            finishWithMissing(!m_hadRateLimitOrNetworkError);
+            finishWithMissing(m_responseFailure == MissingReason::NotFound, m_responseFailure);
         }
         return;
     }
@@ -555,30 +555,22 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
     reply->deleteLater();
 
     if (LyricsLimits::isSizeLimitExceeded(reply)) {
-        m_hadRateLimitOrNetworkError = true;
         m_lastRejectionReason = QStringLiteral("Response size limit exceeded (max 8 MiB)");
         finishWithMissing(/*writeNegativeCache=*/false, MissingReason::SizeLimitExceeded);
         return;
     }
 
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    if (statusCode == 429) {
-        m_hadRateLimitOrNetworkError = true;
-        m_lastRejectionReason = QStringLiteral("Rate limit reached (HTTP 429)");
-        finishWithMissing(/*writeNegativeCache=*/false);
-        return;
-    }
-    if (statusCode >= 500) {
-        m_hadRateLimitOrNetworkError = true;
-        m_lastRejectionReason = QStringLiteral("HTTP server error (%1)").arg(statusCode);
-        finishWithMissing(/*writeNegativeCache=*/false);
+    if (statusCode == 429 || statusCode >= 500) {
+        recordUnavailable(statusCode == 429 ? QStringLiteral("Rate limit reached (HTTP 429)")
+                                            : QStringLiteral("HTTP server error (%1)").arg(statusCode));
+        finishWithMissing(/*writeNegativeCache=*/false, m_responseFailure);
         return;
     }
 
     if (reply->error() != QNetworkReply::NoError) {
         if (reply->error() != QNetworkReply::ContentNotFoundError) {
-            m_hadRateLimitOrNetworkError = true;
-            m_lastRejectionReason = QStringLiteral("Network error (%1)").arg(reply->errorString());
+            recordUnavailable(QStringLiteral("Network error (%1)").arg(reply->errorString()));
         }
         startNextAttempt();
         return;
@@ -586,75 +578,72 @@ void LrclibClient::handleReply(QNetworkReply *reply, const SearchAttempt &attemp
 
     const QByteArray data = reply->readAll();
     const QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (attempt.isSearch ? !doc.isArray() : !doc.isObject()) {
+        recordUnavailable(QStringLiteral("Malformed response from LRCLIB"));
+        startNextAttempt();
+        return;
+    }
 
     if (!attempt.isSearch) {
-        // /api/get: single candidate
-        if (doc.isObject()) {
-            const QJsonObject cand = doc.object();
-            // Defensively validate candidate identity even for /get
-            if (validateCandidateIdentity(cand, m_expectedTitle, m_expectedArtist)) {
-                Lyrics lyrics;
-                bool limitExceeded = false;
-                if (parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist, &limitExceeded)) {
-                    finishWithCandidate(cand);
-                    return;
-                }
-                if (limitExceeded) {
-                    m_hadRateLimitOrNetworkError = true;
-                    m_lastRejectionReason = QStringLiteral("Response size limit exceeded");
-                    finishWithMissing(/*writeNegativeCache=*/false, MissingReason::SizeLimitExceeded);
-                    return;
-                }
-            }
+        const QJsonObject cand = doc.object();
+        Lyrics lyrics;
+        bool limitExceeded = false;
+        if (parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist, &limitExceeded)) {
+            finishWithCandidate(cand);
+            return;
         }
-    } else {
-        // /api/search: list of candidates
-        if (doc.isArray()) {
-            const QJsonArray list = doc.array();
-            for (const QJsonValue &val : list) {
-                if (!val.isObject()) continue;
-                const QJsonObject cand = val.toObject();
-
-                // Strict candidate identity verification: never match solely on duration
-                if (!validateCandidateIdentity(cand, m_expectedTitle, m_expectedArtist)) {
-                    continue;
-                }
-
-                Lyrics lyrics;
-                bool limitExceeded = false;
-                if (!parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist, &limitExceeded)) {
-                    if (limitExceeded) {
-                        m_hadRateLimitOrNetworkError = true;
-                        m_lastRejectionReason = QStringLiteral("Response size limit exceeded");
-                    }
-                    continue;
-                }
-
-                const int score = scoreSearchMatch(cand, m_currentDurationMs, m_expectedTitle, m_expectedArtist);
-                if (score < 0) {
-                    continue;
-                }
-
-                if (score > m_bestScore) {
-                    m_bestScore = score;
-                    m_bestCandidate = cand;
-
-                    // If synced lyrics with duration match within 2s and identity matches, virtually perfect match
-                    const double candDur = cand.value(QStringLiteral("duration")).toDouble(-1.0);
-                    if (m_currentDurationMs > 0 && candDur > 0 && qAbs(candDur - (m_currentDurationMs / 1000.0)) <= 2.0) {
-                        finishWithCandidate(m_bestCandidate);
-                        return;
-                    }
-                }
-            }
-            if (m_bestScore >= 70) {
-                finishWithCandidate(m_bestCandidate);
-                return;
-            }
+        if (limitExceeded) {
+            m_lastRejectionReason = QStringLiteral("Response size limit exceeded");
+            finishWithMissing(/*writeNegativeCache=*/false, MissingReason::SizeLimitExceeded);
+            return;
         }
+        startNextAttempt();
+        return;
+    }
+
+    const QJsonArray candidates = doc.array();
+    for (const QJsonValue &value : candidates) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject cand = value.toObject();
+        Lyrics lyrics;
+        bool limitExceeded = false;
+        if (!parseCandidate(cand, &lyrics, m_currentDurationMs, m_expectedTitle, m_expectedArtist, &limitExceeded)) {
+            if (limitExceeded) {
+                m_responseFailure = MissingReason::SizeLimitExceeded;
+                m_lastRejectionReason = QStringLiteral("Response size limit exceeded");
+            }
+            continue;
+        }
+
+        const int score = scoreSearchMatch(cand, m_currentDurationMs, m_expectedTitle, m_expectedArtist);
+        if (score <= m_bestScore) {
+            continue;
+        }
+        m_bestScore = score;
+        m_bestCandidate = cand;
+
+        const double duration = cand.value(QStringLiteral("duration")).toDouble(-1.0);
+        if (m_currentDurationMs > 0 && duration > 0 && qAbs(duration - (m_currentDurationMs / 1000.0)) <= 2.0) {
+            finishWithCandidate(m_bestCandidate);
+            return;
+        }
+    }
+    if (m_bestScore >= 70) {
+        finishWithCandidate(m_bestCandidate);
+        return;
     }
 
     startNextAttempt();
+}
+
+void LrclibClient::recordUnavailable(const QString &diagnosis)
+{
+    if (m_responseFailure != MissingReason::SizeLimitExceeded) {
+        m_responseFailure = MissingReason::Unreachable;
+        m_lastRejectionReason = diagnosis;
+    }
 }
 
 void LrclibClient::finishWithCandidate(const QJsonObject &cand)
@@ -679,7 +668,7 @@ void LrclibClient::finishWithCandidate(const QJsonObject &cand)
         m_currentKey.clear();
         Q_EMIT loaded(key, lyrics);
     } else {
-        finishWithMissing(!m_hadRateLimitOrNetworkError);
+        finishWithMissing(m_responseFailure == MissingReason::NotFound, m_responseFailure);
     }
 }
 
@@ -721,12 +710,7 @@ void LrclibClient::searchCandidates(const TrackMetadata &meta, quint64 searchId)
     request.setRawHeader("User-Agent", s_userAgent);
     request.setTransferTimeout(kRequestTimeoutMs);
 
-    if (m_candidateSearchReply) {
-        m_candidateSearchReply->abort();
-        m_candidateSearchReply->deleteLater();
-        m_candidateSearchReply = nullptr;
-    }
-
+    cancelCandidateSearch(0);
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(request);
     LyricsLimits::attachSizeLimitGuard(m_candidateSearchReply);
@@ -734,12 +718,10 @@ void LrclibClient::searchCandidates(const TrackMetadata &meta, quint64 searchId)
     connect(m_candidateSearchReply, &QNetworkReply::finished, this, [this, reply = m_candidateSearchReply, meta, searchId] {
         if (!reply) return;
         reply->deleteLater();
-        if (reply == m_candidateSearchReply) {
-            m_candidateSearchReply = nullptr;
-        }
-        if (searchId != m_candidateSearchId) {
+        if (reply != m_candidateSearchReply || searchId != m_candidateSearchId) {
             return;
         }
+        m_candidateSearchReply = nullptr;
         if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
             Q_EMIT candidateSearchFailed(searchId, CandidateSearchError::reason(reply), CandidateSearchError::retryAfterSeconds(reply));
             return;
@@ -790,12 +772,7 @@ void LrclibClient::searchCandidates(const TrackMetadata &meta, quint64 searchId)
 
 void LrclibClient::fetchCandidate(const QString &candidateId, quint64 fetchId)
 {
-    if (m_candidateFetchReply) {
-        m_candidateFetchReply->abort();
-        m_candidateFetchReply->deleteLater();
-        m_candidateFetchReply = nullptr;
-    }
-
+    cancelCandidateFetch(0);
     QUrl url = m_apiBase.resolved(QUrl(QStringLiteral("get/") + candidateId));
     QNetworkRequest request(url);
     request.setRawHeader("Accept", "application/json");
@@ -809,12 +786,10 @@ void LrclibClient::fetchCandidate(const QString &candidateId, quint64 fetchId)
     connect(m_candidateFetchReply, &QNetworkReply::finished, this, [this, reply = m_candidateFetchReply, fetchId] {
         if (!reply) return;
         reply->deleteLater();
-        if (reply == m_candidateFetchReply) {
-            m_candidateFetchReply = nullptr;
-        }
-        if (fetchId != m_candidateFetchId) {
+        if (reply != m_candidateFetchReply || fetchId != m_candidateFetchId) {
             return;
         }
+        m_candidateFetchReply = nullptr;
         if (LyricsLimits::isSizeLimitExceeded(reply)) {
             Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded);
             return;

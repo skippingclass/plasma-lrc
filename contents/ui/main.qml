@@ -234,9 +234,6 @@ PlasmoidItem {
 
     readonly property string highlightColorHex: {
         const hc = root.highlightColor;
-        if (typeof hc === "string" && hc.startsWith("#")) {
-            return hc;
-        }
         const r = Math.round(hc.r * 255).toString(16).padStart(2, '0');
         const g = Math.round(hc.g * 255).toString(16).padStart(2, '0');
         const b = Math.round(hc.b * 255).toString(16).padStart(2, '0');
@@ -553,7 +550,7 @@ PlasmoidItem {
             text: i18n("Open song lyrics…")
             icon.name: "text-x-generic"
             enabled: Plasmoid.hasLyrics
-            onTriggered: lyricsWindow.openLiveSong()
+            onTriggered: lyricsWindow.openCurrentSnapshot()
         },
         PlasmaCore.Action {
             text: i18n("Import lyrics for this song…")

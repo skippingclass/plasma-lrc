@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "lrclib.h"
 #include "http-test-server.h"
+#include "lyriclimits.h"
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -261,6 +262,138 @@ int main(int argc, char **argv)
 
         check("pipeline cancel() does not abort in-flight searchCandidates()",
               waitFor([&] { return !foundCands.isEmpty(); }, 600) && !searchFailed);
+    }
+
+    {
+        HttpTestServer limitServer;
+        LrclibClient client(nullptr, limitServer.apiBase());
+        QString failedKey;
+        QString loadedKey;
+        MissingReason reason = MissingReason::NotFound;
+        QObject::connect(&client, &LrclibClient::missing, [&](const QString &key, MissingReason value) {
+            failedKey = key;
+            reason = value;
+        });
+        QObject::connect(&client, &LrclibClient::loaded, [&](const QString &key, const Lyrics &) { loadedKey = key; });
+        QJsonObject result{{"trackName", "Parser limit fixture"}, {"syncedLyrics", QStringLiteral("[00:01.00]")
+            + QString(LyricsLimits::kMaxLineLengthChars, QLatin1Char('x'))}};
+        limitServer.responses.append({200, QJsonDocument(QJsonArray{result}).toJson(), 0, {}});
+        limitServer.responses.append({200, "[]", 0, {}});
+        const QString key = client.request("Parser limit fixture", {}, 0);
+        const QString path = LrclibClient::cacheDirectory() + '/' + key + ".json";
+        check("search parser limit is terminal when no later attempt loads", waitFor([&] { return failedKey == key; })
+              && reason == MissingReason::SizeLimitExceeded && !QFile::exists(path));
+
+        failedKey.clear();
+        limitServer.responses.append({200, QJsonDocument(QJsonArray{result}).toJson(), 0, {}});
+        limitServer.responses.append({503, {}, 0, {}});
+        client.request("Parser limit fixture", {}, 0);
+        check("search parser limit takes precedence over a later transient server error", waitFor([&] { return failedKey == key; })
+              && reason == MissingReason::SizeLimitExceeded && !QFile::exists(path));
+
+        result["syncedLyrics"] = "[00:01.00] recovered";
+        result["plainLyrics"] = "recovered";
+        limitServer.responses.append({200, QJsonDocument(QJsonArray{result}).toJson(), 0, {}});
+        client.request("Parser limit fixture", {}, 0);
+        check("search parser limit permits an immediate successful retry", waitFor([&] { return loadedKey == key; })
+              && limitServer.requests.size() == 5 && QFile::exists(path));
+    }
+
+    {
+        HttpTestServer malformedServer;
+        LrclibClient client(nullptr, malformedServer.apiBase());
+        QString failedKey;
+        QString loadedKey;
+        MissingReason reason = MissingReason::NotFound;
+        QObject::connect(&client, &LrclibClient::missing, [&](const QString &key, MissingReason value) {
+            failedKey = key;
+            reason = value;
+        });
+        QObject::connect(&client, &LrclibClient::loaded, [&](const QString &key, const Lyrics &) { loadedKey = key; });
+        malformedServer.responses.append({200, "<html>Service temporarily unavailable</html>", 0, {}});
+        malformedServer.responses.append({200, "[]", 0, {}});
+        const QString key = client.request("Malformed search fixture", {}, 0);
+        const QString path = LrclibClient::cacheDirectory() + '/' + key + ".json";
+        check("malformed search response is a transient failure", waitFor([&] { return failedKey == key; })
+              && reason == MissingReason::Unreachable && !QFile::exists(path));
+
+        malformedServer.responses.append({200, R"([{"trackName":"Malformed search fixture","syncedLyrics":"[00:01.00]recovered","plainLyrics":"recovered"}])", 0, {}});
+        client.request("Malformed search fixture", {}, 0);
+        check("malformed search response permits immediate recovery", waitFor([&] { return loadedKey == key; })
+              && malformedServer.requests.size() == 3 && QFile::exists(path));
+    }
+
+    {
+        const int statuses[] = {429, 503, 403};
+        for (const int status : statuses) {
+            HttpTestServer errorServer;
+            LrclibClient client(nullptr, errorServer.apiBase());
+            QString failedKey;
+            QString loadedKey;
+            MissingReason reason = MissingReason::NotFound;
+            QObject::connect(&client, &LrclibClient::missing, [&](const QString &key, MissingReason value) {
+                failedKey = key;
+                reason = value;
+            });
+            QObject::connect(&client, &LrclibClient::loaded, [&](const QString &key, const Lyrics &) { loadedKey = key; });
+
+            const QString title = QStringLiteral("Unavailable status %1 fixture").arg(status);
+            errorServer.responses.append({status, {}, 0, {}});
+            if (status == 403) {
+                errorServer.responses.append({200, "[]", 0, {}});
+            }
+            const QString key = client.request(title, {}, 0);
+            const QString cachePath = LrclibClient::cacheDirectory() + '/' + key + ".json";
+            check(qPrintable(QStringLiteral("HTTP %1 stays unreachable and uncached after final attempt").arg(status)),
+                  waitFor([&] { return failedKey == key; }) && reason == MissingReason::Unreachable && !QFile::exists(cachePath));
+
+            const QJsonObject response{{"trackName", title}, {"syncedLyrics", "[00:01.00] recovered"}, {"plainLyrics", "recovered"}};
+            errorServer.responses.append({200, QJsonDocument(QJsonArray{response}).toJson(), 0, {}});
+            client.request(title, {}, 0);
+            check(qPrintable(QStringLiteral("HTTP %1 permits immediate successful retry").arg(status)),
+                  waitFor([&] { return loadedKey == key; }) && QFile::exists(cachePath));
+        }
+    }
+
+    {
+        HttpTestServer candidateServer;
+        LrclibClient client(nullptr, candidateServer.apiBase());
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Replacement fixture");
+        QList<quint64> searches;
+        QList<quint64> fetches;
+        QList<quint64> obsoleteFailures;
+        QObject::connect(&client, &LrclibClient::candidatesFound, [&](quint64 searchId, const QList<LyricCandidate> &candidates) {
+            if (candidates.size() == 1 && candidates.front().id == QStringLiteral("78")) {
+                searches.append(searchId);
+            }
+        });
+        QObject::connect(&client, &LrclibClient::candidateSearchFailed, [&](quint64 id, MissingReason, int) { obsoleteFailures.append(id); });
+        QObject::connect(&client, &LrclibClient::candidateLyricsLoaded, [&](quint64 fetchId, const Lyrics &lyrics) {
+            if (lyrics.lines.size() == 1 && lyrics.lines.front().text == QStringLiteral("new line")) {
+                fetches.append(fetchId);
+            }
+        });
+        QObject::connect(&client, &LrclibClient::candidateLyricsFailed, [&](quint64 id, MissingReason) { obsoleteFailures.append(id); });
+        candidateServer.responses.append({200, "[]", 120, {}});
+        candidateServer.responses.append({200, R"([{"id":78,"trackName":"Replacement fixture","syncedLyrics":"[00:01.00]new line"}])", 0, {}});
+        client.searchCandidates(meta, 81);
+        check("candidate search in flight before replacement", waitFor([&] { return candidateServer.requests.size() == 1; }));
+        client.searchCandidates(meta, 82);
+        check("candidate search replacement emits only the current result", waitFor([&] { return searches.size() == 1; })
+              && searches == QList<quint64>{82} && obsoleteFailures.isEmpty());
+
+        candidateServer.responses.append({200, R"({"syncedLyrics":"[00:02.00]old line"})", 120, {}});
+        candidateServer.responses.append({200, R"({"syncedLyrics":"[00:01.00]new line"})", 0, {}});
+        client.fetchCandidate(QStringLiteral("77"), 83);
+        check("candidate fetch in flight before replacement", waitFor([&] { return candidateServer.requests.size() == 3; }));
+        client.fetchCandidate(QStringLiteral("78"), 84);
+        check("candidate fetch replacement emits only the current result", waitFor([&] { return fetches.size() == 1; })
+              && fetches == QList<quint64>{84} && obsoleteFailures.isEmpty());
+        advanceEvents(140);
+        check("candidate operations never create an automatic cache entry", searches.size() == 1 && fetches.size() == 1
+              && obsoleteFailures.isEmpty() && !QFile::exists(LrclibClient::cacheDirectory() + '/'
+                  + LrclibClient::makeCacheKey(meta) + ".json"));
     }
 
     return failures ? 1 : 0;

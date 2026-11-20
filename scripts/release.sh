@@ -26,13 +26,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
-# 2. Run unit tests
-echo "==> Running unit tests..."
-cmake -S . -B build -DPLASMA_LRC_TESTS=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
-
-# 3. Read current version from CMakeLists.txt
+# 2. Read current version from CMakeLists.txt
 CURRENT_VER=$(grep -Po 'project\(plasma-lrc VERSION \K[0-9.]+' CMakeLists.txt)
 echo "Current version: $CURRENT_VER"
 
@@ -53,6 +47,17 @@ else
 fi
 
 TAG="v${NEW_VER}"
+if git show-ref --verify --quiet "refs/tags/$TAG"; then
+    echo "Error: Release tag $TAG already exists." >&2
+    exit 1
+fi
+
+# 3. Build and test before updating the release files.
+echo "==> Running tests..."
+cmake -S . -B build -DPLASMA_LRC_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+
 echo "==> Bumping version to $NEW_VER (tag: $TAG)"
 
 # 4. Update files

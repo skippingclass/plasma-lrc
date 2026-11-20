@@ -19,9 +19,7 @@ Window {
     title: i18n("Song lyrics — Plasma LRC")
 
     property var plasmoidApplet: null
-    property bool liveMode: false
-    readonly property int activeLyricIndex: liveMode && plasmoidApplet && !plasmoidApplet.pauseHidden
-        ? plasmoidApplet.lineIndex : -1
+    property string songKey: ""
     property string trackInfo: ""
     property string attribution: ""
     property string attributionUrl: ""
@@ -38,55 +36,10 @@ Window {
     readonly property alias copySelectionButtonItem: copySelectionButton
     readonly property alias copyAllButtonItem: copyAllButton
 
-    function openLiveSong() {
-        if (root.apiLyrics) {
-            discardApiSnapshot();
-        }
-        root.liveMode = true;
-        show();
-        raise();
-        requestActivate();
-        Qt.callLater(root.followCurrentLine);
-    }
-
-    function openCurrentSnapshot() {
-        const applet = root.plasmoidApplet;
-        openSong(applet.trackInfo, applet.fullLyrics, applet.currentLyricOffset(),
-            applet.attribution, applet.attributionUrl, applet.attributionHtml,
-            applet.lyricsValidUntilMs, applet.fromSpicyLyrics);
-    }
-
-    function followCurrentLine() {
-        if (root.visible && root.liveMode && followPlayback.checked
-            && root.activeLyricIndex >= 0 && root.activeLyricIndex < liveLyrics.count) {
-            liveLyrics.positionViewAtIndex(root.activeLyricIndex, ListView.Center);
-        }
-    }
-
-    function escapeHtml(text) {
-        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    }
-
-    function markWord(text, start, end) {
-        if (end <= start) {
-            return escapeHtml(text);
-        }
-        return escapeHtml(text.slice(0, start)) + "<b><u>" + escapeHtml(text.slice(start, end))
-            + "</u></b>" + escapeHtml(text.slice(end));
-    }
-
-    function liveLineText(fallback) {
-        const applet = root.plasmoidApplet;
-        const main = markWord(applet.text, applet.wordStart, applet.wordEnd);
-        const backing = markWord(applet.backingText, applet.backingWordStart, applet.backingWordEnd);
-        return (main && backing ? main + "<br/>" + backing : main || backing) || escapeHtml(fallback);
-    }
-
-    onActiveLyricIndexChanged: Qt.callLater(root.followCurrentLine)
-
     function expireSnapshot() {
         expiryTimer.stop();
         root.isExpired = true;
+        root.songKey = "";
         root.trackInfo = "";
         root.attribution = "";
         root.attributionUrl = "";
@@ -100,6 +53,7 @@ Window {
         root.isExpired = false;
         root.apiLyrics = false;
         root.validUntilMs = 0;
+        root.songKey = "";
         root.trackInfo = "";
         root.attribution = "";
         root.attributionUrl = "";
@@ -140,10 +94,8 @@ Window {
     onVisibleChanged: {
         if (visible) {
             checkExpiry();
-        } else {
-            if (root.apiLyrics) {
-                discardApiSnapshot();
-            }
+        } else if (root.apiLyrics) {
+            discardApiSnapshot();
         }
     }
 
@@ -169,48 +121,28 @@ Window {
     }
 
     // Keep a snapshot so a track change cannot replace a selection being copied.
-    function openSong(track, lyrics, offset, credit, creditUrl, creditHtml, validUntilMs, apiLyrics) {
-        root.liveMode = false;
-        const isApi = Boolean(apiLyrics);
-        const deadline = Number(validUntilMs) || 0;
-        const now = Date.now();
-
-        root.apiLyrics = isApi;
-        root.validUntilMs = deadline;
-
-        if (isApi && (deadline <= 0 || now >= deadline)) {
-            expireSnapshot();
-            show();
-            raise();
-            requestActivate();
-            return;
-        }
-
+    function openCurrentSnapshot() {
+        const applet = root.plasmoidApplet;
         root.isExpired = false;
-        root.trackInfo = track || "";
-        root.attribution = credit || "";
-        root.attributionUrl = creditUrl || "";
-        root.attributionHtml = (creditHtml !== undefined && creditHtml !== null) ? creditHtml : "";
-        lyricsText.text = lyrics || "";
-
-        if (isApi) {
-            checkExpiry();
-        } else {
-            expiryTimer.stop();
-        }
+        root.apiLyrics = applet.fromSpicyLyrics;
+        root.validUntilMs = applet.lyricsValidUntilMs;
+        root.songKey = applet.songKey;
+        root.trackInfo = applet.trackInfo;
+        root.attribution = applet.attribution;
+        root.attributionUrl = applet.attributionUrl;
+        root.attributionHtml = applet.attributionHtml;
+        lyricsText.text = applet.fullLyrics;
+        lyricsText.deselect();
+        lyricsText.cursorPosition = 0;
+        checkExpiry();
 
         show();
         raise();
         requestActivate();
-        Qt.callLater(function() {
+        if (!root.isExpired) {
             lyricsText.forceActiveFocus();
-            if (offset >= 0 && offset < lyricsText.length) {
-                const end = lyricsText.text.indexOf("\n", offset);
-                lyricsText.select(offset, end >= 0 ? end : lyricsText.length);
-            } else {
-                lyricsText.cursorPosition = 0;
-            }
-        });
+            lyricsScroll.contentItem.contentY = lyricsScroll.contentItem.originY;
+        }
     }
 
     Shortcut {
@@ -229,78 +161,17 @@ Window {
 
         Controls.Label {
             Layout.fillWidth: true
-            text: root.liveMode && root.plasmoidApplet ? root.plasmoidApplet.trackInfo : root.trackInfo
+            text: root.trackInfo
             textFormat: Text.PlainText
             font.bold: true
             wrapMode: Text.Wrap
             visible: text.length > 0
         }
 
-        RowLayout {
-            Layout.fillWidth: true
-            visible: root.plasmoidApplet !== null
-
-            Controls.Button {
-                text: root.liveMode ? i18n("Read text") : i18n("Live karaoke")
-                onClicked: root.liveMode ? root.openCurrentSnapshot() : root.openLiveSong()
-            }
-
-            Controls.CheckBox {
-                id: followPlayback
-                text: i18n("Follow playback")
-                visible: root.liveMode
-                checked: true
-                onToggled: root.followCurrentLine()
-            }
-        }
-
-        ListView {
-            id: liveLyrics
-            objectName: "liveLyricsList"
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            visible: root.liveMode && count > 0
-            clip: true
-            model: root.visible && root.liveMode && root.plasmoidApplet ? root.plasmoidApplet.lyricLines : []
-            onCountChanged: Qt.callLater(root.followCurrentLine)
-            Controls.ScrollBar.vertical: Controls.ScrollBar {}
-
-            delegate: Controls.ItemDelegate {
-                id: lineDelegate
-                required property int index
-                required property string modelData
-                width: liveLyrics.width
-                highlighted: index === root.activeLyricIndex
-                hoverEnabled: root.plasmoidApplet !== null && root.plasmoidApplet.canSeekLyrics
-                Accessible.name: modelData
-                onClicked: {
-                    if (root.plasmoidApplet && root.plasmoidApplet.canSeekLyrics) {
-                        root.plasmoidApplet.seekToLyricLine(index);
-                    }
-                }
-
-                contentItem: Controls.Label {
-                    text: lineDelegate.highlighted ? root.liveLineText(lineDelegate.modelData) : lineDelegate.modelData
-                    textFormat: lineDelegate.highlighted ? Text.StyledText : Text.PlainText
-                    wrapMode: Text.Wrap
-                }
-            }
-        }
-
-        Controls.Label {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            visible: root.liveMode && liveLyrics.count === 0
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            text: i18n("No synchronized lyrics for the current track.")
-            wrapMode: Text.Wrap
-        }
-
         Controls.ScrollView {
+            id: lyricsScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: !root.liveMode
             clip: true
             contentWidth: availableWidth
 
@@ -319,25 +190,26 @@ Window {
 
         RowLayout {
             Layout.fillWidth: true
-            visible: creditLabel.attributionHtml.length > 0 || creditLabel.fallbackText.length > 0
+            visible: root.attributionHtml.length > 0 || root.attribution.length > 0
 
             AttributionLabel {
-                id: creditLabel
                 Layout.fillWidth: true
-                attributionHtml: root.liveMode && root.plasmoidApplet ? root.plasmoidApplet.attributionHtml : root.attributionHtml
-                fallbackText: root.liveMode && root.plasmoidApplet ? root.plasmoidApplet.attribution : root.attribution
-                fallbackUrl: root.liveMode && root.plasmoidApplet ? root.plasmoidApplet.attributionUrl : root.attributionUrl
+                attributionHtml: root.attributionHtml
+                fallbackText: root.attribution
+                fallbackUrl: root.attributionUrl
                 wrapMode: Text.Wrap
             }
         }
 
         RowLayout {
             Layout.fillWidth: true
-            visible: root.liveMode && root.plasmoidApplet && root.plasmoidApplet.songKey.length > 0
+            visible: root.songKey.length > 0 && root.plasmoidApplet !== null
+                && root.songKey === root.plasmoidApplet.songKey
 
             Controls.Label { text: i18n("Song offset (ms)") }
             Controls.SpinBox {
                 id: songOffset
+                objectName: "songOffset"
                 from: -2000
                 to: 2000
                 stepSize: 50
@@ -348,7 +220,7 @@ Window {
             Controls.Button {
                 text: i18n("Save for this song")
                 icon.name: "document-save"
-                onClicked: root.plasmoidApplet.rememberSongLyrics(root.plasmoidApplet.songKey, songOffset.value)
+                onClicked: root.plasmoidApplet.rememberSongLyrics(root.songKey, songOffset.value)
             }
         }
 
@@ -360,7 +232,7 @@ Window {
                 objectName: "copySelectionButton"
                 text: i18n("Copy selection")
                 icon.name: "edit-copy"
-                visible: !root.liveMode && !root.apiLyrics
+                visible: !root.apiLyrics
                 enabled: visible && lyricsText.selectedText.length > 0
                 onClicked: lyricsText.copy()
             }
@@ -368,7 +240,7 @@ Window {
                 id: copyAllButton
                 objectName: "copyAllButton"
                 text: i18n("Copy all lyrics")
-                visible: !root.liveMode && !root.apiLyrics
+                visible: !root.apiLyrics
                 enabled: visible && lyricsText.length > 0
                 onClicked: {
                     const start = lyricsText.selectionStart;

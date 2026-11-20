@@ -36,11 +36,13 @@ void check(const char *name, bool condition, const QString &detail = QString())
     }
 }
 
-QByteArray compressZlib(const QByteArray &data)
+QByteArray compressZlib(const QByteArray &data, int windowBits = 15)
 {
     z_stream strm;
     std::memset(&strm, 0, sizeof(strm));
-    deflateInit(&strm, Z_DEFAULT_COMPRESSION);
+    if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        return {};
+    }
 
     strm.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.constData()));
     strm.avail_in = static_cast<uInt>(data.size());
@@ -57,6 +59,19 @@ QByteArray compressZlib(const QByteArray &data)
     deflateEnd(&strm);
     return out;
 }
+
+QByteArray encodeKrc(const QString &text)
+{
+    static const unsigned char key[] = {
+        0x40, 0x47, 0x61, 0x77, 0x5e, 0x32, 0x74, 0x47,
+        0x51, 0x36, 0x31, 0x2d, 0xce, 0xd2, 0x6e, 0x69
+    };
+    QByteArray encrypted = compressZlib(text.toUtf8());
+    for (qsizetype i = 0; i < encrypted.size(); ++i) {
+        encrypted[i] = static_cast<char>(static_cast<unsigned char>(encrypted[i]) ^ key[i % 16]);
+    }
+    return "krc1" + encrypted;
+}
 } // namespace
 
 int main()
@@ -71,6 +86,13 @@ int main()
         const QByteArray compressed = compressZlib(original);
         const QByteArray decompressed = ZlibCodec::decompress(compressed);
         check("zlib: roundtrip", decompressed == original, QString::fromUtf8(decompressed));
+        check("gzip: roundtrip", ZlibCodec::decompress(compressZlib(original, 15 + 16)) == original);
+        check("raw deflate: roundtrip", ZlibCodec::decompress(compressZlib(original, -15)) == original);
+
+        // A recording may lose its zlib trailer after all lyric bytes were decoded.
+        bool limitExceeded = true;
+        check("zlib: a missing trailer preserves available lyric bytes",
+              ZlibCodec::decompress(compressed.chopped(4), &limitExceeded) == original && !limitExceeded);
     }
 
     // 2. KrcParser
@@ -84,17 +106,7 @@ int main()
         check("krc: contains hello", ttml.contains(QStringLiteral("Hello")));
 
         // Compress and encrypt into KRC format
-        const QByteArray plainBytes = krc.toUtf8();
-        const QByteArray deflated = compressZlib(plainBytes);
-        static const unsigned char kKrcXorKey[16] = {
-            0x40, 0x47, 0x61, 0x77, 0x5e, 0x32, 0x74, 0x47,
-            0x51, 0x36, 0x31, 0x2d, 0xce, 0xd2, 0x6e, 0x69
-        };
-        QByteArray encrypted(deflated.size(), Qt::Uninitialized);
-        for (int i = 0; i < deflated.size(); ++i) {
-            encrypted[i] = static_cast<char>(static_cast<unsigned char>(deflated[i]) ^ kKrcXorKey[i % 16]);
-        }
-        QByteArray fullKrc = "krc1" + encrypted;
+        const QByteArray fullKrc = encodeKrc(krc);
 
         Lyrics lyrics;
         const bool parsed = KrcParser::parse(fullKrc.toBase64(), &lyrics);
@@ -152,6 +164,52 @@ int main()
         }
     }
 
+    // Invalid numeric fields should not affect valid lines or words.
+    {
+        const QString yrc = QStringLiteral(
+            "[9223372036854775808,500](0,500,0)Invalid\n"
+            "[2001,900](9223372036854775808,500,0)Invalid (2001,800,0)Valid");
+        Lyrics lyrics;
+        bool limitExceeded = true;
+        check("yrc: out-of-range timestamps leave only the valid line",
+              YrcParser::parse(yrc, &lyrics, 0, &limitExceeded) && !limitExceeded && lyrics.lines.size() == 1);
+        if (!lyrics.lines.isEmpty()) {
+            const auto &line = lyrics.lines.last();
+            check("yrc: remaining word is valid with its original timestamp",
+                  line.startMs == 2001 && line.endMs == 2901 && line.words.size() == 1
+                      && line.words.first().text == QStringLiteral("Valid") && line.words.first().startMs == 2001);
+        }
+    }
+    {
+        const QString krc = QStringLiteral(
+            "[9223372036854775808,500]<0,500,0>Invalid\n"
+            "[2001,900]<9223372036854775808,500,0>Invalid <0,800,0>Valid");
+        Lyrics lyrics;
+        check("krc: out-of-range timestamps leave only the valid line",
+              KrcParser::parse(encodeKrc(krc), &lyrics) && lyrics.lines.size() == 1);
+        if (!lyrics.lines.isEmpty()) {
+            const auto &line = lyrics.lines.last();
+            check("krc: remaining word is valid with its original timestamp",
+                  line.startMs == 2001 && line.endMs == 2901 && line.words.size() == 1
+                      && line.words.first().text == QStringLiteral("Valid") && line.words.first().startMs == 2001);
+        }
+    }
+    {
+        const QString qrc = QStringLiteral(
+            "[offset:100]\n"
+            "[offset:9223372036854775808]\n"
+            "[9223372036854775808,500]Invalid(0,500)\n"
+            "[1901,900]Invalid(9223372036854775808,500) Valid(1901,800)");
+        Lyrics lyrics;
+        check("qrc: out-of-range timestamps leave only the valid line",
+              QrcDecoder::parse(qrc, &lyrics) && lyrics.lines.size() == 1);
+        if (!lyrics.lines.isEmpty()) {
+            const auto &line = lyrics.lines.last();
+            check("qrc: remaining word keeps its original timestamp and prior offset",
+                  line.startMs == 2001 && line.endMs == 2901 && line.words.size() == 1
+                      && line.words.first().text == QStringLiteral("Valid") && line.words.first().startMs == 2001);
+        }
+    }
     // 5. YRC CJK Spacing & Pause Tokens (Regression: NetEase pause tokens creating extra spaces)
     {
         const QString yrc = QStringLiteral(

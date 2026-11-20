@@ -442,7 +442,11 @@ void KugouProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fet
         if (fetchId != m_candidateFetchId) {
             return;
         }
-        if (LyricsLimits::isSizeLimitExceeded(reply) || reply->error() != QNetworkReply::NoError) {
+        if (LyricsLimits::isSizeLimitExceeded(reply)) {
+            Q_EMIT candidateLyricsFailed(fetchId, MissingReason::SizeLimitExceeded, id());
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
             Q_EMIT candidateLyricsFailed(fetchId, MissingReason::NotFound, id());
             return;
         }

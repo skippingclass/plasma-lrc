@@ -48,14 +48,14 @@ namespace LyricsLimits
         return length >= 0 && length <= kMaxLineLengthChars;
     }
 
-    inline bool validateLyricsLimits(const Lyrics &lyrics)
+    inline bool validateLyricLines(const QVector<LyricLine> &lines)
     {
-        if (lyrics.lines.size() > kMaxLines) {
+        if (lines.size() > kMaxLines) {
             return false;
         }
 
-        int totalWords = 0;
-        for (const auto &line : lyrics.lines) {
+        qsizetype totalWords = 0;
+        for (const auto &line : lines) {
             if (line.text.size() > kMaxLineLengthChars) {
                 return false;
             }
@@ -71,6 +71,11 @@ namespace LyricsLimits
         }
 
         return true;
+    }
+
+    inline bool validateLyricsLimits(const Lyrics &lyrics)
+    {
+        return validateLyricLines(lyrics.lines);
     }
 
 #if __has_include(<QNetworkReply>)

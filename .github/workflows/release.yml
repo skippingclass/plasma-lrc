@@ -21,11 +21,13 @@ jobs:
             git \
             cmake \
             ninja \
+            python \
             qt6-base \
             qt6-declarative \
             libplasma \
             kcoreaddons \
             kconfig \
+            kcmutils \
             ki18n \
             kirigami \
             tar \
@@ -46,7 +48,7 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DPLASMA_LRC_TESTS=ON
-          cmake --build build --parallel $(nproc)
+          cmake --build build --parallel "$(nproc)"
           ctest --test-dir build --output-on-failure
 
       - name: Create release package

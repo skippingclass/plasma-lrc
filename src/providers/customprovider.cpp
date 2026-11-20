@@ -13,6 +13,7 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QStringList>
 #include <QUrl>
 
 namespace
@@ -61,8 +62,12 @@ void CustomProvider::requestLyrics(const TrackMetadata &meta, quint64 generation
 
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0 (X11; Linux x86_64) Plasma-LRC/1.7"));
+    const bool hasCustomHeaders = !m_headers.trimmed().isEmpty();
+    if (hasCustomHeaders || !url.userInfo().isEmpty()) {
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
+    }
 
-    if (!m_headers.trimmed().isEmpty()) {
+    if (hasCustomHeaders) {
         const QStringList lines = m_headers.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
         for (const QString &line : lines) {
             const int colonIdx = line.indexOf(QLatin1Char(':'));
@@ -110,73 +115,55 @@ void CustomProvider::onReplyFinished()
         return;
     }
     reply->deleteLater();
+    const quint64 generation = m_currentGeneration;
 
     if (LyricsLimits::isSizeLimitExceeded(reply)) {
-        const quint64 gen = m_currentGeneration;
-        cancel();
-        Q_EMIT lyricsFailed(gen, MissingReason::SizeLimitExceeded, id());
+        Q_EMIT lyricsFailed(generation, MissingReason::SizeLimitExceeded, id());
         return;
     }
 
     if (reply->error() != QNetworkReply::NoError) {
-        const quint64 gen = m_currentGeneration;
-        cancel();
-        Q_EMIT lyricsFailed(gen, MissingReason::Unreachable, id());
+        Q_EMIT lyricsFailed(generation, MissingReason::Unreachable, id());
         return;
     }
 
     const QByteArray rawData = reply->readAll();
-    QString text = QString::fromUtf8(rawData);
-
-    // If it's JSON, inspect common lyrics fields
     const QJsonDocument doc = QJsonDocument::fromJson(rawData);
+    QStringList texts;
     if (doc.isObject()) {
         const QJsonObject root = doc.object();
-        if (root.contains(QStringLiteral("lyrics")) && root.value(QStringLiteral("lyrics")).isString()) {
-            text = root.value(QStringLiteral("lyrics")).toString();
-        } else if (root.contains(QStringLiteral("syncedLyrics")) && root.value(QStringLiteral("syncedLyrics")).isString()) {
-            text = root.value(QStringLiteral("syncedLyrics")).toString();
-        } else if (root.contains(QStringLiteral("ttmlLyrics")) && root.value(QStringLiteral("ttmlLyrics")).isString()) {
-            text = root.value(QStringLiteral("ttmlLyrics")).toString();
-        } else if (root.contains(QStringLiteral("data")) && root.value(QStringLiteral("data")).isObject()) {
-            const QJsonObject dataObj = root.value(QStringLiteral("data")).toObject();
-            if (dataObj.contains(QStringLiteral("lyrics")) && dataObj.value(QStringLiteral("lyrics")).isString()) {
-                text = dataObj.value(QStringLiteral("lyrics")).toString();
-            }
+        texts = {root.value(QStringLiteral("lyrics")).toString(),
+                 root.value(QStringLiteral("syncedLyrics")).toString(),
+                 root.value(QStringLiteral("ttmlLyrics")).toString(),
+                 root.value(QStringLiteral("data")).toObject().value(QStringLiteral("lyrics")).toString()};
+    } else if (doc.isNull()) {
+        texts.append(QString::fromUtf8(rawData));
+    }
+
+    MissingReason reason = MissingReason::NotFound;
+    for (const QString &text : texts) {
+        if (text.trimmed().isEmpty()) {
+            continue;
         }
+        Lyrics lyrics;
+        bool limitExceeded = false;
+        const bool ok = text.contains(QLatin1String("<tt"), Qt::CaseInsensitive)
+            ? TtmlParser::parseTtml(text, &lyrics, m_meta.durationMs, &limitExceeded)
+            : LrcParser::parseLrc(text, &lyrics, m_meta.durationMs, &limitExceeded);
+        if (limitExceeded) {
+            reason = MissingReason::SizeLimitExceeded;
+            break;
+        }
+        if (ok && lyrics.isUsable()) {
+            lyrics.attribution = QStringLiteral("Custom URL");
+            lyrics.attributionUrl.clear();
+            lyrics.attributionData = {QStringLiteral("Custom URL"), {}, {}};
+            Q_EMIT lyricsLoaded(generation, lyrics, id());
+            return;
+        }
+        reason = MissingReason::Unsynced;
     }
-
-    if (text.trimmed().isEmpty()) {
-        const quint64 gen = m_currentGeneration;
-        cancel();
-        Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
-        return;
-    }
-
-    Lyrics lyrics;
-    bool ok = false;
-    bool limitExceeded = false;
-
-    if (text.contains(QLatin1String("<tt"), Qt::CaseInsensitive)) {
-        ok = TtmlParser::parseTtml(text, &lyrics, m_meta.durationMs, &limitExceeded);
-    } else {
-        ok = LrcParser::parseLrc(text, &lyrics, m_meta.durationMs, &limitExceeded);
-    }
-
-    if (!ok || !lyrics.isUsable()) {
-        const quint64 gen = m_currentGeneration;
-        cancel();
-        Q_EMIT lyricsFailed(gen, limitExceeded ? MissingReason::SizeLimitExceeded : MissingReason::Unsynced, id());
-        return;
-    }
-
-    lyrics.attribution = QStringLiteral("Custom URL");
-    lyrics.attributionUrl.clear();
-    lyrics.attributionData = {QStringLiteral("Custom URL"), {}, {}};
-
-    const quint64 gen = m_currentGeneration;
-    cancel();
-    Q_EMIT lyricsLoaded(gen, lyrics, id());
+    Q_EMIT lyricsFailed(generation, reason, id());
 }
 
 QString CustomProvider::buildUrl(const TrackMetadata &meta) const

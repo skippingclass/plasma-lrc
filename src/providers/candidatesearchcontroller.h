@@ -128,6 +128,7 @@ private:
     void pumpQueue();
     void onProviderTimeout(quint64 searchId, quint64 token, const QString &providerId);
     void finishSearch();
+    void cancelSearchRequests(quint64 searchId);
     QString emptySearchStatus();
     void rebuildCandidatesList();
     void startFetch(LyricsProvider *provider, const QString &candidateId, bool restoring);
@@ -171,6 +172,7 @@ private:
     QTimer *m_deadlineTimer = nullptr;
     QTimer *m_fetchDeadlineTimer = nullptr;
     int m_maxConcurrent = 2;
+    bool m_pumping = false;
     int m_providerTimeoutMs = 4000;
     quint64 m_nextAttemptToken = 0;
     static constexpr int kDeadlineMs = 20000;
@@ -178,4 +180,5 @@ private:
     static constexpr int kRestoreDeadlineMs = 4000;
 
     friend class LrcAppletSyncTest;
+    friend class CandidateSearchControllerTest;
 };

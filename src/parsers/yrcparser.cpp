@@ -5,6 +5,7 @@
  */
 
 #include "yrcparser.h"
+#include "timedlyric.h"
 #include "tokenpunctuationhelper.h"
 #include "ttmlparser.h"
 #include "lyriclimits.h"
@@ -14,21 +15,7 @@
 
 namespace YrcParser {
 
-static QString escapeXml(const QString &s)
-{
-    QString res = s;
-    res.replace(QLatin1Char('&'), QLatin1String("&amp;"));
-    res.replace(QLatin1Char('<'), QLatin1String("&lt;"));
-    res.replace(QLatin1Char('>'), QLatin1String("&gt;"));
-    res.replace(QLatin1Char('"'), QLatin1String("&quot;"));
-    return res;
-}
-
-static QString formatSeconds(qint64 ms)
-{
-    return QString::asprintf("%.3fs", ms / 1000.0);
-}
-
+using TimedLyric::formatSeconds;
 using namespace TokenPunctuationHelper;
 
 QString toTtml(const QString &yrcText, bool *outLimitExceeded)
@@ -71,26 +58,38 @@ QString toTtml(const QString &yrcText, bool *outLimitExceeded)
             continue;
         }
 
-        const qint64 lineStart = m.captured(1).toLongLong();
-        const qint64 lineDur = m.captured(2).toLongLong();
+        const auto lineTiming = TimedLyric::parseRange(m.capturedView(1), m.capturedView(2));
+        if (!lineTiming) {
+            continue;
+        }
         const QString rest = m.captured(3);
 
         struct WordToken {
-            qint64 at = 0;
-            qint64 len = 0;
+            TimedLyric::Range timing;
             QString text;
         };
         QVector<WordToken> tokens;
+        std::optional<qint64> base;
+        constexpr qint64 kRelativeSlackMs = 1000;
 
         QRegularExpressionMatchIterator it = wordRe.globalMatch(rest);
         while (it.hasNext()) {
             const QRegularExpressionMatch wm = it.next();
-            const qint64 at = wm.captured(1).toLongLong();
-            const qint64 len = wm.captured(2).toLongLong();
+            const auto timing = TimedLyric::parseRange(wm.capturedView(1), wm.capturedView(2));
             const QString text = wm.captured(3);
-            if (!text.trimmed().isEmpty()) {
-                tokens.append({at, len, text});
+            if (!timing || text.trimmed().isEmpty()) {
+                continue;
             }
+
+            // Use the first valid word to distinguish relative and absolute timestamps.
+            const qint64 wordBase = base.value_or(lineTiming->startMs - timing->startMs > kRelativeSlackMs ? lineTiming->startMs : 0);
+            qint64 wordEnd = 0;
+            if (qAddOverflow(wordBase, timing->endMs, &wordEnd)) {
+                continue;
+            }
+
+            base = wordBase;
+            tokens.append({{wordBase + timing->startMs, wordEnd}, text});
         }
 
         if (tokens.isEmpty()) {
@@ -117,10 +116,6 @@ QString toTtml(const QString &yrcText, bool *outLimitExceeded)
             }
         }
 
-        // Relative slack: check if words timestamps are relative to line start or absolute
-        constexpr qint64 kRelativeSlackMs = 1000;
-        const qint64 base = (tokens.first().at + kRelativeSlackMs < lineStart) ? lineStart : 0;
-
         const bool wholeLineBg = (tokens.size() > 0)
             && (tokens.first().text.trimmed().startsWith(QLatin1Char('('))
                 || tokens.first().text.trimmed().startsWith(QChar(0xFF08)))
@@ -130,8 +125,6 @@ QString toTtml(const QString &yrcText, bool *outLimitExceeded)
         QStringList spans;
         bool inBgSpan = false;
         for (const auto &tok : tokens) {
-            const qint64 wordStart = base + tok.at;
-            const qint64 wordEnd = wordStart + tok.len;
             const QString tokTrimmed = tok.text.trimmed();
 
             const bool openBg = !wholeLineBg && !inBgSpan
@@ -143,7 +136,7 @@ QString toTtml(const QString &yrcText, bool *outLimitExceeded)
             }
 
             spans.append(QStringLiteral("<span begin=\"%1\" end=\"%2\">%3</span>")
-                             .arg(formatSeconds(wordStart), formatSeconds(wordEnd), escapeXml(tok.text)));
+                             .arg(formatSeconds(tok.timing.startMs), formatSeconds(tok.timing.endMs), tok.text.toHtmlEscaped()));
 
             const bool closeBg = inBgSpan
                 && (tokTrimmed.endsWith(QLatin1Char(')')) || tokTrimmed.endsWith(QChar(0xFF09)));
@@ -159,10 +152,10 @@ QString toTtml(const QString &yrcText, bool *outLimitExceeded)
         if (!spans.isEmpty()) {
             if (wholeLineBg) {
                 paragraphs.append(QStringLiteral("<p ttm:role=\"x-bg\" begin=\"%1\" end=\"%2\">%3</p>")
-                                      .arg(formatSeconds(lineStart), formatSeconds(lineStart + lineDur), spans.join(QString())));
+                                      .arg(formatSeconds(lineTiming->startMs), formatSeconds(lineTiming->endMs), spans.join(QString())));
             } else {
                 paragraphs.append(QStringLiteral("<p begin=\"%1\" end=\"%2\">%3</p>")
-                                      .arg(formatSeconds(lineStart), formatSeconds(lineStart + lineDur), spans.join(QString())));
+                                      .arg(formatSeconds(lineTiming->startMs), formatSeconds(lineTiming->endMs), spans.join(QString())));
             }
         }
     }

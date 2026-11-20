@@ -540,6 +540,8 @@ int main(int argc, char **argv)
         check("оценка: клип в браузере уходит в минус", webClip < 0, QString::number(webClip));
         check("оценка: пустой артист не считается артистом",
               trackArtists(QStringList{QString()}).isEmpty(), trackArtists(QStringList{QString()}).join(QLatin1Char(',')));
+        check("track artists: ignore whitespace-only artist entries",
+              trackArtists(QStringList{QStringLiteral(" \t"), QStringLiteral("Artist")}) == QStringList{QStringLiteral("Artist")});
 
         // A YouTube video in the browser reports a real id, and must not be caught
         // by the rule above whatever its metadata looks like.

@@ -17,6 +17,9 @@ import org.kde.kirigami as Kirigami
 KCM.SimpleKCM {
     id: root
 
+    readonly property color swatchBorderColor: Kirigami.ColorUtils.linearInterpolation(
+        Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, Kirigami.Theme.frameContrast)
+
     property alias cfg_showIcon: showIconCheckBox.checked
     property alias cfg_showTrackInfo: showTrackInfoCheckBox.checked
     property alias cfg_placeholderText: placeholderField.text
@@ -92,11 +95,11 @@ KCM.SimpleKCM {
 
             Rectangle {
                 id: colorPreview
-                width: Kirigami.Units.gridUnit * 1.5
-                height: Kirigami.Units.gridUnit * 1.5
+                implicitWidth: Kirigami.Units.gridUnit * 1.5
+                implicitHeight: Kirigami.Units.gridUnit * 1.5
                 radius: Kirigami.Units.smallSpacing / 2
                 border.width: 1
-                border.color: Kirigami.Theme.separatorColor
+                border.color: root.swatchBorderColor
                 color: {
                     const c = customHighlightColorField.text.trim();
                     if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c)) {
@@ -137,6 +140,7 @@ KCM.SimpleKCM {
                     { name: i18n("White"), color: "#ffffff" }
                 ]
                 delegate: QQC2.Button {
+                    id: presetButton
                     required property var modelData
 
                     implicitWidth: Kirigami.Units.gridUnit * 2
@@ -150,9 +154,9 @@ KCM.SimpleKCM {
                         width: Kirigami.Units.gridUnit * 1.2
                         height: Kirigami.Units.gridUnit * 1.2
                         radius: width / 2
-                        color: modelData.color
+                        color: presetButton.modelData.color
                         border.width: 1
-                        border.color: Kirigami.Theme.separatorColor
+                        border.color: root.swatchBorderColor
                     }
 
                     onClicked: {

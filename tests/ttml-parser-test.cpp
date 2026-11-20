@@ -5,8 +5,10 @@
  */
 
 #include "ttmlparser.h"
+#include "lyriclimits.h"
 
 #include <iostream>
+#include <limits>
 #include <QString>
 
 namespace
@@ -40,6 +42,14 @@ int main()
         check("ts: raw float", TtmlParser::parseTimestamp(QStringLiteral("12.5"), &ms) && ms == 12500, QString::number(ms));
         check("ts: invalid string", !TtmlParser::parseTimestamp(QStringLiteral("invalid"), &ms));
         check("ts: empty string", !TtmlParser::parseTimestamp(QStringLiteral(""), &ms));
+        check("ts: decimal second retains exact millisecond", TtmlParser::parseTimestamp(QStringLiteral("1.001s"), &ms) && ms == 1001);
+        check("ts: clock second retains exact millisecond", TtmlParser::parseTimestamp(QStringLiteral("00:01.001"), &ms) && ms == 1001);
+        check("ts: fractions below a millisecond are truncated", TtmlParser::parseTimestamp(QStringLiteral("1.0019s"), &ms) && ms == 1001);
+        check("ts: scientific notation remains accepted", TtmlParser::parseTimestamp(QStringLiteral("1e-1s"), &ms) && ms == 100);
+        check("ts: largest supported whole millisecond retains its value",
+              TtmlParser::parseTimestamp(QStringLiteral("9223372036854775807ms"), &ms) && ms == std::numeric_limits<qint64>::max());
+        check("ts: an unrepresentable millisecond value leaves the result alone",
+              !TtmlParser::parseTimestamp(QStringLiteral("9223372036854775808ms"), &ms) && ms == std::numeric_limits<qint64>::max());
     }
 
     // 2. Line-synced TTML
@@ -116,6 +126,58 @@ int main()
         Lyrics lyrics;
         check("bad-xml: rejected safely", !TtmlParser::parseTtml(QStringLiteral("not xml <><>"), &lyrics));
         check("empty: rejected safely", !TtmlParser::parseTtml(QStringLiteral(""), &lyrics));
+
+        const QString partial = QStringLiteral("<tt><body><p begin=\"1s\" end=\"2s\">Complete</p>"
+                                               "<p begin=\"3s\"><span begin=\"3s\">Cut off</span>");
+        check("bad-xml: retain complete paragraphs and discard the cut-off paragraph",
+              TtmlParser::parseTtml(partial, &lyrics) && lyrics.lines.size() == 1
+                  && lyrics.lines.first().text == QStringLiteral("Complete"));
+    }
+
+    {
+        const QString ttml = QStringLiteral("<tt><body><p begin=\"9223372036854775808:00\">Invalid</p>"
+                                            "<p begin=\"2s\" end=\"3s\">Valid</p></body></tt>");
+        Lyrics lyrics;
+        check("line-ttml: an out-of-range paragraph start does not become a zero-time line",
+              TtmlParser::parseTtml(ttml, &lyrics) && lyrics.lines.size() == 1 && lyrics.lines.first().startMs == 2000
+                  && lyrics.lines.first().endMs == 3000 && lyrics.lines.first().text == QStringLiteral("Valid"));
+    }
+    {
+        const QString ttml = QStringLiteral("<tt><body><p><span begin=\"9223372036854775808:00\">Invalid</span></p>"
+                                            "<p begin=\"2s\" end=\"3s\">Valid</p></body></tt>");
+        Lyrics lyrics;
+        check("word-ttml: an out-of-range sole word cannot create a zero-time line",
+              TtmlParser::parseTtml(ttml, &lyrics) && lyrics.lines.size() == 1 && lyrics.lines.first().startMs == 2000
+                  && lyrics.lines.first().text == QStringLiteral("Valid"));
+    }
+    {
+        const QString ttml = QStringLiteral("<tt><body><p begin=\"0s\" end=\"4s\"><span begin=\"2s\" end=\"3s\">Hello</span></p></body></tt>");
+        Lyrics lyrics;
+        check("word-ttml: an explicit zero paragraph start is preserved",
+              TtmlParser::parseTtml(ttml, &lyrics) && lyrics.lines.first().startMs == 0);
+    }
+    {
+        const QString ttml = QStringLiteral("<tt><body><p><span begin=\"4s\" end=\"5s\">First </span>"
+                                            "<span begin=\"2s\" end=\"3s\">second</span></p></body></tt>");
+        Lyrics lyrics;
+        check("word-ttml: derive paragraph bounds from all timed words in text order",
+              TtmlParser::parseTtml(ttml, &lyrics) && lyrics.lines.first().startMs == 2000 && lyrics.lines.first().endMs == 5000
+                  && lyrics.lines.first().text == QStringLiteral("First second"));
+    }
+    {
+        const QString ttml = QStringLiteral("<tt><body><p begin=\"1s\"><span begin=\"1s\" end=\"2s\">Pre </span> spoken "
+                                            "<span begin=\"2s\" end=\"3s\">hel</span><span begin=\"3s\" end=\"4s\">lo</span></p></body></tt>");
+        Lyrics lyrics;
+        const bool parsed = TtmlParser::parseTtml(ttml, &lyrics);
+        check("word-ttml: untimed text between spans keeps its spaces", parsed && lyrics.lines.first().text == QStringLiteral("Pre spoken hello"));
+        const bool hasThreeWords = parsed && lyrics.lines.first().words.size() == 3;
+        check("word-ttml: only timed spans produce words", hasThreeWords);
+        if (hasThreeWords) {
+            const auto &words = lyrics.lines.first().words;
+            check("word-ttml: untimed text does not split the following syllable group",
+                  words.at(1).groupStart == 11 && words.at(1).groupEnd == 16
+                      && words.at(2).groupStart == 11 && words.at(2).groupEnd == 16);
+        }
     }
 
     // 5. Apple Music TTML with spaces outside spans, background vocals and translations
@@ -469,6 +531,42 @@ int main()
         check("all-zero timestamps: not ok", !ok3);
         check("all-zero timestamps: type is Static", lyrics3.type == LyricsType::Static);
         check("all-zero timestamps: not usable", !lyrics3.isUsable());
+    }
+
+    {
+        const QString ttml = QStringLiteral("<tt><body><p>%1</p></body></tt>");
+        const QString boundary(LyricsLimits::kMaxLineLengthChars, QLatin1Char('a'));
+        Lyrics lyrics;
+        bool limitExceeded = true;
+        check("static ttml: line at the length limit is retained",
+              !TtmlParser::parseTtml(ttml.arg(boundary), &lyrics, 0, &limitExceeded) && !limitExceeded
+                  && lyrics.type == LyricsType::Static && lyrics.lines.size() == 1);
+        check("static ttml: line over the length limit is rejected without leaving output",
+              !TtmlParser::parseTtml(ttml.arg(boundary + QLatin1Char('a')), &lyrics, 0, &limitExceeded) && limitExceeded
+                  && lyrics.type == LyricsType::None && lyrics.lines.isEmpty());
+    }
+
+    {
+        Lyrics lyrics;
+        const QString ttml = QStringLiteral(
+            "<tt><body><p begin='1s'>alpha<br/>beta</p>"
+            "<p begin='2s'><span>gamma</span> <span>delta</span></p></body></tt>");
+        check("TTML line sync: explicit breaks and span separators keep words distinct",
+              TtmlParser::parseTtml(ttml, &lyrics) && lyrics.type == LyricsType::Line && lyrics.lines.size() == 2
+                  && lyrics.lines.at(0).text == QStringLiteral("alpha beta")
+                  && lyrics.lines.at(1).text == QStringLiteral("gamma delta"));
+    }
+
+    {
+        Lyrics lyrics;
+        const QString ttml = QStringLiteral(
+            "<tt><body><p begin='1s' end='2s'><span begin='3s'>alpha</span></p></body></tt>");
+        check("TTML timed word: inferred end cannot precede its start or override explicit paragraph timing",
+              TtmlParser::parseTtml(ttml, &lyrics) && lyrics.lines.size() == 1
+                  && lyrics.lines.first().startMs == 1000 && lyrics.lines.first().endMs == 2000
+                  && lyrics.lines.first().words.size() == 1
+                  && lyrics.lines.first().words.first().startMs == 3000
+                  && lyrics.lines.first().words.first().endMs == 3000);
     }
 
     if (s_failed == 0) {

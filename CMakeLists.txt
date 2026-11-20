@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(plasma-lrc VERSION 1.10.0 LANGUAGES CXX)
+project(plasma-lrc VERSION 1.10.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -76,6 +76,7 @@ add_library(${PLUGIN_ID} SHARED
     src/parsers/yrcparser.h
     src/parsers/qrcdecoder.cpp
     src/parsers/qrcdecoder.h
+    src/parsers/timedlyric.h
     src/parsers/tokenpunctuationhelper.h
     src/parsers/zlibcodec.cpp
     src/parsers/zlibcodec.h
@@ -212,6 +213,13 @@ if(PLASMA_LRC_TESTS)
     target_link_libraries(pipeline-test PRIVATE Qt6::Core Qt6::Network)
     add_test(NAME pipeline COMMAND pipeline-test)
 
+    add_executable(candidate-search-test tests/candidate-search-test.cpp)
+    target_link_libraries(candidate-search-test PRIVATE ${PLUGIN_ID} Qt6::Core)
+    add_test(NAME candidate-search COMMAND candidate-search-test)
+
+    add_test(NAME packaging
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/packaging-test.sh" "${CMAKE_CURRENT_SOURCE_DIR}")
+
     foreach(client IN ITEMS spicy lrclib)
         add_executable(${client}-client-test
             tests/${client}-client-test.cpp
@@ -243,13 +251,19 @@ if(PLASMA_LRC_TESTS)
             src/providers/lrcredprovider.cpp
             src/providers/spicylyricsprovider.cpp
             src/providers/lrclibprovider.cpp
+            src/providers/customprovider.cpp
+            src/providers/kugouprovider.cpp
+            src/providers/localprovider.cpp
+            src/providers/unisonprovider.cpp
             src/services/lrclib.cpp
             src/services/spicylyrics.cpp
             src/core/trackname.cpp
             src/parsers/ttmlparser.cpp
             src/parsers/lrcparser.cpp
+            src/parsers/krcparser.cpp
+            src/parsers/zlibcodec.cpp
         )
-        target_link_libraries(provider-cache-test PRIVATE Qt6::Core Qt6::Network)
+        target_link_libraries(provider-cache-test PRIVATE Qt6::Core Qt6::Network ZLIB::ZLIB)
         add_test(NAME provider-cache COMMAND provider-cache-test)
     endif()
 

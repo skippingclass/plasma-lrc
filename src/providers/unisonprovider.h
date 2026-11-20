@@ -59,11 +59,11 @@ private:
     void startSearch();
     void startFetchDetails(const QString &lyricsId);
 
-    void handleDirectReply(const QByteArray &data, int httpCode);
+    void handleDirectReply(const QByteArray &data);
     void handleSearchReply(const QByteArray &data);
     void handleDetailsReply(const QByteArray &data);
 
-    bool parsePayload(const QJsonObject &dataObj, Lyrics *outLyrics, bool *outLimitExceeded = nullptr);
+    static bool parsePayload(const QJsonObject &dataObj, Lyrics *outLyrics, qint64 durationMs, bool *outLimitExceeded);
 
     QNetworkAccessManager m_network;
     QPointer<QNetworkReply> m_currentReply;

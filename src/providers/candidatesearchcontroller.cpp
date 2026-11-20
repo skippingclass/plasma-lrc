@@ -15,6 +15,7 @@
 #include "trackname.h"
 
 #include <QDateTime>
+#include <QScopedValueRollback>
 #include <utility>
 
 CandidateSearchController::CandidateSearchController(QObject *parent)
@@ -245,10 +246,13 @@ void CandidateSearchController::startSearch(const TrackMetadata &rawMeta,
 
 void CandidateSearchController::searchAgain()
 {
+    const quint64 searchId = m_searchId;
     m_isExplicitRefresh = true;
     m_refreshErrorMessage.clear();
     Q_EMIT refreshErrorMessageChanged();
-    startSearchInternal(/*isRefresh=*/true);
+    if (searchId == m_searchId) {
+        startSearchInternal(/*isRefresh=*/true);
+    }
 }
 
 void CandidateSearchController::clearRefreshErrorMessage()
@@ -271,15 +275,19 @@ void CandidateSearchController::clearCache()
 
 void CandidateSearchController::startSearchInternal(bool isRefresh)
 {
+    const quint64 searchId = m_searchId + 1;
     cancel();
+    if (searchId != m_searchId) {
+        return;
+    }
 
-    ++m_searchId;
     m_hadSuccessfulResponseInSearch = false;
     purgeExpiredCache();
 
     if (m_enabledProviders.isEmpty()) {
         m_status = QStringLiteral("all_disabled");
         m_candidates.clear();
+        m_candidateStaleMap.clear();
         m_selectedIndex = -1;
         m_isUsingCachedResults = false;
         Q_EMIT isUsingCachedResultsChanged();
@@ -330,6 +338,7 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
     if (m_activeProviders.isEmpty()) {
         m_status = QStringLiteral("all_disabled");
         m_candidates.clear();
+        m_candidateStaleMap.clear();
         m_selectedIndex = -1;
         m_isUsingCachedResults = false;
         Q_EMIT isUsingCachedResultsChanged();
@@ -367,9 +376,6 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                     entry.foundCandidates = res.candidates;
                     anyCached = true;
                     m_hadSuccessfulResponseInSearch = true;
-                    for (const auto &c : res.candidates) {
-                        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = false;
-                    }
                     continue;
                 }
 
@@ -380,9 +386,6 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                     entry.isStale = true;
                     entry.foundCandidates = res.candidates;
                     anyCached = true;
-                    for (const auto &c : res.candidates) {
-                        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = true;
-                    }
                     continue;
                 }
 
@@ -391,9 +394,6 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                     entry.isStale = true;
                     entry.foundCandidates = res.candidates;
                     anyCached = true;
-                    for (const auto &c : res.candidates) {
-                        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = true;
-                    }
                 }
             } else if (isRateLimitedGlobal) {
                 entry.completed = true;
@@ -406,25 +406,25 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
         if (allCompleted) {
             m_isUsingCachedResults = anyCached;
             Q_EMIT isUsingCachedResultsChanged();
-            finishSearch();
+            if (searchId == m_searchId) {
+                finishSearch();
+            }
             return;
         }
 
         // Some or all providers need querying
         m_candidates.clear();
         m_selectedIndex = -1;
-        rebuildCandidatesList();
         m_status = QStringLiteral("searching");
         m_isUsingCachedResults = anyCached;
+        rebuildCandidatesList();
+        if (searchId != m_searchId) {
+            return;
+        }
         Q_EMIT isUsingCachedResultsChanged();
-        Q_EMIT statusChanged();
-
-        m_deadlineTimer->start(kDeadlineMs);
-        pumpQueue();
     } else {
         // Explicit refresh ("Search again"): retain previous successful m_candidates on screen!
         m_status = QStringLiteral("searching");
-        Q_EMIT statusChanged();
 
         for (auto &entry : m_activeProviders) {
             const QString pid = entry.provider->id();
@@ -436,18 +436,12 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
                     entry.isCached = true;
                     entry.isStale = true;
                     entry.foundCandidates = res.candidates;
-                    for (const auto &c : res.candidates) {
-                        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = true;
-                    }
                 }
                 if (isRateLimitedGlobal || (res.isRateLimited && now < res.retryAfterUntilMs)) {
                     entry.completed = true;
                     entry.isCached = true;
                     entry.isStale = true;
                     entry.foundCandidates = res.candidates;
-                    for (const auto &c : res.candidates) {
-                        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = true;
-                    }
                     continue;
                 }
             } else if (isRateLimitedGlobal) {
@@ -462,6 +456,13 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
         }
 
         rebuildCandidatesList();
+    }
+
+    if (searchId != m_searchId) {
+        return;
+    }
+    Q_EMIT statusChanged();
+    if (searchId == m_searchId && isSearching()) {
         m_deadlineTimer->start(kDeadlineMs);
         pumpQueue();
     }
@@ -469,27 +470,31 @@ void CandidateSearchController::startSearchInternal(bool isRefresh)
 
 void CandidateSearchController::pumpQueue()
 {
-    if (m_status != QLatin1String("searching")) {
+    if (m_pumping) {
         return;
     }
+    const QScopedValueRollback pumping(m_pumping, true);
 
-    int inFlightCount = 0;
-    int pendingIndex = -1;
+    while (isSearching()) {
+        int inFlightCount = 0;
+        int pendingIndex = -1;
 
-    for (int i = 0; i < m_activeProviders.size(); ++i) {
-        if (m_activeProviders[i].inFlight) {
-            ++inFlightCount;
-        } else if (!m_activeProviders[i].completed && pendingIndex == -1) {
-            pendingIndex = i;
+        for (int i = 0; i < m_activeProviders.size(); ++i) {
+            if (m_activeProviders[i].inFlight) {
+                ++inFlightCount;
+            } else if (!m_activeProviders[i].completed && pendingIndex == -1) {
+                pendingIndex = i;
+            }
         }
-    }
 
-    if (inFlightCount == 0 && pendingIndex == -1) {
-        finishSearch();
-        return;
-    }
+        if (inFlightCount == 0 && pendingIndex == -1) {
+            finishSearch();
+            continue;
+        }
+        if (inFlightCount >= m_maxConcurrent || pendingIndex == -1) {
+            break;
+        }
 
-    while (inFlightCount < m_maxConcurrent && pendingIndex != -1) {
         ProviderEntry &entry = m_activeProviders[pendingIndex];
         entry.inFlight = true;
         entry.attemptToken = ++m_nextAttemptToken;
@@ -500,15 +505,6 @@ void CandidateSearchController::pumpQueue()
             });
         }
         entry.provider->searchCandidates(m_currentMeta, m_searchId);
-        ++inFlightCount;
-
-        pendingIndex = -1;
-        for (int i = 0; i < m_activeProviders.size(); ++i) {
-            if (!m_activeProviders[i].inFlight && !m_activeProviders[i].completed) {
-                pendingIndex = i;
-                break;
-            }
-        }
     }
 }
 
@@ -565,10 +561,6 @@ void CandidateSearchController::onCandidatesFound(quint64 searchId, const QList<
     m_hadSuccessfulResponseInSearch = true;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
 
-    for (const auto &c : candidates) {
-        m_candidateStaleMap[c.providerId + QLatin1Char(':') + c.id] = false;
-    }
-
     // Immediately cache results per provider
     TrackCandidateCache &cacheEntry = m_trackCache[m_currentContextKey];
     cacheEntry.trackContextKey = m_currentContextKey;
@@ -591,18 +583,7 @@ void CandidateSearchController::onCandidatesFound(quint64 searchId, const QList<
     evictCacheIfNeeded();
 
     rebuildCandidatesList();
-
-    bool allCompleted = true;
-    for (const auto &entry : m_activeProviders) {
-        if (!entry.completed) {
-            allCompleted = false;
-            break;
-        }
-    }
-
-    if (allCompleted) {
-        finishSearch();
-    } else {
+    if (searchId == m_searchId) {
         pumpQueue();
     }
 }
@@ -643,19 +624,7 @@ void CandidateSearchController::onCandidateSearchFailed(quint64 searchId, Missin
         m_providerRateLimitUntilMs[providerId] = now + cooldownMs;
     }
 
-    bool allCompleted = true;
-    for (const auto &entry : m_activeProviders) {
-        if (!entry.completed) {
-            allCompleted = false;
-            break;
-        }
-    }
-
-    if (allCompleted) {
-        finishSearch();
-    } else {
-        pumpQueue();
-    }
+    pumpQueue();
 }
 
 void CandidateSearchController::rebuildCandidatesList()
@@ -669,6 +638,15 @@ void CandidateSearchController::rebuildCandidatesList()
     }
 
     m_candidates.clear();
+    m_candidateStaleMap.clear();
+    const auto appendCandidates = [this](const ProviderEntry &entry) {
+        m_candidates.append(entry.foundCandidates);
+        if (entry.isStale) {
+            for (const auto &candidate : entry.foundCandidates) {
+                m_candidateStaleMap[candidate.providerId + QLatin1Char(':') + candidate.id] = true;
+            }
+        }
+    };
 
     // Add candidates in priority order
     for (const QString &provId : m_providerOrder) {
@@ -677,7 +655,7 @@ void CandidateSearchController::rebuildCandidatesList()
         }
         for (const auto &entry : m_activeProviders) {
             if (entry.provider && entry.provider->id() == provId) {
-                m_candidates.append(entry.foundCandidates);
+                appendCandidates(entry);
                 break;
             }
         }
@@ -689,7 +667,7 @@ void CandidateSearchController::rebuildCandidatesList()
         if (!m_enabledProviders.contains(pid) || m_providerOrder.contains(pid)) {
             continue;
         }
-        m_candidates.append(entry.foundCandidates);
+        appendCandidates(entry);
     }
 
     // Restore selection by (providerId, candidateId)
@@ -714,11 +692,12 @@ void CandidateSearchController::finishSearch()
 {
     m_deadlineTimer->stop();
     m_retryAvailableAtMs = 0;
+    const quint64 searchId = m_searchId;
 
-    if (m_isExplicitRefresh) {
+    if (std::exchange(m_isExplicitRefresh, false)) {
         bool anyProviderSucceeded = false;
         for (const auto &entry : m_activeProviders) {
-            if (!entry.failed && !entry.isCached) {
+            if (entry.completed && !entry.failed && !entry.isCached) {
                 anyProviderSucceeded = true;
                 break;
             }
@@ -730,17 +709,25 @@ void CandidateSearchController::finishSearch()
                 m_isUsingCachedResults = true;
                 m_refreshErrorMessage = tr("Refresh failed. Showing previous results.");
                 Q_EMIT refreshErrorMessageChanged();
+                if (searchId != m_searchId) {
+                    return;
+                }
                 Q_EMIT isUsingCachedResultsChanged();
             } else {
                 m_status = emptySearchStatus();
             }
         } else {
             rebuildCandidatesList();
+            if (searchId != m_searchId) {
+                return;
+            }
             m_status = m_candidates.isEmpty() ? QStringLiteral("nomatches") : QStringLiteral("ready");
         }
-        m_isExplicitRefresh = false;
     } else {
         rebuildCandidatesList();
+        if (searchId != m_searchId) {
+            return;
+        }
         if (m_candidates.isEmpty()) {
             m_status = emptySearchStatus();
         } else {
@@ -748,8 +735,13 @@ void CandidateSearchController::finishSearch()
         }
     }
 
+    if (searchId != m_searchId) {
+        return;
+    }
     Q_EMIT statusChanged();
-    Q_EMIT hasUsableResultsChanged();
+    if (searchId == m_searchId) {
+        Q_EMIT hasUsableResultsChanged();
+    }
 }
 
 QString CandidateSearchController::emptySearchStatus()
@@ -777,15 +769,28 @@ QString CandidateSearchController::emptySearchStatus()
 void CandidateSearchController::onDeadlineTimeout()
 {
     if (m_status == QLatin1String("searching")) {
-        for (auto &entry : m_activeProviders) {
-            if (entry.inFlight && entry.provider) {
-                entry.provider->cancelCandidateSearch(m_searchId);
-                entry.inFlight = false;
-                entry.completed = true;
-                entry.failed = true;
-            }
+        const quint64 searchId = m_searchId;
+        cancelSearchRequests(searchId);
+        if (searchId == m_searchId && isSearching()) {
+            finishSearch();
         }
-        finishSearch();
+    }
+}
+
+void CandidateSearchController::cancelSearchRequests(quint64 searchId)
+{
+    QList<LyricsProvider *> inFlight;
+    for (auto &entry : m_activeProviders) {
+        if (entry.inFlight && entry.provider) {
+            entry.inFlight = false;
+            entry.completed = true;
+            entry.failed = true;
+            inFlight.append(entry.provider);
+        }
+    }
+    // Retire the whole batch before aborting, as abort can emit a result.
+    for (LyricsProvider *source : std::as_const(inFlight)) {
+        source->cancelCandidateSearch(searchId);
     }
 }
 
@@ -811,13 +816,7 @@ void CandidateSearchController::useSelected()
         // and do not let their late callbacks disturb the candidate download.
         const quint64 oldSearchId = m_searchId++;
         m_deadlineTimer->stop();
-        for (auto &entry : m_activeProviders) {
-            if (entry.inFlight && entry.provider) {
-                entry.inFlight = false;
-                entry.completed = true;
-                entry.provider->cancelCandidateSearch(oldSearchId);
-            }
-        }
+        cancelSearchRequests(oldSearchId);
     }
 
     startFetch(targetProvider, cand.id, false);
@@ -875,6 +874,7 @@ void CandidateSearchController::onCandidateLyricsFailed(quint64 fetchId, Missing
 
 void CandidateSearchController::finishFetch(const Lyrics &lyrics, const QString &errorMessage)
 {
+    const quint64 fetchId = m_fetchId;
     const bool restoring = isRestoringMatch();
     const QString sourceId = std::exchange(m_loadingProviderId, {});
     const QString candidateId = std::exchange(m_loadingCandidateId, {});
@@ -882,6 +882,9 @@ void CandidateSearchController::finishFetch(const Lyrics &lyrics, const QString 
     m_errorMessage = errorMessage;
     m_status = restoring ? QStringLiteral("idle") : (errorMessage.isEmpty() ? QStringLiteral("ready") : QStringLiteral("error"));
     Q_EMIT statusChanged();
+    if (fetchId != m_fetchId) {
+        return;
+    }
     if (restoring) {
         Q_EMIT rememberedMatchFinished(lyrics, sourceId, candidateId);
     } else if (errorMessage.isEmpty()) {
@@ -918,17 +921,11 @@ void CandidateSearchController::cancelFetch()
 void CandidateSearchController::cancel()
 {
     m_deadlineTimer->stop();
-    for (auto &entry : m_activeProviders) {
-        if (entry.inFlight && entry.provider) {
-            entry.provider->cancelCandidateSearch(m_searchId);
-            entry.inFlight = false;
-        }
-    }
-
-    cancelFetch();
-    ++m_searchId;
+    const quint64 searchId = m_searchId++;
     m_retryAvailableAtMs = 0;
     m_status = QStringLiteral("idle");
+    cancelSearchRequests(searchId);
+    cancelFetch();
     Q_EMIT statusChanged();
 }
 

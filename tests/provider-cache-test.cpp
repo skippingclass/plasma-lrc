@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 #include "amllprovider.h"
+#include "customprovider.h"
 #include "http-test-server.h"
+#include "kugouprovider.h"
+#include "localprovider.h"
 #include "lrclib.h"
 #include "lrclibprovider.h"
 #include "lrcredprovider.h"
+#include "lyriclimits.h"
 #include "spicylyricsprovider.h"
 #include "ttmlparser.h"
 #include "trackname.h"
+#include "unisonprovider.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -41,6 +46,28 @@ const char *kValidTtml = R"(<?xml version="1.0" encoding="utf-8"?>
 </tt>)";
 
 const char *kValidLrc = "[00:01.00]Hello world\n[00:04.00]Second line\n";
+
+struct ProviderResult {
+    QList<quint64> generations;
+    QString providerId;
+    Lyrics lyrics;
+    MissingReason reason = MissingReason::NotFound;
+
+    void observe(LyricsProvider &provider)
+    {
+        QObject::connect(&provider, &LyricsProvider::lyricsLoaded, [&](quint64 generation, const Lyrics &value, const QString &id) {
+            generations.append(generation);
+            providerId = id;
+            lyrics = value;
+        });
+        QObject::connect(&provider, &LyricsProvider::lyricsFailed, [&](quint64 generation, MissingReason value, const QString &id) {
+            generations.append(generation);
+            providerId = id;
+            lyrics = {};
+            reason = value;
+        });
+    }
+};
 } // namespace
 
 int main(int argc, char **argv)
@@ -805,10 +832,12 @@ int main(int argc, char **argv)
         bool lrcredFailed = false;
         MissingReason failReason = MissingReason::NotFound;
         bool lrcredLoaded = false;
+        quint64 failedGeneration = 0;
 
-        QObject::connect(&lrcred, &LyricsProvider::lyricsFailed, [&](quint64, MissingReason r, const QString &) {
+        QObject::connect(&lrcred, &LyricsProvider::lyricsFailed, [&](quint64 generation, MissingReason r, const QString &) {
             lrcredFailed = true;
             failReason = r;
+            failedGeneration = generation;
         });
         QObject::connect(&lrcred, &LyricsProvider::lyricsLoaded, [&](quint64, const Lyrics &, const QString &) {
             lrcredLoaded = true;
@@ -818,6 +847,27 @@ int main(int argc, char **argv)
         check("lrcred rejects unsynced: failed emitted", waitFor([&] { return lrcredFailed; }));
         check("lrcred rejects unsynced: not loaded", !lrcredLoaded);
         check("lrcred rejects unsynced: reason is Unsynced", failReason == MissingReason::Unsynced);
+
+        const qsizetype beforeCachedLookup = server.requests.size();
+        lrcredFailed = false;
+        lrcred.requestLyrics(meta, 2);
+        check("lrcred: cached untimed lyrics keep Unsynced at the new generation", waitFor([&] { return lrcredFailed; })
+              && failedGeneration == 2 && failReason == MissingReason::Unsynced && server.requests.size() == beforeCachedLookup);
+
+        AmllProvider amllUnsynced(nullptr, server.apiBase().toString());
+        ProviderResult amllResult;
+        amllResult.observe(amllUnsynced);
+        TrackMetadata amllMeta;
+        amllMeta.spotifyTrackId = QStringLiteral("0123456789abcdefghijkl");
+        server.responses.append({200, unsyncedTtml.toUtf8(), 0, {}});
+        amllUnsynced.requestLyrics(amllMeta, 3);
+        check("amll: untimed reply reports Unsynced", waitFor([&] { return amllResult.generations.size() == 1; })
+              && amllResult.generations.back() == 3 && amllResult.reason == MissingReason::Unsynced);
+        const qsizetype beforeAmllCache = server.requests.size();
+        amllUnsynced.requestLyrics(amllMeta, 4);
+        check("amll: cached untimed lyrics keep Unsynced at the new generation", waitFor([&] { return amllResult.generations.size() == 2; })
+              && amllResult.generations.back() == 4 && amllResult.reason == MissingReason::Unsynced
+              && server.requests.size() == beforeAmllCache);
 
         // 2. clearAllCaches sweeps provider directories
         const QString amllDummy = AmllProvider::cacheDirectory() + QStringLiteral("/dummy.ttml");
@@ -1042,6 +1092,255 @@ int main(int argc, char **argv)
             check("suite 6: lrcred variant files purged", allLrcredPurged);
             check("suite 6: lrclib variant files purged", allLrclibPurged);
         }
+    }
+
+    {
+        HttpTestServer server;
+        CustomProvider provider;
+        ProviderResult result;
+        result.observe(provider);
+        provider.setUrlTemplate(server.apiBase().toString() + QStringLiteral("lyrics?title={title}&duration={durationMs}"));
+        TrackMetadata meta;
+        meta.title = QStringLiteral("One & two");
+        meta.durationMs = 200000;
+        server.responses.append({200, "[00:02.00]old line", 120, {}});
+        server.responses.append({200, R"({"lyrics":"Untimed text","syncedLyrics":"[00:01.00]Current timed line"})", 0, {}});
+        provider.requestLyrics(meta, 70);
+        check("custom: the superseded request reached the endpoint", waitFor([&] { return server.requests.size() == 1; }));
+        provider.requestLyrics(meta, 71);
+        check("custom: JSON timed lyrics can follow an untimed field", waitFor([&] { return result.generations.size() == 1; })
+              && result.lyrics.lines.size() == 1 && result.lyrics.lines.front().text == QStringLiteral("Current timed line"));
+        advanceEvents(140);
+        check("custom: replacement is the only terminal result", result.generations == QList<quint64>{71}
+              && result.providerId == QStringLiteral("custom"));
+        check("custom: URL substitutions encode title and duration", server.requests.size() == 2
+              && server.requests.back() == QStringLiteral("/api/lyrics?title=One%20%26%20two&duration=200000"));
+
+        server.responses.append({200, kValidLrc, 0, {}});
+        provider.requestLyrics(meta, 72);
+        check("custom: a repeat reaches the endpoint and raw LRC loads", waitFor([&] { return result.generations.size() == 2; })
+              && result.generations.back() == 72 && server.requests.size() == 3 && result.lyrics.lines.size() == 2
+              && result.lyrics.attributionData.provider == QStringLiteral("Custom URL") && result.lyrics.attributionUrl.isEmpty());
+
+        server.responses.append({200, R"({"message":"Sample timestamp [00:01.00] in API documentation"})", 0, {}});
+        provider.requestLyrics(meta, 85);
+        check("custom: JSON metadata is not interpreted as lyrics", waitFor([&] { return result.generations.size() == 3; })
+              && result.generations.back() == 85 && result.reason == MissingReason::NotFound
+              && result.lyrics.lines.isEmpty());
+    }
+
+    {
+        HttpTestServer origin;
+        HttpTestServer redirected;
+        CustomProvider provider;
+        ProviderResult result;
+        result.observe(provider);
+        provider.setUrlTemplate(origin.apiBase().toString() + QStringLiteral("redirect"));
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Redirect fixture");
+
+        provider.setHeaders(QStringLiteral("X-Fixture: enabled"));
+        origin.responses.append({302, {}, 0, "Location: /same-origin\r\n"});
+        origin.responses.append({200, kValidLrc, 0, {}});
+        provider.requestLyrics(meta, 87);
+        check("custom: redirects on the configured origin still load lyrics", waitFor([&] { return result.generations.size() == 1; })
+              && result.generations.back() == 87 && result.lyrics.lines.size() == 2
+              && origin.requests.size() == 2 && origin.requests.back() == QStringLiteral("/same-origin"));
+
+        const QByteArray differentOrigin = "Location: " + redirected.apiBase().toEncoded() + "lyrics\r\n";
+        origin.responses.append({302, {}, 0, differentOrigin});
+        provider.requestLyrics(meta, 88);
+        check("custom: configured headers keep redirects on the original origin", waitFor([&] { return result.generations.size() == 2; })
+              && result.generations.back() == 88 && result.reason == MissingReason::Unreachable && redirected.requests.isEmpty());
+
+        provider.setHeaders({});
+        origin.responses.append({302, {}, 0, differentOrigin});
+        redirected.responses.append({200, kValidLrc, 0, {}});
+        provider.requestLyrics(meta, 89);
+        check("custom: header-free redirect can load from another origin", waitFor([&] { return result.generations.size() == 3; })
+              && result.generations.back() == 89 && result.lyrics.lines.size() == 2 && redirected.requests.size() == 1);
+    }
+
+    {
+        QTemporaryDir directory;
+        LocalProvider provider;
+        ProviderResult result;
+        result.observe(provider);
+        provider.setCustomDirectory(directory.path());
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Local integration fixture");
+        meta.url = QUrl::fromLocalFile(directory.filePath(QStringLiteral("audio.flac"))).toString();
+        QFile sidecar(directory.filePath(QStringLiteral("audio.ttml")));
+        check("local: oversized sidecar fixture created", sidecar.open(QIODevice::WriteOnly)
+              && sidecar.resize(LyricsLimits::kMaxInputSizeBytes + 1));
+        sidecar.close();
+        provider.requestLyrics(meta, 73);
+        check("local: oversized sidecar remains the terminal reason", result.generations == QList<quint64>{73}
+              && result.reason == MissingReason::SizeLimitExceeded && result.lyrics.lines.isEmpty());
+
+        QFile customFile(directory.filePath(meta.title + QStringLiteral(".lrc")));
+        check("local: writable LRC fixture created", customFile.open(QIODevice::WriteOnly)
+              && customFile.write(kValidLrc) == qint64(qstrlen(kValidLrc)));
+        customFile.close();
+        provider.requestLyrics(meta, 74);
+        check("local: custom directory supplies lyrics after invalid sidecar", result.generations == QList<quint64>{73, 74}
+              && result.providerId == QStringLiteral("local") && result.lyrics.lines.size() == 2
+              && result.lyrics.lines.front().text == QStringLiteral("Hello world"));
+        check("local: provider does not modify either source file", sidecar.size() == LyricsLimits::kMaxInputSizeBytes + 1
+              && customFile.open(QIODevice::ReadOnly) && customFile.readAll() == kValidLrc);
+    }
+
+    {
+        HttpTestServer server;
+        LrcRedProvider provider(nullptr, server.apiBase().toString());
+        ProviderResult result;
+        result.observe(provider);
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Bad search shape fixture");
+        const QString cachePath = LrcRedProvider::cacheDirectory() + QLatin1Char('/') + LrcRedProvider::makeCacheKey(meta);
+        server.responses.append({200, R"({"hits":null})", 0, {}});
+        provider.requestLyrics(meta, 75);
+        check("lrcred: malformed search shape is unreachable", waitFor([&] { return result.generations.size() == 1; })
+              && result.generations.back() == 75 && result.reason == MissingReason::Unreachable);
+
+        server.responses.append({200, R"({"hits":[{"title":"Bad search shape fixture","files":{"lrc":"good.lrc"}}]})", 0, {}});
+        server.responses.append({200, kValidLrc, 0, {}});
+        provider.requestLyrics(meta, 76);
+        check("lrcred: a malformed search never blocks immediate recovery", waitFor([&] { return result.generations.size() == 2; })
+              && result.generations.back() == 76 && result.lyrics.lines.size() == 2 && server.requests.size() == 3
+              && QFile::exists(cachePath + QStringLiteral(".lrc")));
+    }
+
+    {
+        HttpTestServer server;
+        LrcRedProvider provider(nullptr, server.apiBase().toString());
+        ProviderResult result;
+        result.observe(provider);
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Long line fixture");
+        meta.isrc = QStringLiteral("USTEST123456");
+        const QString cachePath = LrcRedProvider::cacheDirectory() + QLatin1Char('/') + LrcRedProvider::makeCacheKey(meta);
+        server.responses.append({404, {}, 0, {}});
+        server.responses.append({200, "[00:01.00]" + QByteArray(LyricsLimits::kMaxLineLengthChars, 'x'), 0, {}});
+        provider.requestLyrics(meta, 77);
+        check("lrcred: parser limit is reported without a positive cache entry", waitFor([&] { return result.generations.size() == 1; })
+              && result.generations.back() == 77 && result.reason == MissingReason::SizeLimitExceeded
+              && !QFile::exists(cachePath + QStringLiteral(".lrc")));
+
+        server.responses.append({200, kValidTtml, 0, {}});
+        provider.requestLyrics(meta, 78);
+        check("lrcred: parser limit does not create a negative cache entry", waitFor([&] { return result.generations.size() == 2; })
+              && result.generations.back() == 78 && result.lyrics.lines.size() == 2 && server.requests.size() == 3
+              && QFile::exists(cachePath + QStringLiteral(".ttml")));
+    }
+
+    {
+        HttpTestServer server;
+        LrcRedProvider lrcred(nullptr, server.apiBase().toString());
+        AmllProvider amll(nullptr, server.apiBase().toString());
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Candidate fixture");
+        const QByteArray lrcRedResults = R"({"results":[{"title":"Candidate fixture","files":{"lrc":"track.lrc"}}]})";
+        const QByteArray amllResults = R"({"data":{"items":[{"title":"Candidate fixture","id":12}]}})";
+        const std::pair<LyricsProvider *, QByteArray> cases[]{{&lrcred, lrcRedResults}, {&amll, amllResults}};
+        for (const auto &[provider, results] : cases) {
+            QObject observations;
+            QList<quint64> completed;
+            int candidatesFound = 0;
+            QList<LyricCandidate> candidates;
+            MissingReason reason = MissingReason::NotFound;
+            QObject::connect(provider, &LyricsProvider::candidateSearchFailed, &observations,
+                             [&](quint64 searchId, MissingReason value, const QString &, int) {
+                                 completed.append(searchId);
+                                 reason = value;
+                             });
+            QObject::connect(provider, &LyricsProvider::candidatesFound, &observations,
+                             [&](quint64 searchId, const QList<LyricCandidate> &value, const QString &) {
+                                 completed.append(searchId);
+                                 candidates = value;
+                                 ++candidatesFound;
+                             });
+
+            server.responses.append({200, R"({"message":"Temporarily unavailable","data":null})", 0, {}});
+            provider->searchCandidates(meta, 92);
+            check(qPrintable(provider->id() + QStringLiteral(": malformed manual search stays transient")),
+                  waitFor([&] { return completed.size() == 1; }) && completed.back() == 92
+                      && reason == MissingReason::Unreachable && candidatesFound == 0);
+
+            server.responses.append({200, results, 0, {}});
+            provider->searchCandidates(meta, 93);
+            check(qPrintable(provider->id() + QStringLiteral(": manual retry loads an existing response shape")),
+                  waitFor([&] { return completed.size() == 2; }) && completed.back() == 93
+                      && candidates.size() == 1 && candidates.front().title == meta.title);
+
+            const int countBeforeEmpty = candidatesFound;
+            server.responses.append({200, "[]", 0, {}});
+            provider->searchCandidates(meta, 94);
+            check(qPrintable(provider->id() + QStringLiteral(": valid empty manual search remains successful")),
+                  waitFor([&] { return completed.size() == 3; }) && completed.back() == 94
+                      && candidatesFound == countBeforeEmpty + 1 && candidates.isEmpty());
+        }
+    }
+
+    {
+        HttpTestServer server;
+        KugouProvider provider(nullptr, server.apiBase().toString());
+        QList<quint64> failed;
+        QList<quint64> loaded;
+        MissingReason reason = MissingReason::NotFound;
+        Lyrics lyrics;
+        QObject::connect(&provider, &LyricsProvider::candidateLyricsLoaded, [&](quint64 fetchId, const Lyrics &value, const QString &) {
+            loaded.append(fetchId);
+            lyrics = value;
+        });
+        QObject::connect(&provider, &LyricsProvider::candidateLyricsFailed, [&](quint64 fetchId, MissingReason value, const QString &) {
+            failed.append(fetchId);
+            reason = value;
+        });
+
+        server.responses.append({200, QByteArray(LyricsLimits::kMaxInputSizeBytes + 1, ' '), 0, {}});
+        provider.fetchCandidateLyrics(QStringLiteral("fixtureHash:15"), 90);
+        check("kugou: first candidate fetch step reports the transport size limit", waitFor([&] { return failed.size() == 1; })
+              && failed.back() == 90 && reason == MissingReason::SizeLimitExceeded && loaded.isEmpty() && server.requests.size() == 1);
+
+        server.responses.append({200, R"({"candidates":[{"id":"1","accesskey":"fixture"}]})", 0, {}});
+        const QJsonObject payload{{"content", QString::fromLatin1(QByteArray(kValidLrc).toBase64())}};
+        server.responses.append({200, QJsonDocument(payload).toJson(), 0, {}});
+        provider.fetchCandidateLyrics(QStringLiteral("fixtureHash:15"), 91);
+        check("kugou: both candidate fetch steps run and the bounded LRC fallback loads", waitFor([&] { return loaded.size() == 1; })
+              && loaded.back() == 91 && failed.size() == 1 && lyrics.lines.size() == 2 && server.requests.size() == 3);
+    }
+
+    {
+        HttpTestServer server;
+        UnisonProvider provider(nullptr, server.apiBase().toString());
+        ProviderResult result;
+        result.observe(provider);
+        TrackMetadata meta;
+        meta.title = QStringLiteral("Automatic track");
+        meta.durationMs = 2500;
+        server.responses.append({200, R"({"data":{"lyrics":"[00:01.00]Manual track","format":"lrc"}})", 60, {}});
+        server.responses.append({200, R"({"data":{"song":"Automatic track","lyrics":"[00:01.00]Automatic track","format":"lrc"}})", 0, {}});
+        QList<quint64> manualFetches;
+        Lyrics manualLyrics;
+        QObject::connect(&provider, &LyricsProvider::candidateLyricsLoaded, [&](quint64 fetchId, const Lyrics &value, const QString &) {
+            manualFetches.append(fetchId);
+            manualLyrics = value;
+        });
+        provider.fetchCandidateLyrics(QStringLiteral("manual"), 79);
+        check("unison: manual lookup reaches the endpoint", waitFor([&] { return server.requests.size() == 1; }));
+        provider.requestLyrics(meta, 80);
+        check("unison: direct LRC uses automatic track duration", waitFor([&] { return result.generations.size() == 1; })
+              && result.generations.back() == 80 && result.lyrics.lines.size() == 1 && result.lyrics.lines.front().endMs == 2500);
+        check("unison: manual LRC timing is independent of simultaneous automatic search", waitFor([&] { return manualFetches.size() == 1; })
+              && manualFetches.back() == 79 && manualLyrics.lines.size() == 1 && manualLyrics.lines.front().endMs == 7000);
+
+        QJsonObject payload{{"song", "Automatic track"}, {"format", "lrc"}, {"lyrics", QStringLiteral("[00:01.00]")
+            + QString(LyricsLimits::kMaxLineLengthChars, QLatin1Char('x'))}};
+        server.responses.append({200, QJsonDocument(QJsonObject{{"data", payload}}).toJson(), 0, {}});
+        provider.requestLyrics(meta, 86);
+        check("unison: direct parser limit stays a size failure", waitFor([&] { return result.generations.size() == 2; })
+              && result.generations.back() == 86 && result.reason == MissingReason::SizeLimitExceeded && server.requests.size() == 3);
     }
 
     if (s_failures == 0) {

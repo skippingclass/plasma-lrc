@@ -18,8 +18,8 @@ jobs:
       - name: Install build dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            git cmake ninja qt6-base qt6-declarative libplasma \
-            kcoreaddons kconfig ki18n kirigami
+            git cmake ninja python qt6-base qt6-declarative libplasma \
+            kcoreaddons kconfig kcmutils ki18n kirigami
 
       - uses: actions/checkout@v4
 

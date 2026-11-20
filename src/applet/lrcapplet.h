@@ -60,7 +60,6 @@ public:
     // State coming from lrc_tty
     Q_PROPERTY(QString text READ text NOTIFY textChanged)
     Q_PROPERTY(QString fullLyrics READ fullLyrics NOTIFY lyricsChanged)
-    Q_PROPERTY(QStringList lyricLines READ lyricLines NOTIFY lyricsChanged)
     Q_PROPERTY(bool active READ isActive NOTIFY activeChanged)
     Q_PROPERTY(bool available READ isAvailable NOTIFY availableChanged)
     Q_PROPERTY(QString error READ error NOTIFY availableChanged)
@@ -152,7 +151,6 @@ public:
     Q_PROPERTY(int songLyricOffset READ songLyricOffset NOTIFY songPreferencesChanged)
     Q_PROPERTY(bool hasSongPreferences READ hasSongPreferences NOTIFY songPreferencesChanged)
     Q_PROPERTY(bool hasImportedLyrics READ hasImportedLyrics NOTIFY songPreferencesChanged)
-    Q_PROPERTY(bool canSeekLyrics READ canSeekLyrics NOTIFY seekCapabilityChanged)
 
 public:
     explicit LrcApplet(QObject *parent, const KPluginMetaData &data, const QVariantList &args);
@@ -296,7 +294,6 @@ public:
         return !m_pauseHidden && !m_lyricsDiscarded && hasLyrics() && !m_lyrics.lines.isEmpty() && m_lineIndex < 0 && !isIntro() && m_positionMs <= m_lyrics.lines.last().endMs;
     }
     QString fullLyrics() const;
-    QStringList lyricLines() const;
     QString attribution() const;
     QString attributionUrl() const;
     QString provider() const;
@@ -423,7 +420,6 @@ public:
     Q_INVOKABLE void nextTrack();
     Q_INVOKABLE void previousTrack();
     Q_INVOKABLE void copyCurrentLine();
-    Q_INVOKABLE int currentLyricOffset() const;
     Q_INVOKABLE void toggleBlacklistCurrentTrack();
     Q_INVOKABLE QStringList blacklistedTrackList() const;
     Q_INVOKABLE void addBlacklistTrack(const QString &track);
@@ -451,14 +447,12 @@ public:
     Q_INVOKABLE QString saveLrcImport(const QString &songKey, int offsetMs);
     Q_INVOKABLE void cancelLrcImport();
     Q_INVOKABLE void removeImportedLyrics();
-    Q_INVOKABLE void seekToLyricLine(int index);
     bool isManualCandidateSelected() const { return m_manualCandidateSelected; }
     QObject *candidateControllerObj() const;
     QString songKey() const { return m_songKey; }
     int songLyricOffset() const { return m_songOffsetMs.value_or(m_lyricOffset); }
     bool hasSongPreferences() const { return m_songOffsetMs.has_value() || !m_savedCandidateId.isEmpty(); }
     bool hasImportedLyrics() const;
-    bool canSeekLyrics() const;
 
 Q_SIGNALS:
     void textChanged();
@@ -478,7 +472,6 @@ Q_SIGNALS:
     void pauseHiddenChanged();
     void providerOrderChanged();
     void songPreferencesChanged();
-    void seekCapabilityChanged();
 
 public Q_SLOTS:
     /// Forget everything we know and ask lrc_tty right away.
@@ -545,6 +538,7 @@ private:
     void requestSpicyLyrics();
     void fetchLrcLyrics(bool rawFallback = false);
     void clearLyrics();
+    void clearRenderedLyrics();
     void armExpiryTimer();
     void handleLyricsExpired();
     void resetTrackPosition(bool isTrackTransition);
@@ -574,6 +568,7 @@ private:
 
     void watchPlayer();
     void unwatchPlayer();
+    void detachPlayer();
     void requestPlayerProperties();
     void applyPlayerProperties(const QVariantMap &properties, const QStringList &invalidated);
 
@@ -791,5 +786,4 @@ private:
     std::optional<int> m_songOffsetMs;
     QString m_importSongKey;
     QByteArray m_importSource;
-    bool m_playerCanSeek = false;
 };

@@ -30,7 +30,7 @@ namespace
 constexpr qint64 kAmllCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 10000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.0 (https://github.com/skippingclass/plasma-lrc)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.1 (https://github.com/skippingclass/plasma-lrc)");
 } // namespace
 
 AmllProvider::AmllProvider(QObject *parent, const QString &apiBase)
@@ -94,13 +94,16 @@ void AmllProvider::requestLyrics(const TrackMetadata &meta, quint64 generation)
 
     // Check negative cache
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (m_negativeCache.contains(m_currentCacheKey)) {
-        if (now - m_negativeCache.value(m_currentCacheKey) < kNegativeCacheTtlMs) {
+    const auto cachedMiss = m_negativeCache.constFind(m_currentCacheKey);
+    if (cachedMiss != m_negativeCache.constEnd()) {
+        if (now - cachedMiss->timestampMs < kNegativeCacheTtlMs) {
+            const MissingReason reason = cachedMiss->reason;
             const quint64 gen = m_currentGeneration;
             m_currentGeneration = 0;
             m_diagCache = QStringLiteral("Hit (negative cache)");
-            m_diagReason = QStringLiteral("Track not found in AMLL database (cached)");
-            Q_EMIT lyricsFailed(gen, MissingReason::NotFound, id());
+            m_diagReason = reason == MissingReason::Unsynced ? QStringLiteral("No synchronized lyrics in TTML (cached)")
+                                                            : QStringLiteral("Track not found in AMLL database (cached)");
+            Q_EMIT lyricsFailed(gen, reason, id());
             return;
         }
         m_negativeCache.remove(m_currentCacheKey);
@@ -272,24 +275,14 @@ void AmllProvider::startGetById(qint64 idVal, const QString &filename)
     m_watchdog.start(kRequestTimeoutMs);
 }
 
-void AmllProvider::failCurrent(MissingReason reason, const QString &diagReason, bool is404)
+void AmllProvider::failCurrent(MissingReason reason, const QString &diagReason, bool cacheMissing)
 {
-    m_watchdog.stop();
-    if (m_currentReply) {
-        m_currentReply->disconnect(this);
-        if (m_currentReply->isRunning()) {
-            m_currentReply->abort();
-        }
-        m_currentReply->deleteLater();
-        m_currentReply = nullptr;
-    }
     const quint64 gen = m_currentGeneration;
     const QString cacheKey = m_currentCacheKey;
-    m_currentGeneration = 0;
-    m_currentStep = Step::Idle;
+    cancel();
 
-    if (is404 && !cacheKey.isEmpty()) {
-        m_negativeCache.insert(cacheKey, QDateTime::currentMSecsSinceEpoch());
+    if (cacheMissing && !cacheKey.isEmpty()) {
+        m_negativeCache.insert(cacheKey, {QDateTime::currentMSecsSinceEpoch(), reason});
     }
 
     m_diagReason = diagReason;
@@ -347,7 +340,7 @@ void AmllProvider::handlePayload(const QByteArray &data, quint64 gen)
     bool limitExceeded = false;
     if (!TtmlParser::parseTtml(trimmed, &lyrics, m_currentMeta.durationMs, &limitExceeded) || !lyrics.isUsable()) {
         if (limitExceeded) {
-            failCurrent(MissingReason::SizeLimitExceeded, QStringLiteral("Lyrics exceed line or word limit"), /*is404=*/false);
+            failCurrent(MissingReason::SizeLimitExceeded, QStringLiteral("Lyrics exceed line or word limit"));
             return;
         }
         failCurrent(MissingReason::Unsynced, QStringLiteral("No synchronized lyrics in TTML"), true);
@@ -673,7 +666,7 @@ void AmllProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId)
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.0 (candidate-search)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.1 (candidate-search)"));
 
     m_candidateSearchId = searchId;
     m_candidateSearchReply = m_network.get(req);
@@ -695,26 +688,20 @@ void AmllProvider::searchCandidates(const TrackMetadata &meta, quint64 searchId)
 
         const QByteArray data = reply->readAll();
         const QJsonDocument doc = QJsonDocument::fromJson(data);
-        if (doc.isNull()) {
+        const QJsonObject root = doc.object();
+        QJsonValue items = doc.isArray() ? QJsonValue(doc.array())
+                                         : root.value(QLatin1String("data")).toObject().value(QLatin1String("items"));
+        if (!items.isArray()) {
+            items = root.value(QLatin1String("items"));
+        }
+        if (!items.isArray()) {
             Q_EMIT candidateSearchFailed(searchId, MissingReason::Unreachable, id(), 0);
             return;
         }
         QList<LyricCandidate> result;
 
-        QJsonArray items;
-        if (doc.isObject()) {
-            const QJsonObject root = doc.object();
-            if (root.contains(QLatin1String("data"))) {
-                const QJsonObject dataObj = root.value(QLatin1String("data")).toObject();
-                items = dataObj.value(QLatin1String("items")).toArray();
-            } else if (root.contains(QLatin1String("items"))) {
-                items = root.value(QLatin1String("items")).toArray();
-            }
-        } else if (doc.isArray()) {
-            items = doc.array();
-        }
-
-        for (const QJsonValue &val : items) {
+        const QJsonArray candidates = items.toArray();
+        for (const QJsonValue &val : candidates) {
             if (result.size() >= 10) {
                 break;
             }
@@ -784,7 +771,7 @@ void AmllProvider::fetchCandidateLyrics(const QString &candidateId, quint64 fetc
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.0 (candidate-fetch)"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("plasma-lrc/1.10.1 (candidate-fetch)"));
 
     m_candidateFetchId = fetchId;
     m_candidateFetchReply = m_network.get(req);

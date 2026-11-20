@@ -68,6 +68,7 @@ ColumnLayout {
             text: root.playerName.length > 0 //
                 ? i18n("%1 — %2", root.trackInfo, root.playerName)
                 : root.trackInfo
+            textFormat: Text.PlainText
             color: Kirigami.Theme.textColor
             opacity: 0.75
             elide: Text.ElideRight
