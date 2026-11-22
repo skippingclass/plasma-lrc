@@ -3469,6 +3469,140 @@ public:
             }
         }
 
+        // Popup media controller & metadata tests
+        {
+            LrcApplet mediaWidget(nullptr, KPluginMetaData(), {});
+            mediaWidget.m_watchedService = QStringLiteral("org.mpris.MediaPlayer2.spotify");
+            mediaWidget.m_player = QStringLiteral("spotify");
+            mediaWidget.m_playing = true;
+            mediaWidget.m_playingKnown = true;
+
+            int trackNotifications = 0;
+            QObject::connect(&mediaWidget, &LrcApplet::trackInfoChanged, [&] { ++trackNotifications; });
+
+            const QVariantMap initialMeta = {
+                {QStringLiteral("xesam:title"), QStringLiteral("breesh breesh")},
+                {QStringLiteral("xesam:artist"), QStringList{QStringLiteral("Nettspend")}},
+                {QStringLiteral("xesam:album"), QStringLiteral("HIM")},
+                {QStringLiteral("mpris:length"), qint64(134000000)},
+                {QStringLiteral("mpris:artUrl"), QStringLiteral("https://open.spotify.com/image/ab67616d0000b273deadbeef")},
+                {QStringLiteral("mpris:trackid"), QStringLiteral("/com/spotify/track/3n3Ppam7vgaVa1iaRUc9Lp")}
+            };
+            mediaWidget.applyMetadata(initialMeta);
+            check("media: extracts title, artist, album, duration, and rewrites legacy Spotify artUrl",
+                  mediaWidget.trackTitle() == QStringLiteral("breesh breesh")
+                      && mediaWidget.trackArtist() == QStringLiteral("Nettspend")
+                      && mediaWidget.trackAlbum() == QStringLiteral("HIM")
+                      && mediaWidget.trackDurationMs() == 134000
+                      && mediaWidget.artUrl() == QStringLiteral("https://i.scdn.co/image/ab67616d0000b273deadbeef"));
+
+            const int beforeUpdate = trackNotifications;
+            QVariantMap delayedArtMeta = initialMeta;
+            delayedArtMeta.insert(QStringLiteral("mpris:artUrl"), QStringLiteral("https://i.scdn.co/image/updatedcover"));
+            mediaWidget.applyMetadata(delayedArtMeta);
+            check("media: delayed artUrl update on same track notifies trackInfoChanged",
+                  mediaWidget.artUrl() == QStringLiteral("https://i.scdn.co/image/updatedcover")
+                      && trackNotifications > beforeUpdate);
+
+            QVariantMap unsafeArtMeta = initialMeta;
+            unsafeArtMeta.insert(QStringLiteral("mpris:artUrl"), QStringLiteral("javascript:alert(1)"));
+            mediaWidget.applyMetadata(unsafeArtMeta);
+            check("media: unsafe artUrl scheme is rejected", mediaWidget.artUrl().isEmpty());
+
+            mediaWidget.applyPlayerProperties({
+                {QStringLiteral("CanControl"), true},
+                {QStringLiteral("CanPlay"), true},
+                {QStringLiteral("CanPause"), true},
+                {QStringLiteral("CanGoNext"), true},
+                {QStringLiteral("CanGoPrevious"), false},
+                {QStringLiteral("CanSeek"), true},
+                {QStringLiteral("Shuffle"), true},
+                {QStringLiteral("LoopStatus"), QStringLiteral("Playlist")}
+            }, {});
+            check("media: MPRIS player capabilities and modes are exposed",
+                  mediaWidget.canPlayPause() && mediaWidget.canGoNext() && !mediaWidget.canGoPrevious()
+                      && mediaWidget.canSeek() && mediaWidget.hasShuffle() && mediaWidget.shuffle()
+                      && mediaWidget.hasLoopStatus() && mediaWidget.loopStatus() == QStringLiteral("Playlist"));
+
+            mediaWidget.seekToPosition(45000);
+            check("media: seekToPosition updates live playbackPositionMs immediately",
+                  mediaWidget.playbackPositionMs() >= 45000 && mediaWidget.playbackPositionMs() <= 46000);
+
+            mediaWidget.cycleLoopStatus();
+            check("media: cycleLoopStatus transitions Playlist -> Track",
+                  mediaWidget.loopStatus() == QStringLiteral("Track") && mediaWidget.m_repeatTrack);
+            mediaWidget.toggleShuffle();
+            check("media: toggleShuffle flips shuffle state", !mediaWidget.shuffle());
+
+            mediaWidget.applyPlayerProperties({}, {QStringLiteral("Shuffle"), QStringLiteral("LoopStatus")});
+            check("media: invalidating Shuffle and LoopStatus hides mode controls",
+                  !mediaWidget.hasShuffle() && !mediaWidget.hasLoopStatus() && mediaWidget.loopStatus().isEmpty());
+
+            mediaWidget.clearDisplay();
+            check("media: clearDisplay clears separated metadata and artUrl",
+                  mediaWidget.trackTitle().isEmpty() && mediaWidget.trackArtist().isEmpty()
+                      && mediaWidget.trackAlbum().isEmpty() && mediaWidget.artUrl().isEmpty()
+                      && mediaWidget.trackDurationMs() == 0);
+
+            QStringList popupWarnings;
+            QQmlEngine popupEngine;
+            KLocalizedContext popupLocalization(&popupEngine);
+            popupEngine.rootContext()->setContextObject(&popupLocalization);
+            QObject::connect(&popupEngine, &QQmlEngine::warnings, [&](const QList<QQmlError> &warnings) {
+                for (const auto &warning : warnings) {
+                    popupWarnings.append(warning.toString());
+                }
+            });
+            QQmlComponent fullPopup(&popupEngine, QUrl::fromLocalFile(QStringLiteral(SOURCE_DIR "/contents/ui/LyricPopup.qml")));
+            QScopedPointer<QObject> fullPopupObj(fullPopup.createWithInitialProperties({
+                {QStringLiteral("trackInfo"), QStringLiteral("Nettspend — breesh breesh")},
+                {QStringLiteral("trackTitle"), QStringLiteral("breesh breesh")},
+                {QStringLiteral("trackArtist"), QStringLiteral("Nettspend")},
+                {QStringLiteral("trackAlbum"), QStringLiteral("HIM")},
+                {QStringLiteral("playerName"), QStringLiteral("spotify")},
+                {QStringLiteral("hasPlayer"), true},
+                {QStringLiteral("playing"), true},
+                {QStringLiteral("trackDurationMs"), 134000.0},
+                {QStringLiteral("playbackPositionMs"), 42000.0},
+                {QStringLiteral("canGoNext"), true},
+                {QStringLiteral("canGoPrevious"), true},
+                {QStringLiteral("canPlayPause"), true},
+                {QStringLiteral("canSeek"), true},
+                {QStringLiteral("hasShuffle"), true},
+                {QStringLiteral("shuffle"), false},
+                {QStringLiteral("hasLoopStatus"), true},
+                {QStringLiteral("loopStatus"), QStringLiteral("Track")},
+                {QStringLiteral("hasLyrics"), true},
+                {QStringLiteral("line"), QStringLiteral("Current lyric line")},
+                {QStringLiteral("attribution"), QStringLiteral("lrc.red")},
+                {QStringLiteral("showAttribution"), true}
+            }));
+            check("media popup: loads full player controls without QML warnings",
+                  !fullPopupObj.isNull() && popupWarnings.isEmpty(),
+                  fullPopup.errorString() + popupWarnings.join(QStringLiteral("\n")));
+            if (fullPopupObj) {
+                const double w = fullPopupObj->property("implicitWidth").toDouble();
+                const double h = fullPopupObj->property("implicitHeight").toDouble();
+                check("media popup: reports full non-clipped implicit size for Plasma AppletPopup",
+                      w >= 300.0 && h >= 200.0,
+                      QStringLiteral("got %1x%2").arg(w).arg(h));
+                fullPopupObj->setProperty("blurBackground", false);
+                fullPopupObj->setProperty("roundedCorners", false);
+                check("media popup: disables album cover rounding and background blur cleanly",
+                      fullPopupObj->property("cardRadius").toInt() > 0
+                          && fullPopupObj->property("coverRadius").toInt() == 0
+                          && popupWarnings.isEmpty(),
+                      popupWarnings.join(QStringLiteral("\n")));
+            }
+            check("media settings: popup blur and rounded corners default to enabled",
+                  mediaWidget.popupBlurBackground() && mediaWidget.popupRoundedCorners());
+            mediaWidget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("popupBlurBackground"), false);
+            mediaWidget.config().group(QStringLiteral("General")).writeEntry(QStringLiteral("popupRoundedCorners"), false);
+            mediaWidget.readSettings();
+            check("media settings: popup blur and rounded corners follow configuration",
+                  !mediaWidget.popupBlurBackground() && !mediaWidget.popupRoundedCorners());
+        }
+
         widget.m_watchedService.clear();
         return failures ? 1 : 0;
     }

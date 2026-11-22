@@ -108,8 +108,24 @@ public:
 
     // Player information coming from MPRIS
     Q_PROPERTY(QString player READ player NOTIFY playerChanged)
+    Q_PROPERTY(bool hasPlayer READ hasPlayer NOTIFY playerChanged)
     Q_PROPERTY(QString trackInfo READ trackInfo NOTIFY trackInfoChanged)
+    Q_PROPERTY(QString trackTitle READ trackTitle NOTIFY trackInfoChanged)
+    Q_PROPERTY(QString trackArtist READ trackArtist NOTIFY trackInfoChanged)
+    Q_PROPERTY(QString trackAlbum READ trackAlbum NOTIFY trackInfoChanged)
+    Q_PROPERTY(QString artUrl READ artUrl NOTIFY trackInfoChanged)
+    Q_PROPERTY(qint64 trackDurationMs READ trackDurationMs NOTIFY trackInfoChanged)
+    Q_PROPERTY(qint64 playbackPositionMs READ playbackPositionMs NOTIFY playbackPositionChanged)
     Q_PROPERTY(bool playing READ isPlaying NOTIFY playingChanged)
+    Q_PROPERTY(bool canGoNext READ canGoNext NOTIFY playerControlsChanged)
+    Q_PROPERTY(bool canGoPrevious READ canGoPrevious NOTIFY playerControlsChanged)
+    Q_PROPERTY(bool canPlayPause READ canPlayPause NOTIFY playerControlsChanged)
+    Q_PROPERTY(bool canSeek READ canSeek NOTIFY playerControlsChanged)
+    Q_PROPERTY(bool hasShuffle READ hasShuffle NOTIFY playerControlsChanged)
+    Q_PROPERTY(bool shuffle READ shuffle NOTIFY playerControlsChanged)
+    Q_PROPERTY(bool hasLoopStatus READ hasLoopStatus NOTIFY playerControlsChanged)
+    Q_PROPERTY(QString loopStatus READ loopStatus NOTIFY playerControlsChanged)
+    Q_PROPERTY(bool searchingLyrics READ isSearchingLyrics NOTIFY searchingLyricsChanged)
 
     // Configuration, mirrored here so that QML does not need to deal with
     // KConfigPropertyMap at all.
@@ -143,6 +159,10 @@ public:
     Q_PROPERTY(bool pauseHidden READ isPauseHidden NOTIFY pauseHiddenChanged)
     /// Whether to display note symbol during intros and instrumental pauses.
     Q_PROPERTY(bool showNoteDuringPauses READ showNoteDuringPauses NOTIFY settingsChanged)
+    /// Whether to show blurred album art glow behind the popup player card.
+    Q_PROPERTY(bool popupBlurBackground READ popupBlurBackground NOTIFY settingsChanged)
+    /// Whether to round corners in the popup player and lyric cards.
+    Q_PROPERTY(bool popupRoundedCorners READ popupRoundedCorners NOTIFY settingsChanged)
     /// Whether lyrics for the current track have been discarded for this playback.
     Q_PROPERTY(bool isLyricsDiscarded READ isLyricsDiscarded NOTIFY lyricsDiscardedChanged)
     Q_PROPERTY(bool isManualCandidateSelected READ isManualCandidateSelected NOTIFY manualCandidateSelectedChanged)
@@ -357,13 +377,74 @@ public:
     {
         return m_player;
     }
+    bool hasPlayer() const
+    {
+        return !m_watchedService.isEmpty();
+    }
     QString trackInfo() const
     {
         return m_trackInfo;
     }
+    QString trackTitle() const
+    {
+        return m_trackTitle;
+    }
+    QString trackArtist() const
+    {
+        return m_trackArtist;
+    }
+    QString trackAlbum() const
+    {
+        return m_trackAlbum;
+    }
+    QString artUrl() const
+    {
+        return m_artUrl;
+    }
+    qint64 trackDurationMs() const
+    {
+        return m_trackLengthUs > 0 ? m_trackLengthUs / 1000 : 0;
+    }
+    qint64 playbackPositionMs() const;
     bool isPlaying() const
     {
         return !m_playingKnown || m_playing;
+    }
+    bool canGoNext() const
+    {
+        return !m_watchedService.isEmpty() && m_canControl && m_canGoNext;
+    }
+    bool canGoPrevious() const
+    {
+        return !m_watchedService.isEmpty() && m_canControl && m_canGoPrevious;
+    }
+    bool canPlayPause() const
+    {
+        return !m_watchedService.isEmpty() && m_canControl && (isPlaying() ? m_canPause : m_canPlay);
+    }
+    bool canSeek() const
+    {
+        return !m_watchedService.isEmpty() && m_canControl && m_canSeek && m_trackLengthUs > 0;
+    }
+    bool hasShuffle() const
+    {
+        return !m_watchedService.isEmpty() && m_canControl && m_hasShuffle;
+    }
+    bool shuffle() const
+    {
+        return m_shuffle;
+    }
+    bool hasLoopStatus() const
+    {
+        return !m_watchedService.isEmpty() && m_canControl && m_hasLoopStatus;
+    }
+    QString loopStatus() const
+    {
+        return m_loopStatus;
+    }
+    bool isSearchingLyrics() const
+    {
+        return m_searchingLyrics;
     }
 
     QString placeholderText() const;
@@ -411,6 +492,14 @@ public:
     {
         return m_showNoteDuringPauses;
     }
+    bool popupBlurBackground() const
+    {
+        return m_popupBlurBackground;
+    }
+    bool popupRoundedCorners() const
+    {
+        return m_popupRoundedCorners;
+    }
     bool isLyricsDiscarded() const
     {
         return m_lyricsDiscarded;
@@ -419,6 +508,12 @@ public:
     Q_INVOKABLE void togglePlayPause();
     Q_INVOKABLE void nextTrack();
     Q_INVOKABLE void previousTrack();
+    Q_INVOKABLE void seekToPosition(qint64 positionMs);
+    Q_INVOKABLE qint64 currentPlaybackPositionMs() const;
+    Q_INVOKABLE void syncPosition();
+    Q_INVOKABLE void toggleShuffle();
+    Q_INVOKABLE void cycleLoopStatus();
+    Q_INVOKABLE void raisePlayer();
     Q_INVOKABLE void copyCurrentLine();
     Q_INVOKABLE void toggleBlacklistCurrentTrack();
     Q_INVOKABLE QStringList blacklistedTrackList() const;
@@ -466,6 +561,9 @@ Q_SIGNALS:
     void playerChanged();
     void trackInfoChanged();
     void playingChanged();
+    void playbackPositionChanged();
+    void playerControlsChanged();
+    void searchingLyricsChanged();
     void settingsChanged();
     void trackBlacklistChanged();
     void lyricsDiscardedChanged();
@@ -522,6 +620,7 @@ private:
     void setPlaying(bool playing, bool known);
     void setTrackInfo(const QString &trackInfo);
     void setPlayer(const QString &player);
+    void updateSearchingLyricsState();
 
     /// Called when the watched player reports a new Metadata map.
     void applyMetadata(const QVariantMap &metadata);
@@ -619,6 +718,7 @@ private:
     QString m_trackArtist;
     QString m_trackTitle;
     QString m_trackAlbum;
+    QString m_artUrl;
     QString m_trackUrl;
     TrackMetadata m_lastSearchRawMeta;
     TrackMetadata m_lastSearchNormalizedMeta;
@@ -737,6 +837,17 @@ private:
     bool m_trackJustChanged = false;
     bool m_manualSkipPending = false;
     bool m_repeatTrack = false;
+    bool m_canControl = true;
+    bool m_canPlay = true;
+    bool m_canPause = true;
+    bool m_canGoNext = true;
+    bool m_canGoPrevious = true;
+    bool m_canSeek = false;
+    bool m_hasShuffle = false;
+    bool m_shuffle = false;
+    bool m_hasLoopStatus = false;
+    QString m_loopStatus;
+    bool m_searchingLyrics = false;
     int m_trackChangeRetries = 0;
     int m_zeroPositionPolls = 0;
     int m_lineIndex;
@@ -749,6 +860,8 @@ private:
     int m_sungEnd = 0;
     int m_backingSungEnd = 0;
     bool m_showNoteDuringPauses = false;
+    bool m_popupBlurBackground = true;
+    bool m_popupRoundedCorners = true;
     bool m_lyricsDiscarded = false;
     Lyrics m_discardedLyrics;
     bool m_discardedFromSpicy = false;

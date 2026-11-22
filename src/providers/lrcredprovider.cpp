@@ -33,7 +33,7 @@ namespace
 constexpr qint64 kLrcRedCacheTtlMs = 30LL * 24 * 60 * 60 * 1000;
 constexpr qint64 kNegativeCacheTtlMs = 24LL * 60 * 60 * 1000;
 constexpr int kRequestTimeoutMs = 12000;
-const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.10.1 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
+const QByteArray s_userAgent = QByteArrayLiteral("plasma-lrc/1.11.0 (https://github.com/skippingclass/plasma-lrc; contact: itzmeowzer@gmail.com)");
 } // namespace
 
 LrcRedProvider::LrcRedProvider(QObject *parent, const QString &apiBase)

@@ -25,8 +25,10 @@
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
 #include <QDBusMessage>
+#include <QDBusObjectPath>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QDBusVariant>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -124,6 +126,64 @@ QString normalizeBlacklistEntry(QString text)
     text.replace(QChar(0x2014), QLatin1Char('-'));
     text.replace(QChar(0x2212), QLatin1Char('-'));
     return text.simplified().toLower();
+}
+
+QString normalizeArtUrl(const QString &raw)
+{
+    QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty()) {
+        return {};
+    }
+
+    static const QString kSpotifyHttpsPrefix = QStringLiteral("https://open.spotify.com/image/");
+    static const QString kSpotifyHttpPrefix = QStringLiteral("http://open.spotify.com/image/");
+    if (trimmed.startsWith(kSpotifyHttpsPrefix, Qt::CaseInsensitive)) {
+        trimmed = QStringLiteral("https://i.scdn.co/image/") + trimmed.mid(kSpotifyHttpsPrefix.size());
+    } else if (trimmed.startsWith(kSpotifyHttpPrefix, Qt::CaseInsensitive)) {
+        trimmed = QStringLiteral("https://i.scdn.co/image/") + trimmed.mid(kSpotifyHttpPrefix.size());
+    } else if (trimmed.startsWith(QLatin1Char('/'))) {
+        return QUrl::fromLocalFile(trimmed).toString();
+    }
+
+    const QUrl url(trimmed);
+    if (!url.isValid()) {
+        return {};
+    }
+    const QString scheme = url.scheme().toLower();
+    if (scheme == QLatin1String("https") || scheme == QLatin1String("http") || scheme == QLatin1String("file")) {
+        return url.toString();
+    }
+    if (scheme == QLatin1String("data") && trimmed.startsWith(QLatin1String("data:image/"), Qt::CaseInsensitive)) {
+        return trimmed;
+    }
+    return {};
+}
+
+bool isValidDbusObjectPath(const QString &path)
+{
+    if (path.isEmpty() || !path.startsWith(QLatin1Char('/'))) {
+        return false;
+    }
+    if (path.size() > 1 && path.endsWith(QLatin1Char('/'))) {
+        return false;
+    }
+    bool prevSlash = false;
+    for (const QChar ch : path) {
+        if (ch == QLatin1Char('/')) {
+            if (prevSlash) {
+                return false;
+            }
+            prevSlash = true;
+            continue;
+        }
+        prevSlash = false;
+        const ushort u = ch.unicode();
+        const bool ok = (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') || u == '_';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Qt hands us nested dictionaries as a QDBusArgument, but be lenient and accept
@@ -472,6 +532,8 @@ void LrcApplet::readSettings()
     const QString spicyKey = spicyKeySetting();
     const bool showBackingVocals = boolSetting(QStringLiteral("showBackingVocals"), false);
     const bool showNoteDuringPauses = boolSetting(QStringLiteral("showNoteDuringPauses"), false);
+    const bool popupBlurBackground = boolSetting(QStringLiteral("popupBlurBackground"), true);
+    const bool popupRoundedCorners = boolSetting(QStringLiteral("popupRoundedCorners"), true);
 
     const bool changed = player != m_configuredPlayer //
         || preferredPlayer != m_preferredPlayer //
@@ -495,7 +557,9 @@ void LrcApplet::readSettings()
         || useSpicy != m_useSpicy //
         || spicyKey != m_spicyKey //
         || showBackingVocals != m_showBackingVocals //
-        || showNoteDuringPauses != m_showNoteDuringPauses;
+        || showNoteDuringPauses != m_showNoteDuringPauses //
+        || popupBlurBackground != m_popupBlurBackground //
+        || popupRoundedCorners != m_popupRoundedCorners;
 
     const bool blacklistChanged = (blacklistedTracks != m_blacklistedTracks);
     const bool wasTrackBlacklisted = isCurrentTrackBlacklisted();
@@ -521,6 +585,8 @@ void LrcApplet::readSettings()
     m_customHighlightColor = customHighlightColor;
     m_blacklistedTracks = blacklistedTracks;
     m_showNoteDuringPauses = showNoteDuringPauses;
+    m_popupBlurBackground = popupBlurBackground;
+    m_popupRoundedCorners = popupRoundedCorners;
 
     if (!m_watchedService.isEmpty() && !player.isEmpty() && !playerNameMatches(player, m_player)) {
         detachPlayer();
@@ -1036,6 +1102,8 @@ void LrcApplet::setPlaying(bool playing, bool known)
     m_playing = playing;
     m_playingKnown = known;
     Q_EMIT playingChanged();
+    Q_EMIT playbackPositionChanged();
+    Q_EMIT playerControlsChanged();
 
     if (playing) {
         m_pauseTimer.stop();
@@ -1107,6 +1175,7 @@ void LrcApplet::clearLyrics()
     m_lyricsLookupDone = false;
     m_missingReason = MissingReason::Unsynced;
     clearRenderedLyrics();
+    updateSearchingLyricsState();
 
     if (m_playing && !m_pauseHidden) {
         m_wordTimer.start(kIdleTickMs);
@@ -1175,6 +1244,7 @@ void LrcApplet::resetTrackPosition(bool isTrackTransition)
     m_trackChangeRetries = 0;
     m_zeroPositionPolls = 0;
     ++m_lookupGeneration;
+    Q_EMIT playbackPositionChanged();
 }
 
 namespace
@@ -1329,18 +1399,27 @@ void LrcApplet::clearDisplay()
     m_lineIndex = -1;
     setText(QString());
     setActive(false);
-    setTrackInfo(QString());
+    const bool hadTrackMeta = !m_trackInfo.isEmpty() || !m_trackArtist.isEmpty() || !m_trackTitle.isEmpty()
+        || !m_trackAlbum.isEmpty() || !m_artUrl.isEmpty() || m_trackLengthUs != 0;
+    const bool hadTrackInfo = !m_trackInfo.isEmpty();
     m_trackArtist.clear();
     m_trackTitle.clear();
     m_trackAlbum.clear();
+    m_artUrl.clear();
     m_trackUrl.clear();
     m_trackLengthUs = 0;
+    setTrackInfo(QString());
+    if (hadTrackMeta && !hadTrackInfo) {
+        Q_EMIT trackInfoChanged();
+    }
     updateSongContext();
     m_webPageSession = false;
     m_useCleanedLookup = true;
     m_lastLookupWasCleaned = false;
     m_fetchingFromSpicy = false;
     m_fetchingLrc = false;
+    updateSearchingLyricsState();
+    Q_EMIT playerControlsChanged();
     m_gaplessLeadMs = 0;
     m_manualSkipPending = false;
     m_pauseTimer.stop();
@@ -1490,6 +1569,143 @@ void LrcApplet::previousTrack()
     }
     QDBusMessage msg = QDBusMessage::createMethodCall(m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("Previous"));
     QDBusConnection::sessionBus().send(msg);
+}
+
+qint64 LrcApplet::playbackPositionMs() const
+{
+    if (!m_positionValid) {
+        return 0;
+    }
+    qint64 pos = m_positionBaseMs + currentClockElapsedMs();
+    if (pos < 0) {
+        pos = 0;
+    }
+    const qint64 durationMs = trackDurationMs();
+    if (durationMs > 0 && pos > durationMs) {
+        pos = durationMs;
+    }
+    return pos;
+}
+
+qint64 LrcApplet::currentPlaybackPositionMs() const
+{
+    return playbackPositionMs();
+}
+
+void LrcApplet::syncPosition()
+{
+    if (m_watchedService.isEmpty()) {
+        return;
+    }
+    m_positionRetries.invalidate();
+    m_positionChecks.invalidate();
+    requestPosition();
+}
+
+void LrcApplet::seekToPosition(qint64 positionMs)
+{
+    if (m_watchedService.isEmpty() || !m_canControl || !m_canSeek) {
+        return;
+    }
+    const qint64 durationMs = trackDurationMs();
+    qint64 targetMs = qMax<qint64>(0, positionMs);
+    if (durationMs > 0) {
+        targetMs = qMin(targetMs, durationMs);
+    }
+
+    const qint64 previousMs = playbackPositionMs();
+    const qint64 targetUs = targetMs * 1000;
+
+    if (isValidDbusObjectPath(m_mprisTrackId)) {
+        QDBusMessage msg = QDBusMessage::createMethodCall(
+            m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("SetPosition"));
+        msg << QVariant::fromValue(QDBusObjectPath(m_mprisTrackId)) << targetUs;
+        QDBusConnection::sessionBus().send(msg);
+    } else {
+        const qint64 offsetUs = (targetMs - previousMs) * 1000;
+        QDBusMessage msg = QDBusMessage::createMethodCall(
+            m_watchedService, s_playerPath, s_playerInterface, QStringLiteral("Seek"));
+        msg << offsetUs;
+        QDBusConnection::sessionBus().send(msg);
+    }
+
+    m_gaplessLeadMs = 0;
+    m_recentSeekTimer.start();
+    m_prevTrackNaturalEndTimer.invalidate();
+    m_lastAcceptedMprisPositionMs = targetMs;
+    m_mprisMeasurementTimer.start();
+    m_positionBaseMs = targetMs;
+    m_positionValid = true;
+    m_wordCursor = 0;
+    if (m_playing) {
+        m_positionClock.start();
+    } else {
+        m_positionClock.invalidate();
+    }
+    m_positionChecks.start();
+    Q_EMIT playbackPositionChanged();
+    if (m_lyrics.isUsable() && !m_pauseHidden) {
+        updateWord();
+    }
+}
+
+void LrcApplet::toggleShuffle()
+{
+    if (m_watchedService.isEmpty() || !m_canControl || !m_hasShuffle) {
+        return;
+    }
+    const bool nextShuffle = !m_shuffle;
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        m_watchedService, s_playerPath, s_propertiesInterface, QStringLiteral("Set"));
+    msg << s_playerInterface << QStringLiteral("Shuffle") << QVariant::fromValue(QDBusVariant(nextShuffle));
+    QDBusConnection::sessionBus().send(msg);
+
+    m_shuffle = nextShuffle;
+    Q_EMIT playerControlsChanged();
+}
+
+void LrcApplet::cycleLoopStatus()
+{
+    if (m_watchedService.isEmpty() || !m_canControl || !m_hasLoopStatus) {
+        return;
+    }
+    QString nextStatus;
+    if (m_loopStatus == QLatin1String("None")) {
+        nextStatus = QStringLiteral("Playlist");
+    } else if (m_loopStatus == QLatin1String("Playlist")) {
+        nextStatus = QStringLiteral("Track");
+    } else {
+        nextStatus = QStringLiteral("None");
+    }
+
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        m_watchedService, s_playerPath, s_propertiesInterface, QStringLiteral("Set"));
+    msg << s_playerInterface << QStringLiteral("LoopStatus") << QVariant::fromValue(QDBusVariant(nextStatus));
+    QDBusConnection::sessionBus().send(msg);
+
+    m_loopStatus = nextStatus;
+    m_repeatTrack = (nextStatus == QLatin1String("Track"));
+    Q_EMIT playerControlsChanged();
+}
+
+void LrcApplet::raisePlayer()
+{
+    if (m_watchedService.isEmpty()) {
+        return;
+    }
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        m_watchedService, s_playerPath, QStringLiteral("org.mpris.MediaPlayer2"), QStringLiteral("Raise"));
+    QDBusConnection::sessionBus().send(msg);
+}
+
+void LrcApplet::updateSearchingLyricsState()
+{
+    const bool searching = m_fetchingFromSpicy || m_fetchingLrc
+        || (m_pipeline && m_pipeline->isLookupActive());
+    if (m_searchingLyrics != searching) {
+        m_searchingLyrics = searching;
+        Q_EMIT searchingLyricsChanged();
+    }
 }
 
 bool LrcApplet::isTrackBlacklisted(const QString &artist, const QString &title) const
@@ -1791,6 +2007,8 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
     const QStringList artists = trackArtists(metadata.value(QStringLiteral("xesam:artist")));
     const QString title = metadata.value(QStringLiteral("xesam:title")).toString();
     const QString artist = artists.join(QStringLiteral(", "));
+    const QString album = metadata.value(QStringLiteral("xesam:album")).toString();
+    const QString artUrl = normalizeArtUrl(metadata.value(QStringLiteral("mpris:artUrl")).toString());
     const QString rawTrackId = mprisTrackId(metadata.value(QStringLiteral("mpris:trackid")));
     const QString trackId = SpicyLyrics::trackIdFromMpris(rawTrackId);
     const qint64 lengthUs = metadata.value(QStringLiteral("mpris:length")).toLongLong();
@@ -1867,16 +2085,25 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         clearLyrics();
         m_gaplessLeadMs = gaplessLead;
 
+        const bool hadDuration = m_trackLengthUs > 0;
+        const bool trackInfoUnchanged = (m_trackInfo == trackInfo);
         m_webPageSession = isWebSession;
         m_trackArtist = artist;
         m_trackTitle = title;
-        m_trackAlbum = metadata.value(QStringLiteral("xesam:album")).toString();
+        m_trackAlbum = album;
+        m_artUrl = artUrl;
         m_trackUrl = metadata.value(QStringLiteral("xesam:url")).toString();
         m_trackLengthUs = lengthUs;
         m_spotifyTrackId = trackId;
         m_mprisTrackId = rawTrackId;
         updateSongContext();
         setTrackInfo(trackInfo);
+        if (trackInfoUnchanged) {
+            Q_EMIT trackInfoChanged();
+        }
+        if (hadDuration != (m_trackLengthUs > 0)) {
+            Q_EMIT playerControlsChanged();
+        }
 
         if (m_playingKnown && !m_playing && m_pauseHideDelay > 0) {
             m_pauseHidden = true;
@@ -1889,10 +2116,20 @@ void LrcApplet::applyMetadata(const QVariantMap &metadata)
         requestPosition();
         requestLyrics();
     } else {
-        setTrackInfo(trackInfo);
-        m_trackAlbum = metadata.value(QStringLiteral("xesam:album")).toString();
+        const bool hadDuration = m_trackLengthUs > 0;
+        const bool detailsChanged = (m_trackAlbum != album || m_artUrl != artUrl || m_trackLengthUs != lengthUs);
+        const bool trackInfoUnchanged = (m_trackInfo == trackInfo);
+        m_trackAlbum = album;
+        m_artUrl = artUrl;
         m_trackUrl = metadata.value(QStringLiteral("xesam:url")).toString();
         m_trackLengthUs = lengthUs;
+        setTrackInfo(trackInfo);
+        if (detailsChanged && trackInfoUnchanged) {
+            Q_EMIT trackInfoChanged();
+        }
+        if (hadDuration != (m_trackLengthUs > 0)) {
+            Q_EMIT playerControlsChanged();
+        }
         if (updateSongContext()) {
             if (!m_manualCandidateSelected
                 && (m_candidateController->isRestoringMatch() || !m_savedCandidateId.isEmpty() || hasImportedLyrics())) {
@@ -1937,6 +2174,7 @@ void LrcApplet::requestLyrics(bool restoreRememberedMatch)
 
     m_fetchingFromSpicy = false;
     m_fetchingLrc = true;
+    updateSearchingLyricsState();
 
     m_candidateLookupGeneration = ++m_lookupGeneration;
     if (m_fromSpicy) {
@@ -1994,6 +2232,7 @@ void LrcApplet::onPipelineResolved(quint64 generation, const Lyrics &lyrics, con
         m_fetchingFromSpicy = false;
         m_lyricsLookupDone = true;
     }
+    updateSearchingLyricsState();
 
     m_lyrics = lyrics;
     ++m_lyricsRevision;
@@ -2033,6 +2272,7 @@ void LrcApplet::onPipelineLookupFinished(quint64 generation)
     m_fetchingLrc = false;
     m_fetchingFromSpicy = false;
     m_lyricsLookupDone = true;
+    updateSearchingLyricsState();
 }
 
 void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason)
@@ -2045,6 +2285,7 @@ void LrcApplet::onPipelineAllFailed(quint64 generation, MissingReason lastReason
     m_fetchingFromSpicy = false;
     m_missingReason = lastReason;
     clearRenderedLyrics();
+    updateSearchingLyricsState();
 
     if (!QStandardPaths::findExecutable(QStringLiteral("lrc_tty")).isEmpty()) {
         fetchLrcLyrics(false);
@@ -2295,6 +2536,7 @@ void LrcApplet::onSpicyLoaded(const QString &trackId, const Lyrics &lyrics)
         m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
         updateWord();
     }
+    updateSearchingLyricsState();
     Q_EMIT lyricsChanged();
 }
 
@@ -2317,6 +2559,7 @@ void LrcApplet::onSpicyMissing(const QString &trackId, MissingReason reason)
         m_fetchingLrc = false;
         m_lyricsLookupDone = true;
     }
+    updateSearchingLyricsState();
 }
 
 void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
@@ -2347,6 +2590,7 @@ void LrcApplet::onLrclibLoaded(const QString &key, const Lyrics &lyrics)
         m_wordTimer.start(m_playing ? kWordTickMs : kIdleTickMs);
         updateWord();
     }
+    updateSearchingLyricsState();
     Q_EMIT lyricsChanged();
 }
 
@@ -2357,6 +2601,7 @@ void LrcApplet::onLrclibMissing(const QString &key)
     }
     m_fetchingLrc = false;
     m_lyricsLookupDone = true;
+    updateSearchingLyricsState();
     if (m_playing && !m_pauseHidden) {
         m_wordTimer.start(kIdleTickMs);
     }
@@ -2474,6 +2719,7 @@ void LrcApplet::onPositionFetched()
                 m_positionChecks.start();
                 m_lastSyncStateSaveTimer.start();
                 saveSyncState();
+                Q_EMIT playbackPositionChanged();
                 if (m_lyrics.isUsable() && !m_pauseHidden) {
                     updateWord();
                 }
@@ -2572,6 +2818,8 @@ void LrcApplet::onPositionFetched()
         saveSyncState();
     }
 
+    Q_EMIT playbackPositionChanged();
+
     if (m_lyrics.isUsable() && !m_pauseHidden) {
         updateWord();
     }
@@ -2612,6 +2860,7 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
             m_positionChecks.start();
             m_lastSyncStateSaveTimer.start();
             saveSyncState();
+            Q_EMIT playbackPositionChanged();
             if (m_lyrics.isUsable() && !m_pauseHidden) {
                 updateWord();
             }
@@ -2659,6 +2908,7 @@ void LrcApplet::onPlayerSeeked(qint64 positionUs)
 
     m_lastSyncStateSaveTimer.start();
     saveSyncState();
+    Q_EMIT playbackPositionChanged();
     if (m_lyrics.isUsable() && !m_pauseHidden) {
         updateWord();
     }
@@ -3741,6 +3991,16 @@ void LrcApplet::unwatchPlayer()
     }
     resetManualMatch();
     m_repeatTrack = false;
+    m_canControl = true;
+    m_canPlay = true;
+    m_canPause = true;
+    m_canGoNext = true;
+    m_canGoPrevious = true;
+    m_canSeek = false;
+    m_hasShuffle = false;
+    m_shuffle = false;
+    m_hasLoopStatus = false;
+    m_loopStatus.clear();
     m_playbackRate = 1.0;
     delete m_propertyWatcher;
     m_propertyWatcher = nullptr;
@@ -3771,6 +4031,8 @@ void LrcApplet::unwatchPlayer()
                    this,
                    SLOT(onPlayerSeeked(qint64)));
     m_watchedService.clear();
+    Q_EMIT playerChanged();
+    Q_EMIT playerControlsChanged();
 
     // Nobody is around to tell us about playback any more: fall back to plain
     // polling so that another player can be picked up.
@@ -3795,6 +4057,8 @@ void LrcApplet::watchPlayer()
     }
 
     m_watchedService = s_mprisPrefix + m_player;
+    Q_EMIT playerChanged();
+    Q_EMIT playerControlsChanged();
 
     // Whatever the previous player told us is not this one's: not its track, not
     // its length, and not the line on the panel. Leaving that last one is what put
@@ -3919,12 +4183,72 @@ void LrcApplet::applyPlayerProperties(const QVariantMap &properties, const QStri
 {
     m_awaitingState = false;
 
+    bool controlsChanged = false;
+    auto updateBoolProp = [&](const QString &key, bool &field, bool defaultValue) {
+        if (invalidated.contains(key)) {
+            if (field != defaultValue) {
+                field = defaultValue;
+                controlsChanged = true;
+            }
+        }
+        const auto it = properties.constFind(key);
+        if (it != properties.constEnd() && it.value().isValid()) {
+            const bool val = it.value().toBool();
+            if (field != val) {
+                field = val;
+                controlsChanged = true;
+            }
+        }
+    };
+
+    updateBoolProp(QStringLiteral("CanControl"), m_canControl, true);
+    updateBoolProp(QStringLiteral("CanPlay"), m_canPlay, true);
+    updateBoolProp(QStringLiteral("CanPause"), m_canPause, true);
+    updateBoolProp(QStringLiteral("CanGoNext"), m_canGoNext, true);
+    updateBoolProp(QStringLiteral("CanGoPrevious"), m_canGoPrevious, true);
+    updateBoolProp(QStringLiteral("CanSeek"), m_canSeek, false);
+
+    if (invalidated.contains(QStringLiteral("Shuffle"))) {
+        if (m_hasShuffle || m_shuffle) {
+            m_hasShuffle = false;
+            m_shuffle = false;
+            controlsChanged = true;
+        }
+    }
+    const auto shuffleIt = properties.constFind(QStringLiteral("Shuffle"));
+    if (shuffleIt != properties.constEnd() && shuffleIt.value().isValid()) {
+        const bool val = shuffleIt.value().toBool();
+        if (!m_hasShuffle || m_shuffle != val) {
+            m_hasShuffle = true;
+            m_shuffle = val;
+            controlsChanged = true;
+        }
+    }
+
     if (invalidated.contains(QStringLiteral("LoopStatus"))) {
         m_repeatTrack = false;
+        if (m_hasLoopStatus || !m_loopStatus.isEmpty()) {
+            m_hasLoopStatus = false;
+            m_loopStatus.clear();
+            controlsChanged = true;
+        }
     }
     const auto loopIt = properties.constFind(QStringLiteral("LoopStatus"));
     if (loopIt != properties.constEnd()) {
-        m_repeatTrack = loopIt.value().toString() == QLatin1String("Track");
+        const QString loopStr = loopIt.value().toString();
+        m_repeatTrack = (loopStr == QLatin1String("Track"));
+        const bool validLoop = (loopStr == QLatin1String("None")
+                                || loopStr == QLatin1String("Track")
+                                || loopStr == QLatin1String("Playlist"));
+        if (m_hasLoopStatus != validLoop || m_loopStatus != (validLoop ? loopStr : QString())) {
+            m_hasLoopStatus = validLoop;
+            m_loopStatus = validLoop ? loopStr : QString();
+            controlsChanged = true;
+        }
+    }
+
+    if (controlsChanged) {
+        Q_EMIT playerControlsChanged();
     }
 
     if (invalidated.contains(QStringLiteral("Rate"))) {

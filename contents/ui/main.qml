@@ -1022,8 +1022,28 @@ PlasmoidItem {
         // then remembers it in the panel configuration.
 
         trackInfo: Plasmoid.trackInfo
+        trackTitle: Plasmoid.trackTitle
+        trackArtist: Plasmoid.trackArtist
+        trackAlbum: Plasmoid.trackAlbum
+        artUrl: Plasmoid.artUrl
         playerName: Plasmoid.player
+        hasPlayer: Plasmoid.hasPlayer
         showTrackInfo: Plasmoid.showTrackInfo
+        blurBackground: Plasmoid.popupBlurBackground
+        roundedCorners: Plasmoid.popupRoundedCorners
+
+        playing: Plasmoid.playing
+        trackDurationMs: Plasmoid.trackDurationMs
+        playbackPositionMs: Plasmoid.playbackPositionMs
+        positionProvider: function() { return Plasmoid.currentPlaybackPositionMs(); }
+        canGoNext: Plasmoid.canGoNext
+        canGoPrevious: Plasmoid.canGoPrevious
+        canPlayPause: Plasmoid.canPlayPause
+        canSeek: Plasmoid.canSeek
+        hasShuffle: Plasmoid.hasShuffle
+        shuffle: Plasmoid.shuffle
+        hasLoopStatus: Plasmoid.hasLoopStatus
+        loopStatus: Plasmoid.loopStatus
 
         line: {
             if (!Plasmoid.pauseHidden && !Plasmoid.isLyricsDiscarded && !Plasmoid.isCurrentTrackBlacklisted) {
@@ -1061,6 +1081,9 @@ PlasmoidItem {
                 return i18n("Playback paused");
             }
             if (Plasmoid.trackInfo.length > 0) {
+                if (Plasmoid.searchingLyrics) {
+                    return i18n("Searching for lyrics…");
+                }
                 if (Plasmoid.hasSpotifyTrackId && Plasmoid.spicyConfigured && Plasmoid.apiUnreachable) {
                     return Plasmoid.apiError;
                 }
@@ -1071,6 +1094,24 @@ PlasmoidItem {
             }
             return i18n("No active player");
         }
+        statusText: {
+            if (Plasmoid.isLyricsDiscarded) {
+                return i18n("Lyrics discarded");
+            }
+            if (Plasmoid.isCurrentTrackBlacklisted) {
+                return i18n("Track blacklisted");
+            }
+            if (Plasmoid.pauseHidden) {
+                return i18n("Lyrics hidden while paused");
+            }
+            if (Plasmoid.hasLyrics && !root.hasCredit) {
+                return i18n("via %1", root.sourceName);
+            }
+            if (Plasmoid.searchingLyrics) {
+                return i18n("Searching…");
+            }
+            return "";
+        }
         hasLyrics: Plasmoid.hasLyrics && !Plasmoid.pauseHidden && !Plasmoid.isLyricsDiscarded && !Plasmoid.isCurrentTrackBlacklisted
 
         attribution: Plasmoid.attribution
@@ -1078,10 +1119,21 @@ PlasmoidItem {
         attributionHtml: Plasmoid.attributionHtml
         showAttribution: root.hasCredit
         isBlacklisted: Plasmoid.isCurrentTrackBlacklisted
-        onToggleBlacklist: Plasmoid.toggleBlacklistCurrentTrack()
         isLyricsDiscarded: Plasmoid.isLyricsDiscarded
+
+        onTogglePlayPause: Plasmoid.togglePlayPause()
+        onNextTrack: Plasmoid.nextTrack()
+        onPreviousTrack: Plasmoid.previousTrack()
+        onSeekToPosition: function(posMs) { Plasmoid.seekToPosition(posMs); }
+        onSyncPosition: Plasmoid.syncPosition()
+        onToggleShuffle: Plasmoid.toggleShuffle()
+        onCycleLoopStatus: Plasmoid.cycleLoopStatus()
+        onRaisePlayer: Plasmoid.raisePlayer()
+
+        onToggleBlacklist: Plasmoid.toggleBlacklistCurrentTrack()
         onToggleDiscardLyrics: Plasmoid.toggleDiscardCurrentLyrics()
         onRetryLyrics: Plasmoid.retryLyricsSearch()
+        onOpenSongLyrics: lyricsWindow.openCurrentSnapshot()
     }
 
     // Only used to find out how wide a single character is, so that the compact

@@ -31,6 +31,8 @@ KCM.SimpleKCM {
     property alias cfg_textAlignment: textAlignmentBox.currentIndex
     property alias cfg_customHighlightColor: customHighlightColorField.text
     property alias cfg_showBackingVocals: showBackingVocalsCheckBox.checked
+    property alias cfg_popupBlurBackground: popupBlurBackgroundCheckBox.checked
+    property alias cfg_popupRoundedCorners: popupRoundedCornersCheckBox.checked
 
     Kirigami.FormLayout {
 
@@ -210,6 +212,25 @@ KCM.SimpleKCM {
 
             Kirigami.FormData.label: i18n("Tooltip:")
             text: i18n("Show the current track in the tooltip")
+        }
+
+        Kirigami.Separator {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Popup")
+        }
+
+        QQC2.CheckBox {
+            id: popupBlurBackgroundCheckBox
+
+            Kirigami.FormData.label: i18n("Background:")
+            text: i18n("Blurred album art glow behind player card")
+        }
+
+        QQC2.CheckBox {
+            id: popupRoundedCornersCheckBox
+
+            Kirigami.FormData.label: i18n("Album cover:")
+            text: i18n("Rounded corners on album cover")
         }
     }
 }

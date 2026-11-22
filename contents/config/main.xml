@@ -176,5 +176,15 @@
             <label>Show backing vocals in parentheses with synchronized highlighting.</label>
             <default>false</default>
         </entry>
+
+        <entry name="popupBlurBackground" type="Bool">
+            <label>Show blurred album art glow behind the popup player card.</label>
+            <default>true</default>
+        </entry>
+
+        <entry name="popupRoundedCorners" type="Bool">
+            <label>Use rounded corners on the popup album cover.</label>
+            <default>true</default>
+        </entry>
     </group>
 </kcfg>

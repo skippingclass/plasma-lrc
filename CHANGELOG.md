@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.0 — 2026-11-22
+
+- Redesign the panel popup into a full MPRIS media controller with large album art, soft ambient cover-color glow, click-to-raise player support, separated track title/artist/album typography, and a live playback status badge.
+- Add interactive playback transport controls (play/pause, previous/next track, shuffle, and repeat/loop cycling) plus a seekable progress slider with live elapsed and total duration timestamps.
+- Add Appearance settings to toggle the popup's blurred album-art background glow and rounded album cover corners (both enabled by default).
+- Keep the current word-synced lyric line, status/placeholder feedback, provider attribution links, and quick lyric actions (open full song lyrics, retry search, discard/restore, and blacklist) integrated in the popup.
+
 ## 1.10.1 — 2026-11-20
 
 - Open the full lyrics from the beginning and remove the window's live karaoke mode, playback checkbox, and auto-scroll.
