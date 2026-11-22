@@ -27,13 +27,24 @@
 
 <sub><i>Real-time word sync · Native multi-codec decoder · Instant MPRIS tracking · 0% CPU at idle</i></sub>
 
+<br/><br/>
+
+<img src="assets/popup.png" alt="Plasma LRC v1.11.0 media controller popup" width="512" />
+
+<sub><i>Built-in MPRIS media controller popup with album art, ambient cover glow, seek bar, playback controls, and live lyrics</i></sub>
+
 </div>
+
+> [!NOTE]
+> **Why is there attribution crammed inside the ~30px panel widget in the demo GIF?**
+> Squeezing visible contributor credits directly into a 30-pixel-tall panel bar is not a design choice — it is a mandatory requirement imposed by the **Spicy Lyrics API Terms of Service** whenever lyrics are served by Spicy Lyrics. Every other provider (`lrc.red`, `LRCLIB`, `NetEase`, `KuGou`, `Unison`, `AMLL`, `QQ Music`, `Local Files`) keeps the panel completely clean and only displays source attribution inside the popup.
 
 ---
 
 ## Key Features
 
 - **Syllable & Word-by-Word Karaoke**: Highlights each sung syllable and word in real time on your Plasma panel with zero stutter or layout shifting. Supports Apple Music TTML (`lrc.red`, `AMLL`), QQ Music QRC, KuGou KRC, NetEase YRC, and Spicy Lyrics.
+- **Built-in MPRIS Media Controller Popup**: Clicking the widget opens a sleek media controller featuring large album art with optional soft ambient color glow, track/artist/album metadata, live playback status badge, seekable progress bar, transport controls (play/pause, previous/next, shuffle, repeat), current word-synced lyric line, and quick actions.
 - **Interactive Candidate Browser ("Choose another match…")**: Direct dialog to search and pick alternative matches across all enabled online providers. Features live sync indicators (**Word**, **Line**, **None**), rate-limit resilience, multi-tier caching (5 min fresh / 30 min stale reserve), and manual session locking.
 - **10-Source Resilient Pipeline**: Fully customizable priority chain with automatic failover across 10 providers: Local Files, lrc.red, LRCLIB, NetEase Cloud Music, KuGou, Unison, Spicy Lyrics, AMLL TTML DB, QQ Music, and Custom HTTP Endpoints.
 - **Hardened Security & Anti-Bomb Protection**: Strict incoming payload guards abort oversized responses in-flight (> 8 MiB) and prevent decompression bombs (> 16 MiB decompressed, > 10,000 lines, > 100,000 words, > 16,384 characters per line).
@@ -108,7 +119,10 @@ Plasma LRC integrates 10 modular provider adapters with customizable priority or
 
 ## Installation
 
-### Arch Linux (AUR)
+### Arch Linux (AUR) *(once AUR registrations reopen)*
+
+> [!NOTE]
+> New AUR account registrations are currently closed due to the recent malware wave; the package will be published there as soon as registrations reopen. In the meantime, use the quick install script below or build locally from the included [`PKGBUILD`](PKGBUILD).
 
 ```bash
 yay -S plasma6-applet-lrc-git
@@ -194,6 +208,8 @@ Right-click the widget → **Configure Plasma LRC…**:
 | **No lyrics text** | `♪` | Idle/placeholder glyph when no track or lyrics are active. |
 | **Pauses & intros** | `Disabled` | Show `♪ Intro ♪` and `♪ Instrumental ♪` placeholders during breaks. |
 | **Icon & Tooltip** | `Enabled` | Toggles the musical note panel icon and detailed MPRIS track tooltip. |
+| **Popup background** | `Enabled` | Shows a soft blurred color wash extracted from the album cover behind the popup player card. |
+| **Popup album cover** | `Enabled` | Rounds the corners of the album cover inside the popup. |
 
 ### Lyrics & Playback Tab
 
